@@ -115,6 +115,12 @@ fun SessionActionsSheet(
                 ActionRow(Glyph.Copy, "重命名") { renaming = true }
             }
 
+            // 撤销按会话分桶：只撤这个会话最近一次文件写入，不影响别的会话
+            ActionRow(Glyph.Retry, "撤销最近一次文件写入") {
+                vm.undoLastWrite(session.id)
+                onDismiss()
+            }
+
             ActionRow(Glyph.Folder, "归档（从列表隐藏，可恢复）") {
                 vm.setSessionArchived(session.id, true)
                 onDismiss()

@@ -432,6 +432,24 @@ class OfflineVoiceEngine(context: Context) {
     }
 
     /**
+     * 释放已加载的 Vosk 模型（启用云端识别时调用，省下 ~68MB 常驻内存）。
+     *
+     * 与 [destroy] 的区别：这里只卸载模型，不把引擎判死 —— 云端只是优先，
+     * 用户关掉云端后离线仍要能兜底；下一次 start()/prepare() 会重新加载。
+     * 磁盘上的模型文件保留（首启解压成本不为 0，删了再解压不划算）。
+     */
+    fun releaseModel() {
+        stopInternal()
+        synchronized(loadLock) {
+            runCatching { recognizer?.close() }
+            runCatching { model?.close() }
+            recognizer = null
+            model = null
+        }
+        logv("releaseModel: 已释放（云端识别启用）")
+    }
+
+    /**
      * 后台预加载 Model/Recognizer（幂等）：Composer 在离线引擎就绪后调用。
      * 首次构造要读 ~68MB 模型数据，放主线程会把点按后头几秒的说话吞掉，
      * 表现为「识别不出字」；预加载后 start() 拿到的是现成实例，点按即采。

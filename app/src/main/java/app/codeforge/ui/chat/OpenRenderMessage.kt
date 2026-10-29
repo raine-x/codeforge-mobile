@@ -763,8 +763,9 @@ private fun link(url: String, color: Color): LinkAnnotation.Url =
 @Composable
 private fun InlineMedia(src: String, alt: String) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
-    var bitmap by remember(src) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    LaunchedEffect(src, ctx) { bitmap = loadMediaBitmap(ctx, src) }
+    val root = LocalAttachmentRoot.current
+    var bitmap by remember(src, root) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(src, ctx, root) { bitmap = loadMediaBitmap(ctx, src, root) }
     val bmp = bitmap
     if (bmp != null) {
         Image(

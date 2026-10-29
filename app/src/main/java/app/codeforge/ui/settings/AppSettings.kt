@@ -35,6 +35,27 @@ object AppSettings {
     private const val KEY_ROTATION_SENSITIVITY = "rotation_sensitivity"
     private const val KEY_CONTINUOUS_DICTATION = "continuous_dictation"
     private const val KEY_DARK_MODE = "dark_mode"
+    private const val KEY_PROVIDER_SEEDED = "provider_seeded_v1"
+    private const val KEY_INPUT_BOX_STYLE = "input_box_style"
+    private const val KEY_BACKGROUND_IMAGE = "background_image_path"
+    private const val KEY_BACKGROUND_BLUR = "background_blur"
+    private const val KEY_BACKGROUND_BRIGHTNESS = "background_brightness"
+    private const val KEY_TEXT_COLOR_OVERRIDE = "text_color_override"
+    private const val KEY_SHOW_STATUS_BAR = "show_status_bar"
+    private const val KEY_STT_CLOUD_ENABLED = "stt_cloud_enabled"
+    private const val KEY_STT_CLOUD_API_KEY = "stt_cloud_api_key"
+    private const val KEY_STT_CLOUD_BASE_URL = "stt_cloud_base_url"
+    private const val KEY_STT_CLOUD_MODEL = "stt_cloud_model"
+    private const val KEY_STT_CLOUD_CLEAN = "stt_cloud_clean"
+
+    /** 外观值域：模糊 0–40 dp，亮度 20–100（%），越界一律夹取。 */
+    const val BACKGROUND_BLUR_MAX = 40
+    const val BACKGROUND_BRIGHTNESS_MIN = 20
+    const val BACKGROUND_BRIGHTNESS_MAX = 100
+
+    /** 云端语音识别默认服务：硅基流动（OpenAI 兼容转写接口）。 */
+    const val STT_CLOUD_DEFAULT_BASE_URL = "https://api.siliconflow.cn/v1"
+    const val STT_CLOUD_DEFAULT_MODEL = "FunAudioLLM/SenseVoiceSmall"
 
     private var prefs: SharedPreferences? = null
 
@@ -70,6 +91,54 @@ object AppSettings {
 
     /** 深色模式手动切换：0 跟随系统 / 1 浅色 / 2 深色（B4 设置页）。 */
     val darkMode = mutableStateOf(0)
+
+    /**
+     * 是否已经做过「首次供应商预置」。
+     *
+     * 必须持久化：只用进程内标记的话，用户删掉预置供应商后重启 App 会被再次写回，
+     * 表现就是「后端删了、前端又出现」。一旦为 true，任何空列表都不再自动补。
+     */
+    val providerSeeded = mutableStateOf(false)
+
+    /**
+     * 输入框外观：default（跟随主题）/ black / white / clear（透明）。
+     *
+     * 只存「用户意图」，真正绘制在 Composer / AppRoot；壳侧不调内核
+     * `/api/appearance` —— 那是网页端 CSS 变量的入口，原生主题不需要。
+     */
+    val inputBoxStyle = mutableStateOf("default")
+
+    /** 自定义背景图：应用私有目录内的绝对路径（空 = 无背景）。 */
+    val backgroundImagePath = mutableStateOf("")
+
+    /** 背景模糊半径（dp）与亮度（%）。 */
+    val backgroundBlur = mutableIntStateOf(0)
+    val backgroundBrightness = mutableIntStateOf(100)
+
+    /** 文字颜色覆盖（`#RRGGBB`；空串 = 跟随背景亮度自动黑/白）。 */
+    val textColorOverride = mutableStateOf("")
+
+    /**
+     * 是否显示系统状态栏。默认 false = 隐藏 —— 聊天页要的是整屏沉浸，
+     * 状态栏那一条会把顶栏往下压；隐藏后 safeDrawing 顶 inset 自动变 0。
+     */
+    val showStatusBar = mutableStateOf(false)
+
+    /**
+     * 云端语音识别（硅基流动，OpenAI 兼容 `/audio/transcriptions`）。
+     *
+     * **独立于聊天模型供应商**：聊天和转写是两套计费、两把 Key，共用一份配置会让
+     * 「换个聊天模型」顺手把语音链路改坏。这里单独存一套，两边互不污染。
+     *
+     * 优先级：云端（已启用且填了 Key）→ 系统 SpeechRecognizer → 离线 Vosk。
+     */
+    val sttCloudEnabled = mutableStateOf(false)
+    val sttCloudApiKey = mutableStateOf("")
+    val sttCloudBaseUrl = mutableStateOf(STT_CLOUD_DEFAULT_BASE_URL)
+    val sttCloudModel = mutableStateOf(STT_CLOUD_DEFAULT_MODEL)
+
+    /** 是否剥离 SenseVoice 插进正文的情感/事件标记（🎼😡 等）：默认开。 */
+    val sttCloudClean = mutableStateOf(true)
 
     fun init(context: Context) {
         if (prefs != null) return
@@ -122,6 +191,30 @@ object AppSettings {
         lastModel.value = p.getString("last_model", null) ?: ""
         continuousDictation.value = p.getBoolean(KEY_CONTINUOUS_DICTATION, false)
         darkMode.value = p.getInt(KEY_DARK_MODE, 0)
+        providerSeeded.value = p.getBoolean(KEY_PROVIDER_SEEDED, false)
+        inputBoxStyle.value = p.getString(KEY_INPUT_BOX_STYLE, "default") ?: "default"
+        backgroundImagePath.value = p.getString(KEY_BACKGROUND_IMAGE, null) ?: ""
+        backgroundBlur.intValue = p.getInt(KEY_BACKGROUND_BLUR, 0)
+            .coerceIn(0, BACKGROUND_BLUR_MAX)
+        backgroundBrightness.intValue = p.getInt(KEY_BACKGROUND_BRIGHTNESS, 100)
+            .coerceIn(BACKGROUND_BRIGHTNESS_MIN, BACKGROUND_BRIGHTNESS_MAX)
+        textColorOverride.value = p.getString(KEY_TEXT_COLOR_OVERRIDE, null) ?: ""
+        showStatusBar.value = p.getBoolean(KEY_SHOW_STATUS_BAR, false)
+        sttCloudEnabled.value = p.getBoolean(KEY_STT_CLOUD_ENABLED, false)
+        sttCloudApiKey.value = p.getString(KEY_STT_CLOUD_API_KEY, null) ?: ""
+        // 空串视为未配置：走默认地址/模型，别让清空输入框把语音链路弄成不可用
+        sttCloudBaseUrl.value = p.getString(KEY_STT_CLOUD_BASE_URL, null)
+            ?.takeIf { it.isNotBlank() } ?: STT_CLOUD_DEFAULT_BASE_URL
+        sttCloudModel.value = p.getString(KEY_STT_CLOUD_MODEL, null)
+            ?.takeIf { it.isNotBlank() } ?: STT_CLOUD_DEFAULT_MODEL
+        sttCloudClean.value = p.getBoolean(KEY_STT_CLOUD_CLEAN, true)
+    }
+
+    /** 标记首次供应商预置已完成；之后任何空列表都不再自动补 DeepSeek。 */
+    fun markProviderSeeded() {
+        if (providerSeeded.value) return
+        providerSeeded.value = true
+        prefs?.edit()?.putBoolean(KEY_PROVIDER_SEEDED, true)?.apply()
     }
 
     fun setContinuousDictation(enabled: Boolean) {
@@ -160,6 +253,75 @@ object AppSettings {
     fun setLastPermission(mode: String) {
         lastPermission.value = mode
         prefs?.edit()?.putString("last_permission", mode)?.apply()
+    }
+
+    /** 外观：输入框外观档（default / black / white / clear）。 */
+    fun setInputBoxStyle(style: String) {
+        val v = style.lowercase().takeIf { it in setOf("default", "black", "white", "clear") }
+            ?: "default"
+        inputBoxStyle.value = v
+        prefs?.edit()?.putString(KEY_INPUT_BOX_STYLE, v)?.apply()
+    }
+
+    /** 外观：自定义背景图路径（空串 = 清除背景）。 */
+    fun setBackgroundImage(path: String) {
+        backgroundImagePath.value = path
+        prefs?.edit()?.putString(KEY_BACKGROUND_IMAGE, path)?.apply()
+    }
+
+    fun setBackgroundBlur(value: Int) {
+        val v = value.coerceIn(0, BACKGROUND_BLUR_MAX)
+        backgroundBlur.intValue = v
+        prefs?.edit()?.putInt(KEY_BACKGROUND_BLUR, v)?.apply()
+    }
+
+    fun setBackgroundBrightness(value: Int) {
+        val v = value.coerceIn(BACKGROUND_BRIGHTNESS_MIN, BACKGROUND_BRIGHTNESS_MAX)
+        backgroundBrightness.intValue = v
+        prefs?.edit()?.putInt(KEY_BACKGROUND_BRIGHTNESS, v)?.apply()
+    }
+
+    /** 外观：文字颜色覆盖（`#RRGGBB`，空串 = 自动）。 */
+    fun setTextColorOverride(value: String) {
+        val v = value.trim()
+        textColorOverride.value = v
+        prefs?.edit()?.putString(KEY_TEXT_COLOR_OVERRIDE, v)?.apply()
+    }
+
+    /** 系统状态栏显隐（MainActivity 的 LaunchedEffect 读它来 show/hide）。 */
+    fun setShowStatusBar(enabled: Boolean) {
+        showStatusBar.value = enabled
+        prefs?.edit()?.putBoolean(KEY_SHOW_STATUS_BAR, enabled)?.apply()
+    }
+
+    /** 语音：是否启用云端识别（与聊天供应商无关，见 [sttCloudEnabled]）。 */
+    fun setSttCloudEnabled(enabled: Boolean) {
+        sttCloudEnabled.value = enabled
+        prefs?.edit()?.putBoolean(KEY_STT_CLOUD_ENABLED, enabled)?.apply()
+    }
+
+    fun setSttCloudApiKey(key: String) {
+        val v = key.trim()
+        sttCloudApiKey.value = v
+        prefs?.edit()?.putString(KEY_STT_CLOUD_API_KEY, v)?.apply()
+    }
+
+    /** 语音：服务地址（空串落盘后 init 会回默认，运行时也用默认兜底）。 */
+    fun setSttCloudBaseUrl(url: String) {
+        val v = url.trim()
+        sttCloudBaseUrl.value = v
+        prefs?.edit()?.putString(KEY_STT_CLOUD_BASE_URL, v)?.apply()
+    }
+
+    fun setSttCloudModel(model: String) {
+        val v = model.trim()
+        sttCloudModel.value = v
+        prefs?.edit()?.putString(KEY_STT_CLOUD_MODEL, v)?.apply()
+    }
+
+    fun setSttCloudClean(enabled: Boolean) {
+        sttCloudClean.value = enabled
+        prefs?.edit()?.putBoolean(KEY_STT_CLOUD_CLEAN, enabled)?.apply()
     }
 
 }

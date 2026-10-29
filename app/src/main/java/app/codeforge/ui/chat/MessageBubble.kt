@@ -18,6 +18,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -49,10 +50,13 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.codeforge.model.ChatMessage
+import app.codeforge.model.MessageSegment
 import app.codeforge.model.MsgRole
 import app.codeforge.model.NoticeKind
+import app.codeforge.model.ToolCall
 import app.codeforge.model.ToolState
 import app.codeforge.ui.common.Glyph
 import app.codeforge.ui.common.GlyphIcon
@@ -174,10 +178,14 @@ private fun UserBubble(
 ) {
     var actionsOpen by remember { mutableStateOf(false) }
     var viewer by remember { mutableStateOf<String?>(null) }
+    // 「缩略」：长提问默认整段铺开会把后续对话顶到很远，折成 5 行后仍可展开。
+    // 只有真的长才给这个入口 —— 短消息上多一个图标反而让人犹豫。
+    var collapsed by rememberSaveable(message.id) { mutableStateOf(false) }
+    val canCollapse = message.text.length > 260 || message.text.count { it == '\n' } > 6
     val clipboard = androidx.compose.ui.platform.LocalClipboard.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
-    // 点气泡切换操作栏（参考 Grok：操作直接落在气泡下方，不弹菜单）。
+    // 长按/点气泡切换操作栏（参考 Grok：操作直接落在气泡下方，不弹菜单）。
     // 长按仍交给 SelectionContainer 选文字，两者不冲突。
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -207,6 +215,8 @@ private fun UserBubble(
                                 text = message.text,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = if (collapsed) 5 else Int.MAX_VALUE,
+                                overflow = TextOverflow.Ellipsis,
                             )
                         }
                     }
@@ -221,7 +231,9 @@ private fun UserBubble(
                 }
             }
 
-            // 操作栏：气泡正下方右对齐，点一下出现、再点收起
+            // 操作栏：气泡正下方右对齐，点一下出现、再点收起。
+            // 图标顺序固定为「缩略 / 编辑 / 复制 / 重发」，全部是纯描边的精简线框 ——
+            // 早期那版铅笔带实心笔尖、重发借用刷新箭头，观感偏「可爱化」，用户要求换掉。
             AnimatedVisibility(
                 visible = actionsOpen,
                 enter = fadeIn(tween(120)) + expandVertically(tween(160)),
@@ -231,16 +243,16 @@ private fun UserBubble(
                     modifier = Modifier.padding(top = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
+                    if (canCollapse) {
+                        MsgAction(
+                            glyph = Glyph.Collapse,
+                            rotation = if (collapsed) 180f else 0f,
+                        ) { collapsed = !collapsed }
+                    }
                     if (onEditResend != null) {
                         MsgAction(Glyph.Edit) {
                             actionsOpen = false
                             onEditResend(message)
-                        }
-                    }
-                    if (onResendUser != null) {
-                        MsgAction(Glyph.Retry) {
-                            actionsOpen = false
-                            onResendUser(message)
                         }
                     }
                     MsgAction(Glyph.Copy) {
@@ -252,6 +264,12 @@ private fun UserBubble(
                             )
                         }
                         actionsOpen = false
+                    }
+                    if (onResendUser != null) {
+                        MsgAction(Glyph.Resend) {
+                            actionsOpen = false
+                            onResendUser(message)
+                        }
                     }
                 }
             }
@@ -275,39 +293,14 @@ private fun AssistantBlock(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        message.thinking?.takeIf { it.isNotBlank() }?.let { ThinkingBlock(it, message) }
-
-        message.tools.forEach { tool ->
-            // 历史工具卡（load 回来 output 为空）给「回放」入口：/api/diff 拉取
-            val fetch = if (tool.output == null && tool.state == ToolState.Ok) onFetchOutput else null
-            ToolCard(tool = tool, onFetchOutput = fetch)
+        // 有 segments 就按「思考 → 执行 → 思考 → 执行 → 正文」的**真实发生顺序**渲染；
+        // 没有就回退旧字段（历史消息 / 老内核事件只有 thinking+tools+text 三块）。
+        // 旧渲染把所有工具卡堆在正文之前 —— 那正是用户反馈的「执行全在前面」。
+        if (message.segments.isNotEmpty()) {
+            SegmentedContent(message, onFetchOutput)
+        } else {
+            LegacyContent(message, onFetchOutput)
         }
-
-        if (message.text.isNotBlank()) {
-            SelectionContainer {
-                if (message.verbatim) {
-                    // 原样输出：用途见 ChatMessage.verbatim 的注释 —— 模型输出
-                    // markdown 源码本身时按纯文本展示，等宽字体暗示「这是代码态」
-                    Text(
-                        text = message.text,
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                } else {
-                    MessageContentBlocks(
-                        text = message.text,
-                        caret = message.streaming,
-                    )
-                }
-            }
-        }
-
-        if (message.streaming && message.text.isBlank() && message.thinking.isNullOrBlank()) {
-            WaitingIndicator()
-        }
-
 
         if (showActions) {
             ActionsRow(message, onRetry)
@@ -324,6 +317,151 @@ private fun AssistantBlock(
     }
 }
 
+/**
+ * 按 [ChatMessage.segments] 的顺序渲染正文流。
+ *
+ * 连续的只读工具（read_file / list_dir / search_files / web 读取）在这里收成
+ * 「已探索 N 项」一块；写类工具与正文、思考一样各占自己的位置 —— 分组只在
+ * 相邻只读工具之间发生，绝不跨过一段正文或思考（否则「什么时候看的」就丢了）。
+ */
+@Composable
+private fun ColumnScope.SegmentedContent(
+    message: ChatMessage,
+    onFetchOutput: ((String) -> Unit)?,
+) {
+    val segments = message.segments
+    var i = 0
+    while (i < segments.size) {
+        when (val seg = segments[i]) {
+            is MessageSegment.Thinking -> {
+                if (seg.text.isNotBlank()) {
+                    ThinkingBlock(
+                        text = seg.text,
+                        message = message,
+                        live = message.streaming && i == segments.lastIndex,
+                        stateKey = "thinking-$i",
+                    )
+                }
+                i++
+            }
+
+            is MessageSegment.Text -> {
+                if (seg.text.isNotBlank()) {
+                    BodyText(message, seg.text, caret = message.streaming && i == segments.lastIndex)
+                }
+                i++
+            }
+
+            is MessageSegment.Tool -> {
+                if (isReadOnlyTool(seg.call.name)) {
+                    val group = ArrayList<ToolCall>()
+                    val start = i
+                    while (i < segments.size) {
+                        val next = segments[i]
+                        if (next is MessageSegment.Tool && isReadOnlyTool(next.call.name)) {
+                            group.add(next.call)
+                            i++
+                        } else {
+                            break
+                        }
+                    }
+                    if (group.size == 1) {
+                        ToolCard(tool = group[0], onFetchOutput = replayOf(group[0], onFetchOutput))
+                    } else {
+                        ExploreGroup(
+                            tools = group,
+                            onFetchOutput = onFetchOutput,
+                            stateKey = message.id + "-explore-" + (group.firstOrNull()?.id ?: start),
+                        )
+                    }
+                } else {
+                    ToolCard(tool = seg.call, onFetchOutput = replayOf(seg.call, onFetchOutput))
+                    i++
+                }
+            }
+        }
+    }
+
+    // 流刚开始、还没有任何正文/思考片段时给等待点；已经有工具卡就不必再画
+    val hasNarrative = segments.any { it is MessageSegment.Text || it is MessageSegment.Thinking }
+    val hasTool = segments.any { it is MessageSegment.Tool }
+    if (message.streaming && !hasNarrative && !hasTool) WaitingIndicator()
+}
+
+/** 旧字段回退：thinking + tools + text 三段式（历史消息没有 segments）。 */
+@Composable
+private fun ColumnScope.LegacyContent(
+    message: ChatMessage,
+    onFetchOutput: ((String) -> Unit)?,
+) {
+    message.thinking?.takeIf { it.isNotBlank() }?.let {
+        ThinkingBlock(
+            text = it,
+            message = message,
+            live = message.streaming && message.text.isBlank(),
+            stateKey = "legacy-thinking",
+        )
+    }
+
+    var i = 0
+    val tools = message.tools
+    while (i < tools.size) {
+        val tool = tools[i]
+        if (isReadOnlyTool(tool.name)) {
+            val group = ArrayList<ToolCall>()
+            val start = i
+            while (i < tools.size && isReadOnlyTool(tools[i].name)) {
+                group.add(tools[i])
+                i++
+            }
+            if (group.size == 1) {
+                ToolCard(tool = group[0], onFetchOutput = replayOf(group[0], onFetchOutput))
+            } else {
+                ExploreGroup(
+                    tools = group,
+                    onFetchOutput = onFetchOutput,
+                    stateKey = message.id + "-legacy-explore-" + (group.firstOrNull()?.id ?: start),
+                )
+            }
+        } else {
+            ToolCard(tool = tool, onFetchOutput = replayOf(tool, onFetchOutput))
+            i++
+        }
+    }
+
+    if (message.text.isNotBlank()) {
+        BodyText(message, message.text, caret = message.streaming)
+    }
+
+    if (message.streaming && message.text.isBlank() && message.thinking.isNullOrBlank()) {
+        WaitingIndicator()
+    }
+}
+
+/** 历史工具卡（load 回来 output 为空）给「回放」入口：/api/diff 拉取。 */
+private fun replayOf(tool: ToolCall, onFetchOutput: ((String) -> Unit)?): ((String) -> Unit)? =
+    if (tool.output == null && tool.state == ToolState.Ok) onFetchOutput else null
+
+/** 正文段：verbatim 走等宽纯文本，其余交给 OpenRender 块渲染。 */
+@Composable
+private fun BodyText(message: ChatMessage, text: String, caret: Boolean) {
+    SelectionContainer {
+        if (message.verbatim) {
+            // 原样输出：用途见 ChatMessage.verbatim 的注释 —— 模型输出
+            // markdown 源码本身时按纯文本展示，等宽字体暗示「这是代码态」
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        } else {
+            MessageContentBlocks(text = text, caret = caret)
+        }
+    }
+}
+
 // ---------------------------------------------------------------- 思考过程
 
 /**
@@ -335,15 +473,24 @@ private fun AssistantBlock(
  *  - 历史消息（非流式）→ 默认收起。
  *
  * 展开态**限高约 5 行**并随流式增长自动贴底滚动 —— 长思考不再把回答顶出屏幕。
+ *
+ * [live] 由调用方判定：这条思考是不是「整条消息里最后一段、且流还在跑」。
+ * 不能再用 `message.streaming && message.text.isBlank()` 推断 —— 一轮里可能
+ * 出现好几段思考，那样所有段都会同时判成「正在思考」。
+ * [stateKey] 让同一消息里的多段思考各自记住展开状态。
  */
 @Composable
-private fun ThinkingBlock(text: String, message: ChatMessage) {
-    val thinkingNow = message.streaming && message.text.isBlank()
-    var pinned by rememberSaveable(message.id) { mutableStateOf(false) }
-    var expanded by rememberSaveable(message.id) { mutableStateOf(false) }
+private fun ThinkingBlock(
+    text: String,
+    message: ChatMessage,
+    live: Boolean,
+    stateKey: String,
+) {
+    var pinned by rememberSaveable(message.id, stateKey) { mutableStateOf(false) }
+    var expanded by rememberSaveable(message.id, stateKey) { mutableStateOf(false) }
 
-    LaunchedEffect(thinkingNow) {
-        if (!pinned) expanded = thinkingNow
+    LaunchedEffect(live) {
+        if (!pinned) expanded = live
     }
     // 思考整体结束（流断掉）也收起 —— 思考和正文都完了不该再占着屏
     LaunchedEffect(message.streaming) {
@@ -358,8 +505,8 @@ private fun ThinkingBlock(text: String, message: ChatMessage) {
 
     val scrollState = rememberScrollState()
     // 流式增长时贴底：maxValue 要等布局完成才更新，animateScrollTo 追最新值
-    LaunchedEffect(text, thinkingNow, expanded) {
-        if (thinkingNow && expanded) scrollState.animateScrollTo(scrollState.maxValue)
+    LaunchedEffect(text, live, expanded) {
+        if (live && expanded) scrollState.animateScrollTo(scrollState.maxValue)
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
@@ -374,13 +521,13 @@ private fun ThinkingBlock(text: String, message: ChatMessage) {
                 .height(24.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (thinkingNow) {
+            if (live) {
                 Sparkle(size = 14.dp, color = Clay, animate = true)
             } else {
                 Sparkle(size = 14.dp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text(
-                text = if (thinkingNow) "正在思考…" else "思考过程",
+                text = if (live) "正在思考…" else "思考过程",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(start = 6.dp),
@@ -587,17 +734,17 @@ private fun ActionIcon(
 }
 
 /**
- * 消息下方的小圆角操作按钮（编辑 / 重发 / 复制）。
+ * 消息下方的小圆角操作按钮（缩略 / 编辑 / 复制 / 重发）。
  *
- * 只放图标不放文字：气泡下方空间窄，三个图标一眼能认出来，
- * 加文字反而会把操作栏撑得比气泡还宽。
+ * 只放图标不放文字：气泡下方空间窄，四个图标一眼能认出来，
+ * 加文字反而会把操作栏撑得比气泡还宽。图标统一 1.6dp 描边、无填充。
  */
 @Composable
-private fun MsgAction(glyph: Glyph, onClick: () -> Unit) {
+private fun MsgAction(glyph: Glyph, rotation: Float = 0f, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             .clickable(onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
     ) {
@@ -605,6 +752,8 @@ private fun MsgAction(glyph: Glyph, onClick: () -> Unit) {
             glyph = glyph,
             size = 15.dp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            strokeWidth = 1.6.dp,
+            modifier = Modifier.rotate(rotation),
         )
     }
 }

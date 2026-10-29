@@ -1,6 +1,7 @@
 package app.codeforge.core
 
 import android.content.Context
+import android.net.Uri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,6 +22,7 @@ import java.nio.file.Paths
  * $CELL/                     HOME（内核、工具、rootfs 全在这棵树上）
  * ├── workspace/             工作区（内核 -workdir；proot 内同路径可见）
  * ├── tmp/                   TMPDIR（proot 内绑定为 /tmp）
+ * ├── mnt/android/           安卓侧存储的稳定入口（见下方映射表）
  * ├── usr/bin/proot          Termux 构建（bionic，可直接 exec）
  * ├── usr/libexec/proot/     proot 的 loader（与 bin 的相对布局保持原样）
  * ├── usr/bin/cfrun          统一执行入口（见 [cfrunScript]）
@@ -30,6 +32,26 @@ import java.nio.file.Paths
  * 对齐机制：proot 以 `-b $CELL:$CELL -b $CELL/tmp:/tmp` 把宿主目录按**同一路径**
  * 绑进 rootfs —— 内核在 $CELL/workspace 改文件，rootfs 里的 python/go 在
  * **同一路径**读写同一文件；反之亦然。不存在「A 跑在这、B 跑在那、互不相见」。
+ *
+ * ## 安卓侧存储映射（isolated 沙盒之外的世界）
+ *
+ * 候选按优先级排序，逐个 `[ -e ] && [ -r ]` 探测，不可用一律跳过 —— 不申请权限、
+ * 不报错、不影响沙盒内命令（P-014：硬绑不存在的路径会告警并拖垮 glue rootfs）：
+ *
+ * ```
+ * 宿主                              guest 可见位置
+ * ────────────────────────────────────────────────────────────────────────
+ * /storage/emulated/0          →    /storage/emulated/0   +  $CELL/mnt/android
+ * /sdcard                      →    /sdcard
+ * getExternalFilesDir(null)    →    同一绝对路径          +  $CELL/mnt/android
+ * 全不可用                     →    都不绑；$CELL/mnt/android 是个空目录
+ * ```
+ *
+ * 两条规则：① 候选**按自身绝对路径**绑 —— guest 里写死的 `/sdcard/foo` 与宿主
+ * 内核看到的是同一份数据；② 首个可用者**叠绑**到 `$CELL/mnt/android` —— 这是
+ * 给内核与脚本的稳定入口，换设备、换权限状态时路径不变，取不到时它只是空目录。
+ * 首个可用者的判定顺序与 [androidStorage] 必须一致，否则 `CF_ANDROID_STORAGE`
+ * 会和 guest 里的 `$CELL/mnt/android` 指向两处。
  *
  * 首启流水线（AGENTS §2.6）：语音模型解压之后跑本类，两步合计约 4.2 MB 资产
  * 解包，进度并入「环境准备中」遮罩。
@@ -59,6 +81,12 @@ object EnvKit {
     fun tmpDir(context: Context): File = File(cellRoot(context), "tmp")
     fun cfrun(context: Context): File = File(usrBin(context), "cfrun")
 
+    /**
+     * rootfs 内（= 宿主同一路径，因为 $CELL 整体绑进 guest）的安卓存储稳定入口：
+     * 有可用存储时 cfrun 把首个可用候选叠绑到这里，没有就只是个空目录（见类注释映射表）。
+     */
+    fun androidMnt(context: Context): File = File(cellRoot(context), "mnt/android")
+
     // ---------------------------------------------------------------- 独立空间
 
     /** 测试模型的专属空间（不与内核工作区混住）。 */
@@ -70,6 +98,142 @@ object EnvKit {
     fun sessionSpace(context: Context, sessionId: String): File {
         val safe = sessionId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(48).ifEmpty { "default" }
         return ensureWr(File(File(cellRoot(context), "spaces"), safe))
+    }
+
+    /**
+     * 未选择项目时的默认工作区（应用私有空间）。
+     *
+     * 为什么不再「每个会话一个空格子」：会话在**创建那一刻**就把当时的工作区
+     * 写进内核的 sessions.workspace，之后壳侧再切 /api/workspace 也改不回这条
+     * 记录。按会话 id 建目录必须先有 id，而会话正是要工作区才能建 —— 死循环。
+     * 统一用一个稳定目录，会话归属、附件落点、后续加载时的工作区切换三者同源。
+     */
+    fun inboxSpace(context: Context): File =
+        ensureWr(File(File(cellRoot(context), "spaces"), "inbox"))
+
+    /**
+     * 项目工作区的父目录（`$CELL/workspace`）。
+     *
+     * 也是内核历史上默认的工作区根；「不选文件夹的新项目」在它下面建独立子目录。
+     */
+    fun workspaceRoot(context: Context): File = ensureWr(File(cellRoot(context), "workspace"))
+
+    /**
+     * 生成一个项目 id 作为文件夹名。
+     *
+     * 为什么不用会话 id：工作区在**会话创建之前**就要定好（`History.Create`
+     * 会把当时的 root 写进 `sessions.workspace`，事后改不回来），而会话 id
+     * 正是创建后才有的；另外项目会被多个会话共享，拿第一条会话的 id 当目录名
+     * 语义也不对。用项目自己的短 id，稳定、无碰撞、不随重命名变化。
+     */
+    fun newProjectId(): String =
+        "p-" + java.util.UUID.randomUUID().toString().replace("-", "").take(12)
+
+    /** 不选文件夹时的项目工作区：`$CELL/workspace/<项目id>`。 */
+    fun newProjectWorkspace(context: Context, projectId: String): File =
+        ensureWr(File(workspaceRoot(context), projectId))
+
+    /**
+     * 附件本地暂存区（应用私有，与内核工作区无关）。
+     *
+     * 选择器的 content:// URI 随时可能失效，必须先落盘；但落点不能猜工作区 ——
+     * 会话还没创建时工作区尚不存在。统一落到这里，发送时由 `/api/upload_file`
+     * 原子写进内核当前工作区（附件路径与读方从此一致，见问题 1）。
+     */
+    fun outboxDir(context: Context): File =
+        File(cellRoot(context), "outbox").apply { mkdirs() }
+
+    // ---------------------------------------------------------------- 文件传输（sdcard）
+
+    /**
+     * 手机侧公共下载目录：`/storage/emulated/0/Download` → `/sdcard/Download` →
+     * 应用外私目录 `Download`，取首个存在（或能建出来）且可写的。
+     *
+     * targetSdk 28 在 Android 10+ 仍按 legacy 存储处理，本进程与内核子进程
+     * （同一 uid）都能直接写公共目录，不需要 SAF 授权 —— 这是本项目既能
+     * 「产物跑在容器里」又能「文件落到用户可见处」的关键前提。
+     */
+    fun publicDownloadsDir(context: Context): File? {
+        val candidates = buildList {
+            add(File("/storage/emulated/0/Download"))
+            add(File("/sdcard/Download"))
+            externalFilesDir(context)?.let { add(File(it, "Download")) }
+        }
+        return candidates.firstOrNull { dir ->
+            (dir.exists() || runCatching { dir.mkdirs() }.getOrDefault(false)) &&
+                runCatching { dir.canWrite() }.getOrDefault(false)
+        }
+    }
+
+    /** 把单个文件复制到 `Download/CodeForge/`；重名追加序号。返回落地文件。 */
+    fun exportFileToDownloads(context: Context, src: File): File? {
+        if (!src.isFile) return null
+        val dir = File(publicDownloadsDir(context) ?: return null, "CodeForge").apply { mkdirs() }
+        var target = File(dir, src.name)
+        var n = 2
+        while (target.exists()) {
+            target = File(dir, "${src.nameWithoutExtension}-$n.${src.extension}")
+            n++
+        }
+        return runCatching {
+            src.inputStream().use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+            target
+        }.getOrNull()
+    }
+
+    /**
+     * 把整个目录打包成 zip 复制到 `Download/CodeForge/`。
+     *
+     * 空目录不打包（返回 null）：用户点「导出」却拿到一个空文件只会更困惑。
+     */
+    fun exportDirectoryAsZip(context: Context, dir: File, zipName: String): File? {
+        if (!dir.isDirectory || dir.walkTopDown().none { it.isFile }) return null
+        val outDir = File(publicDownloadsDir(context) ?: return null, "CodeForge").apply { mkdirs() }
+        val target = File(outDir, zipName)
+        return runCatching {
+            java.util.zip.ZipOutputStream(target.outputStream().buffered()).use { zip ->
+                val base = dir.toPath()
+                dir.walkTopDown().forEach { f ->
+                    if (f.isFile) {
+                        val rel = base.relativize(f.toPath()).toString().replace('\\', '/')
+                        zip.putNextEntry(java.util.zip.ZipEntry(rel))
+                        f.inputStream().use { it.copyTo(zip) }
+                        zip.closeEntry()
+                    }
+                }
+            }
+            target
+        }.getOrNull()
+    }
+
+    /**
+     * 从系统选择器（SAF / 相册）导入一个文件到默认工作区的 `imports/`。
+     *
+     * 落点用 [inboxSpace] 而不是临时目录：导入是用户显式动作，重启后还要能在
+     * 工作区文件树里看到它。返回落地文件（绝对路径，可直接当工作区相对路径用）。
+     */
+    fun importFileFromUri(context: Context, uri: Uri, subdir: String = "imports"): File? {
+        val resolver = context.contentResolver
+        var name = resolver.query(uri, null, null, null, null)?.use { c ->
+            val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+        } ?: "imported"
+        name = name.replace(Regex("[/\\\\\u0000:]"), "_").take(80).ifEmpty { "imported" }
+        val dir = File(inboxSpace(context), subdir).apply { mkdirs() }
+        var target = File(dir, name)
+        var n = 2
+        while (target.exists()) {
+            target = File(dir, "${target.nameWithoutExtension}-$n.${target.extension}")
+            n++
+        }
+        return runCatching {
+            resolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            } ?: return null
+            target
+        }.getOrNull()
     }
 
     /** 确保目录存在且 rwx（app uid 属主；x 位是脚本/二进制可执行的前提）。 */
@@ -84,6 +248,23 @@ object EnvKit {
     fun isReady(context: Context): Boolean =
         File(cellRoot(context), READY_MARKER).exists() && cfrun(context).canExecute()
 
+    /** 应用外部私有目录（免权限可读写；无外置存储/未挂载时系统返回 null）。 */
+    private fun externalFilesDir(context: Context): File? =
+        runCatching { context.getExternalFilesDir(null) }.getOrNull()
+
+    /**
+     * 安卓侧可共享的存储根：主外部存储 → /sdcard → 应用外部私有目录，取首个存在且可读的；
+     * 都拿不到返回 null。**不申请权限、不弹 UI**：没权限时 /storage/emulated/0 的
+     * canRead() 为假，自然落到免权限的外私目录，最差纯沙盒 —— 静默降级。
+     *
+     * 判定顺序必须与 [cfrunScript] 生成的候选列表逐项一致：内核拿到的
+     * `CF_ANDROID_STORAGE` 就是 guest 里 `$CELL/mnt/android` 的源。
+     */
+    private fun androidStorage(context: Context): File? =
+        listOf(File("/storage/emulated/0"), File("/sdcard"), externalFilesDir(context))
+            .filterNotNull()
+            .firstOrNull { it.exists() && it.canRead() }
+
     /**
      * 内核进程的完整环境（CoreService 启动内核时注入；内核 spawn 的命令继承之，
      * 与 cfrun/rootfs 看到的世界完全一致）。
@@ -96,6 +277,9 @@ object EnvKit {
         put("CF_EXEC_WRAPPER", "/system/bin/sh " + cfrun(context).absolutePath)
         // 防误判 Termux（IsTermux 唯一判据是 PREFIX）
         put("PROOT_TMP_DIR", tmpDir(context).absolutePath)
+        // 安卓侧存储的实际可用路径（与 guest 里 $CELL/mnt/android 同源）；空串 = 本次没有
+        // 可用存储，调用方据此降级（不申请权限、不重试）。供内核与诊断日志使用。
+        put("CF_ANDROID_STORAGE", androidStorage(context)?.absolutePath.orEmpty())
     }
 
     fun refresh(context: Context) {
@@ -218,7 +402,7 @@ object EnvKit {
     private fun syncCfrun(context: Context) {
         runCatching {
             val f = cfrun(context)
-            val script = cfrunScript(cellRoot(context))
+            val script = cfrunScript(cellRoot(context), externalFilesDir(context))
             if (f.readText() != script) {
                 f.writeText(script)
                 f.setExecutable(true, false)
@@ -311,6 +495,9 @@ object EnvKit {
         log(context, "prepare: 开始（cell=${cell.absolutePath}）")
         tmpDir(context).mkdirs()
         usrBin(context).mkdirs()
+        // 存储稳定入口的挂载点：宿主先建好（$CELL 整体绑进 guest，guest 里同路径可见），
+        // cfrun 只在有可用候选时才往上面叠绑；没有可用存储时它就是个空目录
+        androidMnt(context).mkdirs()
 
         // 1) proot 工具件（~140KB）
         status.value = Status.Preparing("安装 proot", 5)
@@ -325,7 +512,7 @@ object EnvKit {
 
         // 3) 统一执行入口
         status.value = Status.Preparing("写入执行入口", 96)
-        cfrun(context).writeText(cfrunScript(cell))
+        cfrun(context).writeText(cfrunScript(cell, externalFilesDir(context)))
         cfrun(context).setExecutable(true, false)
         File(cell, READY_MARKER).writeText("alpine-3.24.3/proot-5.1.107.101\n")
         log(context, "prepare: 完成")
@@ -338,8 +525,10 @@ object EnvKit {
      * rootfs 就绪：一律经 proot 进 Alpine 执行（PATH=/usr/bin → python/go/gcc
      * 由 apk 安装在 rootfs 里，与宿主同一棵 $CELL 树）；rootfs 缺席：退化为
      * 直执行（静态/bionic 二进制仍可用）。`--` 后是原始命令字符串。
+     *
+     * [externalFiles] 应用外部私有目录（写进候选列表兜底）；null 表示本次拿不到。
      */
-    private fun cfrunScript(cell: File): String = """
+    private fun cfrunScript(cell: File, externalFiles: File?): String = """
         #!/system/bin/sh
         # 由 EnvKit 生成 —— 路径是 bake 死的绝对值，勿手工迁移目录。
         # proot 离开 Termux 原生路径后必须显式给齐环境（坑记 AGENTS P-014）：
@@ -355,7 +544,10 @@ object EnvKit {
         export PROOT_TMP_DIR="${'$'}CELL/tmp"
         export PROOT_LOADER="${'$'}USR/libexec/proot/loader"
         export LD_LIBRARY_PATH="${'$'}USR/lib${'$'}{LD_LIBRARY_PATH:+:${'$'}LD_LIBRARY_PATH}"
-        mkdir -p "${'$'}PROOT_TMP_DIR"
+        # 第二个目录是安卓存储稳定入口的挂载点（宿主与 guest 同一路径）：有可用候选才
+        # 往上叠绑，没有就剩个空目录 —— 空目录不影响任何沙盒内命令。与 tmp 合并成一次
+        # mkdir，免得每条命令多 spawn 一个进程。
+        mkdir -p "${'$'}PROOT_TMP_DIR" "${'$'}CELL/mnt/android"
         # -0 = fake root：guest 里 geteuid() 返回 0。
         # 缺了它，Alpine 的 apk 会以普通 uid 运行并拒绝写 /lib/apk/db
         # （真机实测：35 个包全部下载安装完成，最后一步
@@ -366,6 +558,26 @@ object EnvKit {
           for D in /system/bin /system/lib64 /system/lib /system/etc; do
             [ -e "${'$'}D" ] && BINDS="${'$'}BINDS -b ${'$'}D:${'$'}D"
           done
+          # 安卓侧存储：候选顺序与 EnvKit.androidStorage 一致（改顺序必须两边一起改）：
+          #   /storage/emulated/0  主外部存储；没有存储权限时 -r 为假 → 静默跳过
+          #   /sdcard              多数 ROM 是上者的符号链接，绑它只为让写死 /sdcard/xx
+          #                        的老脚本也能用（重复绑定无害）
+          #   应用外部私有目录     免权限可读写，最后兜底
+          # 判据 -e && -r：不可读的目录绑进去 guest 也进不去（权限在宿主侧判定）。
+          # 候选路径不含空格，故与上面系统目录一样按空格拼进 BINDS 即可。
+          STORAGE=""
+          for D in ${storageCandidates(externalFiles)}; do
+            if [ -e "${'$'}D" ] && [ -r "${'$'}D" ]; then
+              BINDS="${'$'}BINDS -b ${'$'}D:${'$'}D"
+              [ -n "${'$'}STORAGE" ] || STORAGE="${'$'}D"
+            fi
+          done
+          # 首个可用者叠绑到稳定入口：CELL 已整体绑进 guest，这里在其子目录上再叠一层
+          # （proot 后绑覆盖先绑），于是 guest 里 CELL/mnt/android 就是安卓存储根，
+          # 换设备、换权限状态时这个路径都不变。取不到就保持空目录。
+          if [ -n "${'$'}STORAGE" ]; then
+            BINDS="${'$'}BINDS -b ${'$'}STORAGE:${'$'}CELL/mnt/android"
+          fi
           # 环境在宿主侧 export，proot 原样带给 guest —— 不经 /usr/bin/env 中转，少一个 exec 失败点
           export HOME="${'$'}CELL"
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -384,6 +596,16 @@ object EnvKit {
           exec /system/bin/sh -c "${'$'}CMD"
         fi
     """.trimIndent() + "\n"
+
+    /**
+     * cfrun 的安卓存储候选列表（顺序 = 优先级，与 [androidStorage] 逐项对应）。
+     * 每项加引号，防路径含空格被按词拆开；null 候选直接不列。
+     */
+    private fun storageCandidates(externalFiles: File?): String = listOfNotNull(
+        "/storage/emulated/0",
+        "/sdcard",
+        externalFiles?.absolutePath,
+    ).joinToString(" ") { "\"$it\"" }
 
     // ---------------------------------------------------------------- tar.gz
 

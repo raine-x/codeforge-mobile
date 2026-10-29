@@ -1,15 +1,29 @@
 package app.codeforge.ui.theme
 
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
@@ -132,4 +146,181 @@ fun CodeForgeTheme(
         typography = AppTypography,
         content = content,
     )
+}
+
+// ---------------------------------------------------------------- 自定义背景
+
+/**
+ * 当前生效的「背景上的文字色」（null = 用配色方案自己的取值）。
+ *
+ * 由 [AppBackground] 提供：需要直接压在背景图上画字的组件可以读它，
+ * 不必各自再算一遍亮度。
+ */
+val LocalAppTextColor = staticCompositionLocalOf<Color?> { null }
+
+/**
+ * 外观层入口：背景图 + 模糊 + 亮度 + 文字色。
+ *
+ * 由 B 在 AppRoot 里包住整棵界面（`AppBackground { ... }`），本文件不碰 AppRoot。
+ *
+ * 规则（对应用户要求）：
+ *  - 背景图：从 [AppSettings.backgroundImagePath] 读本地文件，等比裁满；
+ *  - 模糊：`Modifier.blur`，RenderEffect 需要 API 31+，低版本系统级忽略（不崩、不报错）；
+ *  - 亮度：低于 100 叠黑、高于 100 叠白 —— 用覆盖层而不是调色板，
+ *    因为图片是位图、没法像矢量那样改色；
+ *  - 文字色：手动设置的优先；没设就按**背景有效亮度**自动判定，
+ *    亮度低（< 0.46）切白字，其余保持主题默认（浅色主题的本就是近黑）。
+ *    判定用「原图平均亮度 × 亮度百分比」，不是屏幕像素采样 —— 屏幕采样拿不到
+ *    模糊后的值，且每帧重算代价太大。
+ *
+ * 设了背景图时，surface 角色会带一点透明度，让背景透出来；同时若背景偏暗，
+ * 整套配色切到深色方案 —— 否则浅色卡面 + 白字会变成白底白字。
+ */
+@Composable
+fun AppBackground(
+    modifier: Modifier = Modifier,
+    content: @Composable BoxScope.() -> Unit,
+) {
+    val settings = app.codeforge.ui.settings.AppSettings
+    val path = settings.backgroundImagePath.value
+    val blurDp = settings.backgroundBlur.intValue
+    val brightness = settings.backgroundBrightness.intValue.coerceIn(0, 200)
+    val overrideSpec = settings.textColorOverride.value
+
+    val bitmap = remember(path) {
+        if (path.isBlank()) null else BackgroundImageCache.load(path)
+    }
+    val luminance = remember(bitmap) {
+        bitmap?.let { BackgroundImageCache.luminance(it) }
+    }
+    // 亮度百分比作用在平均亮度上：100 = 原样
+    val effective = luminance?.let { (it * brightness / 100f).coerceIn(0f, 1f) }
+    val darkBackground = effective != null && effective < 0.46f
+
+    val manual = remember(overrideSpec) { parseColorSpec(overrideSpec) }
+    val textColor = manual ?: if (darkBackground) Color.White else null
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            // 有图时垫黑底：图片解码失败/尺寸不匹配时不会露出奇怪的白边
+            .background(if (bitmap == null) MaterialTheme.colorScheme.background else Color.Black),
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .then(if (blurDp > 0) Modifier.blur(blurDp.dp) else Modifier),
+            )
+            if (brightness != 100) {
+                val scrim = if (brightness < 100) {
+                    Color.Black.copy(alpha = (100 - brightness) / 100f * 0.8f)
+                } else {
+                    Color.White.copy(alpha = (brightness - 100) / 100f * 0.6f)
+                }
+                Box(modifier = Modifier.fillMaxSize().background(scrim))
+            }
+        }
+
+        CompositionLocalProvider(LocalAppTextColor provides textColor) {
+            val scheme = backgroundScheme(hasImage = bitmap != null, dark = darkBackground, textColor = textColor)
+            if (scheme != null) {
+                MaterialTheme(colorScheme = scheme) { content() }
+            } else {
+                content()
+            }
+        }
+    }
+}
+
+/**
+ * 背景图下的配色方案：透明底 + 半透明卡面 + 由文字色决定的正文色。
+ * 返回 null 表示「不需要改配色」（没图、也没手动指定文字色）。
+ */
+@Composable
+private fun backgroundScheme(hasImage: Boolean, dark: Boolean, textColor: Color?): ColorScheme? {
+    if (!hasImage && textColor == null) return null
+    if (hasImage && dark) {
+        return DarkColors.copy(
+            background = Color.Transparent,
+            surface = DarkColors.surface.copy(alpha = 0.92f),
+            surfaceVariant = DarkColors.surfaceVariant.copy(alpha = 0.86f),
+            onBackground = textColor ?: DarkColors.onBackground,
+            onSurface = textColor ?: DarkColors.onSurface,
+            onSurfaceVariant = textColor?.copy(alpha = 0.72f) ?: DarkColors.onSurfaceVariant,
+        )
+    }
+    if (hasImage) {
+        return LightColors.copy(
+            background = Color.Transparent,
+            surface = LightColors.surface.copy(alpha = 0.92f),
+            surfaceVariant = LightColors.surfaceVariant.copy(alpha = 0.88f),
+            onBackground = textColor ?: LightColors.onBackground,
+            onSurface = textColor ?: LightColors.onSurface,
+            onSurfaceVariant = textColor?.copy(alpha = 0.72f) ?: LightColors.onSurfaceVariant,
+        )
+    }
+    // 只有手动文字色：只改文字，卡面保持原配色
+    val base = MaterialTheme.colorScheme
+    return base.copy(
+        onBackground = textColor ?: base.onBackground,
+        onSurface = textColor ?: base.onSurface,
+    )
+}
+
+/** 解析 `#RRGGBB` / `#AARRGGBB` / `RRGGBB`；空串或非法值返回 null。 */
+private fun parseColorSpec(spec: String): Color? {
+    val t = spec.trim().removePrefix("#")
+    return when (t.length) {
+        6 -> t.toLongOrNull(16)?.let { Color(0xFF000000L or it) }
+        8 -> t.toLongOrNull(16)?.let { Color(it) }
+        else -> null
+    }
+}
+
+/**
+ * 背景图缓存：只留一张（设置里同时只有一个背景图）。
+ *
+ * 解码在主线程做，但带 `inSampleSize` 降到 1440px 以内，一张普通手机照片
+ * 几毫秒到几十毫秒，且只在 path 变化时发生一次 —— 不值得为它引 Coil。
+ */
+private object BackgroundImageCache {
+    private var cachedPath: String? = null
+    private var cached: android.graphics.Bitmap? = null
+
+    fun load(path: String): android.graphics.Bitmap? {
+        if (path == cachedPath) return cached
+        val decoded = runCatching {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(path, bounds)
+            var sample = 1
+            while (bounds.outWidth / sample > 1440 || bounds.outHeight / sample > 1440) sample *= 2
+            android.graphics.BitmapFactory.decodeFile(
+                path,
+                android.graphics.BitmapFactory.Options().apply { inSampleSize = sample },
+            )
+        }.getOrNull()
+        cachedPath = path
+        cached = decoded
+        return decoded
+    }
+
+    /** 平均亮度 0..1：缩到 16×16 再算，不逐像素扫整张图。 */
+    fun luminance(bitmap: android.graphics.Bitmap): Float {
+        val small = android.graphics.Bitmap.createScaledBitmap(bitmap, 16, 16, true)
+        val pixels = IntArray(16 * 16)
+        small.getPixels(pixels, 0, 16, 0, 0, 16, 16)
+        var sum = 0f
+        for (p in pixels) {
+            val r = (p shr 16) and 0xFF
+            val g = (p shr 8) and 0xFF
+            val b = p and 0xFF
+            sum += (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255f
+        }
+        if (small !== bitmap) small.recycle()
+        return sum / pixels.size
+    }
 }

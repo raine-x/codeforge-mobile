@@ -236,6 +236,118 @@ fun ToolCard(
     }
 }
 
+// ---------------------------------------------------------------- 探索分组
+
+/**
+ * 只读工具判定：探索阶段的「看」类工具可以折叠成一行。
+ *
+ * 写类工具（write_file / edit_file / delete_file / run_command）一律**不进组** ——
+ * 用户对「改了哪个文件」必须一眼可见，折叠等于藏证据。
+ * 带插件前缀的名字（`oss.read_file`）按最后一段匹配，与 [toolLabel] 同一套规则。
+ */
+fun isReadOnlyTool(name: String?): Boolean {
+    val local = (name ?: return false).substringAfter('.')
+    if (local.startsWith("web_search") || local.startsWith("web_fetch")) return true
+    return local in READ_ONLY_TOOLS
+}
+
+private val READ_ONLY_TOOLS = setOf(
+    "read_file", "read", "list_dir", "list_files", "search_files",
+    "grep", "glob", "search", "fetch_url", "read_url",
+)
+
+/**
+ * 「已探索 N 项」折叠块：把连续的只读工具收成一行。
+ *
+ * 为什么必须折叠：一轮里 read_file / list_dir / search_files 常常连着十几次，
+ * 全展开会把真正的正文挤出屏幕，而它们的信息量对用户只是「它在看哪些文件」。
+ *
+ * [stateKey] 是展开状态的持久化键 —— 用户展开后必须保住，否则流式输出每来一帧
+ * 就重排一次、刚展开的组又收回去。由调用方用「组内首条工具 id」构造。
+ */
+@Composable
+fun ExploreGroup(
+    tools: List<ToolCall>,
+    onFetchOutput: ((String) -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    stateKey: String = tools.firstOrNull()?.id.orEmpty(),
+) {
+    if (tools.isEmpty()) return
+    var expanded by rememberSaveable(stateKey) { mutableStateOf(false) }
+    val running = tools.count { it.state == ToolState.Running }
+    val failed = tools.count { it.state == ToolState.Failed }
+
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { expanded = !expanded }
+                .padding(horizontal = 4.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (running > 0) {
+                ArcSpinner(color = Clay, size = 12.dp)
+            } else {
+                GlyphIcon(
+                    glyph = Glyph.Search,
+                    size = 13.dp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    strokeWidth = 1.6.dp,
+                )
+            }
+            Text(
+                text = buildString {
+                    append(if (running > 0) "正在探索 " else "已探索 ")
+                    append(tools.size)
+                    append(" 项")
+                    if (failed > 0 && running == 0) {
+                        append(" · ")
+                        append(failed)
+                        append(" 项失败")
+                    }
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (failed > 0 && running == 0) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(start = 8.dp)
+                    .weight(1f),
+            )
+            GlyphIcon(
+                glyph = Glyph.Chevron,
+                size = 12.dp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .padding(start = 4.dp)
+                    .rotate(if (expanded) 90f else 0f),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(tween(120)) + expandVertically(tween(160)),
+            exit = fadeOut(tween(90)) + shrinkVertically(tween(140)),
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 10.dp, top = 2.dp),
+            ) {
+                tools.forEach { tool ->
+                    val fetch = if (tool.output == null && tool.state == ToolState.Ok) onFetchOutput else null
+                    ToolCard(tool = tool, onFetchOutput = fetch)
+                }
+            }
+        }
+    }
+}
+
 /** 运行中的圆点做呼吸动画，静止状态就是实心点 —— 一眼能看出「还在跑」。 */
 @Composable
 private fun StatusDot(state: ToolState, color: Color) {

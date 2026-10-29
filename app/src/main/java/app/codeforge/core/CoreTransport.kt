@@ -92,6 +92,16 @@ sealed interface CoreEvent {
     /** 审批已结束（超时/被撤回），界面上要把卡片收掉。 */
     data class ApprovalResolved(val approvalId: String) : CoreEvent
 
+    /** 审批超时：与「用户拒绝」必须分开提示（内核 15 分钟独立超时）。 */
+    data class ApprovalTimedOut(
+        val approvalId: String,
+        val sessionId: String,
+        val message: String,
+    ) : CoreEvent
+
+    /** 目标模式账本快照（goal 帧）。 */
+    data class Goal(val status: app.codeforge.model.GoalStatus) : CoreEvent
+
     /**
      * 流程性通知：重试 / 压缩 / 回滚 / 转向 / 一般提示。
      * 渲染成消息流里的通知行，不打断阅读。
@@ -126,6 +136,18 @@ sealed interface CoreEvent {
         val steps: List<app.codeforge.model.CheckpointStep> = emptyList(),
         val editables: List<app.codeforge.model.EditableUserMessage> = emptyList(),
         val resumeBack: Int = -1,
+    ) : CoreEvent
+
+    /**
+     * 后台任务状态变化（task 帧）。
+     *
+     * 只带 id 与终态：输出可能有几十 KB，逐帧推送会把连接挤爆。
+     * 壳侧收到后重拉 GET /api/tasks 对齐列表与日志。
+     */
+    data class TaskChanged(
+        val id: String,
+        val status: String,
+        val exitCode: Int = 0,
     ) : CoreEvent
 }
 
@@ -176,11 +198,26 @@ interface CoreTransport {
     /** 切换到某个会话。 */
     fun loadSession(sessionId: String)
 
+    /**
+     * 只告知传输层「当前会话是哪个」，不发任何帧。
+     *
+     * 新建会话（session 帧）与历史快照（history 帧）都会确立当前会话；
+     * 传输层上行帧（user_message/steer/cancel …）都带 session_id，必须与
+     * 界面显示的会话**同一口径**，否则消息会落进旧会话或触发内核自动新建
+     * （问题 2 的根因之一）。默认空实现供 Mock 使用。
+     */
+    fun setCurrentSession(sessionId: String) {}
+
     // ---- 断点三件套（B6-P0）：内核未就绪/测试模型下静默空操作 ----
     /** 编辑重发：截断到 back 锚点的用户消息并换文本重跑（内核原语义）。 */
     fun editUserMessage(text: String, back: Int, rollbackFiles: Boolean = true) {}
     /** 继续上一轮（断点续跑：不截断不回退、不追加假提问）。 */
     fun continueTurn() {}
+    /**
+     * 断点重试：保留用户原话，截掉其后未完成的回复/工具结果并可选回退文件。
+     * [back] 是距最后一条用户消息的距离（0 = 最后一条）。
+     */
+    fun retry(back: Int, rollbackFiles: Boolean = true) {}
     /** 手动回滚：工作区文件恢复到第 toStep 步之前。 */
     fun rewindFiles(toStep: Int) {}
     /** 拉一次最新检查点列表（打开回滚菜单时调）。 */

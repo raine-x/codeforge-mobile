@@ -298,3 +298,43 @@ int  codeforge_reload_config(void);   // 设置页保存后热重载
 3. 状态：**Go 唯一真相源 + WS 推送 + REST 快照**（推荐） / Kotlin 本地持久化 / 双写。
 
 确认后从**阶段 1（会话归属与持久化）**开始，按阶段验收，不跨阶段合并。
+
+---
+
+## 9. 实现进度（2026-10-28 本轮）
+
+已完成并出包：
+
+- 会话归属：`sendMessage` 带 `session_id`；`cancel` 带 `session_id`；新建只在显式操作时发生。
+- 工具文案：`run_command` 与 Web 对齐为「运行」；全量 Kotlin 单测恢复通过。
+- 撤销：Go `/api/undo` 支持 GET 查深度 / POST 带 `session_id` 撤销；Android 会话菜单新增「撤销最近一次文件写入」。
+- 目标模式：Go 新增 `goal` 帧与 `GET /api/goal`；Android 新增目标状态条（目标/轮次/判定/findings）。
+- 审批：Go 新增 `hitl_timeout` / `hitl_resolved` 帧；Android 超时卡收掉并显示独立警告，断开连接时清空过期卡片。
+- 断点：`CoreTransport.retry` 上行接通；检查点弹层新增「重试未完成的轮次」。
+- 记忆：KernelApi 增加 add/update；设置页内核区新增记忆列表、新增与删除。
+- 附件：Composer 落盘改为同目录临时文件 + rename（内核 casWrite 同口径），仍保留在会话空间 attachments。
+- 内核：`libcodeforge.so` 重编（arm64，17,301,798 字节），产物包含 `api/goal`、`hitl_timeout`、`goalEvent`、`UndoDepthFor` 等符号。
+
+仍然未完成（不静默删除）：
+
+| 项 | 状态 | 阻塞点/原因 |
+|---|---|---|
+| 审批跨 WS 重连存活 | TODO | `wsApprover.pending` 与 `wsClient.runs` 都是连接级；要真正存活需把运行注册表提升到 Server 级并支持事件重绑定，属 Go 侧结构性改动 |
+| `/api/tree` 文件树 | TODO | 无 Android UI；手机端文件浏览入口需单独设计 |
+| `/api/appearance*` 外观背景 | TODO | Android 有独立主题，未把背景图接口映射到 Compose |
+| `/api/workspace` 工作区选择 | 部分 | SAF 返回 content URI，不是内核要求的文件系统路径；`pick_folder` 在 Android 不可用（平台限制），只能选应用私有空间或已映射目录 |
+| `/api/memory` PATCH 编辑 UI | 部分 | API 已接，列表只支持新增/删除，未做就地编辑 |
+| Web 端 7,607 行功能逐项 parity | TODO | 尚未建立完整对照表（阶段 6） |
+| 真机验证 | TODO | 本机无连接设备；JNI/撤销/目标/审批超时均只有编译与接口级验证 |
+
+平台明确不允许/不适用：
+
+- `/api/pick_folder`、`/api/pick_file`：Android 用 SAF，服务端无法弹系统选择器。
+- `/api/termux/tools`：非 Termux 环境不适用。
+- 服务端 `Go` 文件系统对话框/宿主浏览器打开：Android 无对应语义。
+
+## 10. 下一轮建议
+
+1. 先做 Go 侧运行注册表改造（审批与运行跨连接存活），这是唯一会影响所有工具调用的结构性风险。
+2. 再做 `/api/tree` + 工作区入口（应用私有空间 + SAF 导入目录）。
+3. 最后做 `ui.js` 逐项对照表与真机回归。

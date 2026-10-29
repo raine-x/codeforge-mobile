@@ -105,12 +105,25 @@ internal fun StreamingTailBlock(text: String) {
 
 private val blockCardShape = RoundedCornerShape(12.dp)
 
+/**
+ * 当前消息所属工作区的根（绝对路径），由 AppRoot 在消息区外提供。
+ *
+ * 附件在消息里存的是**工作区相对路径**（`attachments/xxx`，内核 history 的原样），
+ * 而工作区可能是项目目录、也可能是应用私有 inbox —— 不能用固定的
+ * `filesDir/workspace` 去猜（问题 1：发送后缩略图一直转圈就是猜错了根）。
+ */
+val LocalAttachmentRoot = androidx.compose.runtime.staticCompositionLocalOf { "" }
+
 /** 播放器/读取器用的真实数据源：http(s) 原样，其余解析到工作区真实文件。 */
-internal fun mediaDataSource(ctx: android.content.Context, url: String): String =
+internal fun mediaDataSource(
+    ctx: android.content.Context,
+    url: String,
+    root: String = "",
+): String =
     if (url.startsWith("http://") || url.startsWith("https://")) {
         url
     } else {
-        attachmentFile(ctx, url).absolutePath
+        attachmentFile(ctx, url, root).absolutePath
     }
 
 /** 图片位图缓存：聊天列表来回滚动、内联图与块级图共用。 */
@@ -127,6 +140,7 @@ internal val mediaHttp = OkHttpClient.Builder()
 internal suspend fun loadMediaBitmap(
     ctx: android.content.Context,
     url: String,
+    root: String = "",
 ): android.graphics.Bitmap? {
     bitmapCache.get(url)?.let { return it }
     return withContext(Dispatchers.IO) {
@@ -136,7 +150,7 @@ internal suspend fun loadMediaBitmap(
                     if (!r.isSuccessful) null else r.body?.bytes()
                 }
             } else {
-                attachmentFile(ctx, url).takeIf { it.exists() }?.readBytes()
+                attachmentFile(ctx, url, root).takeIf { it.exists() }?.readBytes()
             }
             bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
         }.getOrNull()?.also { bitmapCache.put(url, it) }
@@ -203,13 +217,14 @@ private fun svgAspect(svg: String): Float? {
 @Composable
 fun MessageImageBlock(url: String, alt: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
+    val root = LocalAttachmentRoot.current
     var state by remember(url) { mutableStateOf<ImgState>(ImgState.Loading) }
     var fullscreen by remember(url) { mutableStateOf(false) }
 
-    LaunchedEffect(url, ctx) {
+    LaunchedEffect(url, ctx, root) {
         bitmapCache.get(url)?.let { state = ImgState.Ok(it); return@LaunchedEffect }
         state = ImgState.Loading
-        val bmp = loadMediaBitmap(ctx, url)
+        val bmp = loadMediaBitmap(ctx, url, root)
         if (bmp != null) {
             state = ImgState.Ok(bmp)
         } else {
@@ -249,6 +264,7 @@ fun MessageImageBlock(url: String, alt: String, modifier: Modifier = Modifier) {
 @Composable
 fun MessageVideoBlock(url: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
+    val root = LocalAttachmentRoot.current
     val view = remember { android.widget.VideoView(ctx) }
     DisposableEffect(url) { onDispose { view.stopPlayback() } }
 
@@ -260,7 +276,7 @@ fun MessageVideoBlock(url: String, modifier: Modifier = Modifier) {
             .background(Color.Black),
         factory = { view },
         update = { vv ->
-            val source = mediaDataSource(ctx, url)
+            val source = mediaDataSource(ctx, url, root)
             if (vv.tag != source) {
                 vv.tag = source
                 vv.setMediaController(android.widget.MediaController(ctx))
@@ -281,6 +297,7 @@ fun MessageVideoBlock(url: String, modifier: Modifier = Modifier) {
 @Composable
 fun MessageAudioBlock(url: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
+    val root = LocalAttachmentRoot.current
     var prepared by remember(url) { mutableStateOf(false) }
     var playing by remember(url) { mutableStateOf(false) }
     var finished by remember(url) { mutableStateOf(false) }
@@ -309,7 +326,7 @@ fun MessageAudioBlock(url: String, modifier: Modifier = Modifier) {
         when {
             !prepared -> {
                 runCatching {
-                    player.setDataSource(mediaDataSource(ctx, url))
+                    player.setDataSource(mediaDataSource(ctx, url, root))
                     player.setOnPreparedListener {
                         prepared = true
                         duration = it.duration
@@ -428,13 +445,23 @@ fun String.isImagePath(): Boolean {
         l.endsWith(".webp") || l.endsWith(".gif")
 }
 
-/** 附件相对路径 → 工作区真实文件（CoreService 以 filesDir/workspace 为 -workdir）。 */
-internal fun attachmentFile(ctx: android.content.Context, rel: String): java.io.File {
+/**
+ * 附件路径 → 工作区真实文件。
+ *
+ * 绝对路径原样返回（本地暂存 / 内核回传的绝对路径）；相对路径按 [root]
+ * 解析 —— [root] 是当前会话的工作区根，由 [LocalAttachmentRoot] 提供。
+ * 只有 root 缺失时才退回老的 `filesDir/workspace`（旧数据兜底）。
+ */
+internal fun attachmentFile(
+    ctx: android.content.Context,
+    rel: String,
+    root: String = "",
+): java.io.File {
     val clean = rel.removePrefix("file://")
-    return if (java.io.File(clean).isAbsolute) java.io.File(clean) else java.io.File(
-        java.io.File(ctx.filesDir, "workspace"),
-        clean,
-    )
+    val f = java.io.File(clean)
+    if (f.isAbsolute) return f
+    if (root.isNotBlank()) return java.io.File(root, clean)
+    return java.io.File(java.io.File(ctx.filesDir, "workspace"), clean)
 }
 
 /** 缩略图解码：按目标尺寸取样，避免整图进内存。 */
@@ -452,9 +479,10 @@ internal fun decodeThumb(file: java.io.File, target: Int): android.graphics.Bitm
 @Composable
 internal fun LocalAttachmentThumb(path: String, onClick: () -> Unit) {
     val ctx = LocalContext.current
-    var bmp by remember(path) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    LaunchedEffect(path) {
-        bmp = withContext(Dispatchers.IO) { decodeThumb(attachmentFile(ctx, path), 512) }
+    val root = LocalAttachmentRoot.current
+    var bmp by remember(path, root) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(path, root) {
+        bmp = withContext(Dispatchers.IO) { decodeThumb(attachmentFile(ctx, path, root), 512) }
     }
     Box(
         modifier = Modifier
@@ -530,10 +558,11 @@ internal fun FullscreenBitmapViewer(bitmap: android.graphics.Bitmap, onClose: ()
 @Composable
 internal fun FullscreenImageViewer(path: String, onClose: () -> Unit) {
     val ctx = LocalContext.current
-    var bmp by remember(path) { mutableStateOf<android.graphics.Bitmap?>(null) }
-    LaunchedEffect(path) {
+    val root = LocalAttachmentRoot.current
+    var bmp by remember(path, root) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    LaunchedEffect(path, root) {
         if (path.isImagePath()) {
-            bmp = withContext(Dispatchers.IO) { decodeThumb(attachmentFile(ctx, path), 2048) }
+            bmp = withContext(Dispatchers.IO) { decodeThumb(attachmentFile(ctx, path, root), 2048) }
         }
     }
     Box(Modifier) {

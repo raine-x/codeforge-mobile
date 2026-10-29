@@ -257,6 +257,16 @@ class HttpCoreTransport(
         send(JSONObject().put("type", "continue_turn").put("session_id", currentSession))
     }
 
+    override fun retry(back: Int, rollbackFiles: Boolean) {
+        send(
+            JSONObject()
+                .put("type", "retry")
+                .put("session_id", currentSession)
+                .put("back", back.coerceAtLeast(0))
+                .put("rollback_files", rollbackFiles),
+        )
+    }
+
     override fun rewindFiles(toStep: Int) {
         send(
             JSONObject()
@@ -286,6 +296,18 @@ class HttpCoreTransport(
     override fun loadSession(sessionId: String) {
         currentSession = sessionId
         send(JSONObject().put("type", "load_session").put("session_id", sessionId))
+    }
+
+    /**
+     * 同步当前会话，不发帧。
+     *
+     * 新建会话成功后内核只回 `session` 帧（不是 `history`），旧实现只在
+     * history 分支里写 currentSession —— 于是新会话的下一条 user_message
+     * 仍带旧会话 id：要么把消息送进旧会话，要么在内核已经重启/清理后
+     * 因 id 为空而触发 History.Create，表现就是「发一句又自动新开一个对话」。
+     */
+    override fun setCurrentSession(sessionId: String) {
+        if (sessionId.isNotBlank()) currentSession = sessionId
     }
 
     override fun newSession(): Boolean =
@@ -330,9 +352,13 @@ class HttpCoreTransport(
             // title 必须带上：新建会话时内核回的 title 是空的，但重命名/切换
             // 时是真标题。之前丢掉它，顶栏会一直显示上一个会话的名字，
             // 用户以为「新建没成功」。
-            "session" -> _events.tryEmit(
-                CoreEvent.SessionClaimed(sid, o.optString("title")),
-            )
+            "session" -> {
+                // 新建会话即确立当前会话：后续上行帧必须带它（见 setCurrentSession 注释）
+                currentSession = sid
+                _events.tryEmit(
+                    CoreEvent.SessionClaimed(sid, o.optString("title")),
+                )
+            }
 
             // 注意：sessions 帧的数组键是 items，不是 sessions —— 与 ready 帧不同
             "sessions" -> {
@@ -346,7 +372,7 @@ class HttpCoreTransport(
                 _events.tryEmit(
                     CoreEvent.History(
                         sessionId = sid,
-                        title = o.optString("title", "会话"),
+                        title = displayTitle(o.optString("title", "会话")),
                         messages = parseHistory(arr),
                     ),
                 )
@@ -354,6 +380,16 @@ class HttpCoreTransport(
 
             "busy" -> _events.tryEmit(CoreEvent.Busy(sid))
             "idle", "done" -> _events.tryEmit(CoreEvent.Idle(sid))
+
+            // 后台任务状态变化（pkg/tasks 的 Event → Server 广播）。
+            // 帧里只有 id/状态：输出由 /api/tasks 拉取，避免大日志挤占 WS。
+            "task" -> _events.tryEmit(
+                CoreEvent.TaskChanged(
+                    id = o.optString("id"),
+                    status = o.optString("status", "running"),
+                    exitCode = o.optInt("exit_code", 0),
+                ),
+            )
 
             "text" -> _events.tryEmit(CoreEvent.Delta(sid, o.optString("text")))
 
@@ -407,6 +443,34 @@ class HttpCoreTransport(
                     ),
                 )
             }
+
+            "hitl_timeout" -> _events.tryEmit(
+                CoreEvent.ApprovalTimedOut(
+                    approvalId = o.optString("approval_id"),
+                    sessionId = sid,
+                    message = o.optString("message", "请求操作审批超时，该操作未执行"),
+                ),
+            )
+
+            "hitl_resolved" -> _events.tryEmit(
+                CoreEvent.ApprovalResolved(o.optString("approval_id")),
+            )
+
+            // 目标模式账本（新增契约）：goal / round / max_rounds / verdict / findings
+            "goal" -> _events.tryEmit(
+                CoreEvent.Goal(
+                    app.codeforge.model.GoalStatus(
+                        goal = o.optString("goal"),
+                        round = o.optInt("round", 0),
+                        maxRounds = o.optInt("max_rounds", 0),
+                        verdict = o.optString("verdict"),
+                        findings = o.optString("findings"),
+                        step = o.optInt("step", 0),
+                        open = o.optBoolean("open", false),
+                        exhausted = o.optBoolean("exhausted", false),
+                    ),
+                ),
+            )
 
             "retry" -> {
                 val attempt = o.optInt("attempt", 1)
@@ -557,13 +621,29 @@ class HttpCoreTransport(
                 SessionItem(
                     id = o.optString("id"),
                     // optString 的默认值只在「键不存在」时生效，title 是空串时
-                    // 仍会返回 ""，列表里就是一条看不见的空白行。用 ifBlank 兜住。
-                    title = o.optString("title").ifBlank { "未命名" },
+                    // 仍会返回 ""；占位名统一在这里归一，列表里不会出现空白行。
+                    title = displayTitle(o.optString("title")),
                     updatedAt = o.optLong("updated_at", 0L),
                     busy = o.optBoolean("busy", false),
+                    // 字段名以 agent.SessionMeta 为准：workspace / workspace_name / archived_at
+                    workspace = o.optString("workspace"),
+                    workspaceName = o.optString("workspace_name"),
+                    archived = o.optLong("archived_at", 0L) > 0L,
                 ),
             )
         }
+    }
+
+    /**
+     * 会话标题的展示归一。
+     *
+     * 内核新建会话的默认标题是「新会话」，而界面按需求统一显示「新建会话」；
+     * 首条用户消息发出后内核会自己改成前 24 字（history.go 的 Save），
+     * 这里只处理占位名，不碰用户/内核起的真标题。
+     */
+    private fun displayTitle(raw: String): String = when (raw.trim()) {
+        "", "新会话", "新建会话", "未命名" -> "新建会话"
+        else -> raw
     }
 
     /**

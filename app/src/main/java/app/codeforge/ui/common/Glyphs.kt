@@ -249,6 +249,14 @@ private fun flamePath(d: String): Path {
 enum class Glyph {
     Plus, Copy, Retry, Share, Speaker, ThumbUp, Chevron, Close, ArrowDown, Camera, Photo, FileDoc, Mic, Check, Back,
     ChatBubble, Folder, CodeBrackets, Cube, Gear, Edit,
+    /** 重发：纸飞机轮廓（发送语义，不复用刷新箭头 —— 后者读作「重试」）。 */
+    Resend,
+    /** 继续这一轮：整圆 + 环内右向箭头。刻意不做缺口圆弧，避免与 [Retry] 混淆。 */
+    Resume,
+    /** 折叠/缩略：两枚对向内收的折角，旋转 180° 即「展开」。 */
+    Collapse,
+    /** 搜索：放大镜，探索分组头用。 */
+    Search,
 }
 
 /** 按 Claude outline 风格绘制一枚图标（圆头描边，线宽随尺寸微调）。 */
@@ -274,49 +282,35 @@ fun GlyphIcon(
             }
 
             Glyph.Edit -> {
-                // 铅笔：斜向笔杆 + 笔尖，45° 摆放
-                drawLine(
-                    color, Offset(6 * s, 18 * s), Offset(16 * s, 8 * s),
-                    stroke.width, StrokeCap.Round,
-                )
-                drawLine(
-                    color, Offset(16 * s, 8 * s), Offset(19 * s, 5 * s),
-                    stroke.width, StrokeCap.Round,
-                )
-                drawLine(
-                    color, Offset(19 * s, 5 * s), Offset(21 * s, 7 * s),
-                    stroke.width, StrokeCap.Round,
-                )
-                drawLine(
-                    color, Offset(21 * s, 7 * s), Offset(18 * s, 10 * s),
-                    stroke.width, StrokeCap.Round,
-                )
-                // 笔尖
-                val tip = Path().apply {
-                    moveTo(6 * s, 18 * s)
-                    lineTo(4 * s, 21 * s)
-                    lineTo(9 * s, 20 * s)
+                // 精简线性铅笔：只留笔杆轮廓与笔尖分隔线。
+                // 早期版本在笔尖画了一块实心三角，小尺寸下显得像表情贴纸 ——
+                // 用户明确要求「去可爱化」，这里一律只用描边。
+                val body = Path().apply {
+                    moveTo(4.8f * s, 19.2f * s)
+                    lineTo(6.3f * s, 14.4f * s)
+                    lineTo(14.6f * s, 6.1f * s)
+                    lineTo(17.9f * s, 9.4f * s)
+                    lineTo(9.6f * s, 17.7f * s)
                     close()
                 }
-                drawPath(tip, color)
+                drawPath(body, color, style = stroke)
+                drawLine(
+                    color, Offset(6.3f * s, 14.4f * s), Offset(9.6f * s, 17.7f * s),
+                    stroke.width, StrokeCap.Round,
+                )
             }
 
             Glyph.Copy -> {
-                // 后面的纸
+                // 两张纸错开叠放：后纸完整画、前纸完整画，交叠处靠线宽区分层次。
+                // 不用「缺角」画法 —— 24 单位下缺角反而像撕坏的纸。
                 drawRoundRectPath(
                     color, stroke,
-                    topLeft = Offset(9f, 9f), wh = Offset(11f, 12f), corner = 2f, scale = s,
+                    topLeft = Offset(9f, 3.5f), wh = Offset(11.5f, 12f), corner = 2.5f, scale = s,
                 )
-                // 前面的纸（缺一个角与后面错开）
-                val p = Path().apply {
-                    moveTo(5 * s, 15 * s)
-                    lineTo(5 * s, 5 * s)
-                    quadraticTo(5 * s, 3.5f * s, 6.5f * s, 3.5f * s)
-                    lineTo(12.5f * s, 3.5f * s)
-                    quadraticTo(14 * s, 3.5f * s, 14 * s, 5 * s)
-                    lineTo(14 * s, 6 * s)
-                }
-                drawPath(p, color, style = stroke)
+                drawRoundRectPath(
+                    color, stroke,
+                    topLeft = Offset(3.5f, 8.5f), wh = Offset(11.5f, 12f), corner = 2.5f, scale = s,
+                )
             }
 
             Glyph.Retry -> {
@@ -573,6 +567,52 @@ fun GlyphIcon(
                 }
                 drawPath(cradle, color, style = stroke)
                 drawLine(color, Offset(12 * s, 17.5f * s), Offset(12 * s, 20.5f * s), stroke.width, StrokeCap.Round)
+            }
+
+            Glyph.Resend -> {
+                // 纸飞机：两条斜边收束到右尖，中线是折痕。纯描边、无填充。
+                val plane = Path().apply {
+                    moveTo(3.5f * s, 10.8f * s)
+                    lineTo(20.5f * s, 3.8f * s)
+                    lineTo(14f * s, 20.5f * s)
+                    lineTo(11f * s, 13.3f * s)
+                    close()
+                }
+                drawPath(plane, color, style = stroke)
+                drawLine(color, Offset(11f * s, 13.3f * s), Offset(20.5f * s, 3.8f * s), stroke.width, StrokeCap.Round)
+            }
+
+            Glyph.Resume -> {
+                // 整圆 + 环内右向箭头 = 「继续」。
+                // 不画缺口圆弧 + 顶部钩（那是 Retry 的形状），否则用户会以为点在重试。
+                drawCircle(color, radius = 8.6f * s, center = Offset(12 * s, 12 * s), style = stroke)
+                val arrow = Path().apply {
+                    moveTo(9.6f * s, 7.6f * s)
+                    lineTo(14.2f * s, 12f * s)
+                    lineTo(9.6f * s, 16.4f * s)
+                }
+                drawPath(arrow, color, style = stroke)
+            }
+
+            Glyph.Collapse -> {
+                // 两枚对向内收的折角；调用方旋转 180° 即得「展开」
+                val upper = Path().apply {
+                    moveTo(8f * s, 6.5f * s)
+                    lineTo(12f * s, 10.5f * s)
+                    lineTo(16f * s, 6.5f * s)
+                }
+                val lower = Path().apply {
+                    moveTo(8f * s, 17.5f * s)
+                    lineTo(12f * s, 13.5f * s)
+                    lineTo(16f * s, 17.5f * s)
+                }
+                drawPath(upper, color, style = stroke)
+                drawPath(lower, color, style = stroke)
+            }
+
+            Glyph.Search -> {
+                drawCircle(color, radius = 5.6f * s, center = Offset(10.6f * s, 10.6f * s), style = stroke)
+                drawLine(color, Offset(15f * s, 15f * s), Offset(20f * s, 20f * s), stroke.width, StrokeCap.Round)
             }
         }
     }

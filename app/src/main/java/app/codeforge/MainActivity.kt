@@ -10,11 +10,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
+import androidx.compose.runtime.LaunchedEffect
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.ViewModelProvider
 import app.codeforge.core.CoreService
 import app.codeforge.ui.ChatViewModel
 import app.codeforge.ui.CodeForgeApp
+import app.codeforge.ui.settings.AppSettings
 import app.codeforge.ui.theme.CodeForgeTheme
 
 /**
@@ -85,6 +89,21 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             CodeForgeTheme {
+                // 系统状态栏显隐跟随设置（默认隐藏）。必须在这里读 Compose State，
+                // 读到 .value 才会随设置页的开关变化重跑。
+                // 隐藏后 safeDrawing 的顶 inset 自动变 0，AppRoot 不需要任何改动。
+                val showStatusBar = AppSettings.showStatusBar.value
+                LaunchedEffect(showStatusBar) {
+                    val controller = WindowInsetsControllerCompat(window, window.decorView)
+                    if (showStatusBar) {
+                        controller.show(WindowInsetsCompat.Type.statusBars())
+                    } else {
+                        // 允许用户从顶部上滑临时唤出状态栏，不用退出沉浸去看时间
+                        controller.systemBarsBehavior =
+                            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                        controller.hide(WindowInsetsCompat.Type.statusBars())
+                    }
+                }
                 CodeForgeApp(vm)
             }
         }

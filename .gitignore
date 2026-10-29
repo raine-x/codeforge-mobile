@@ -11,6 +11,7 @@ captures/
 *.aab
 *.keystore
 !debug.keystore
-./workbuddy-ai/
-./zcode/
-./source/
+.workbuddy-ai/
+.zcode/
+.source/
+.envkit/

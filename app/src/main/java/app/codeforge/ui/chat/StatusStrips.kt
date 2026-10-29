@@ -19,6 +19,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,10 +27,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -125,6 +130,85 @@ fun ContextMeter(usage: ContextUsage?, modifier: Modifier = Modifier) {
     }
 }
 
+// ---------------------------------------------------------------- 目标模式
+
+/**
+ * 目标账本条（goal 帧）。
+ *
+ * 显示目标原文、已用/上限轮次与最近判定。PASS 后内核会关闭账本（goal 为空），
+ * 这里仍保留 last verdict 供用户回看，不把「已验证通过」的痕迹抹掉。
+ */
+@Composable
+fun GoalStrip(goal: app.codeforge.model.GoalStatus?, modifier: Modifier = Modifier) {
+    AnimatedVisibility(
+        visible = goal != null && (goal.open || goal.round > 0),
+        enter = fadeIn(tween(200)) + expandVertically(tween(220)),
+        exit = fadeOut(tween(140)) + shrinkVertically(tween(180)),
+        modifier = modifier,
+    ) {
+        val g = goal ?: return@AnimatedVisibility
+        val verdict = g.verdict.uppercase()
+        val color = when (verdict) {
+            "PASS" -> Clay
+            "FAIL" -> MaterialTheme.colorScheme.error
+            "BLOCKED" -> MaterialTheme.colorScheme.secondary
+            else -> MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        val label = when (verdict) {
+            "PASS" -> "已验证通过"
+            "FAIL" -> "未达成"
+            "BLOCKED" -> "无法观察"
+            "SKIP" -> "无可观察面"
+            else -> if (g.open) "验证中" else ""
+        }
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "目标",
+                style = MaterialTheme.typography.labelSmall,
+                color = color,
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = g.goal.ifBlank { "目标已关闭" },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (g.findings.isNotBlank() && verdict != "PASS") {
+                    Text(
+                        text = g.findings.take(80),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Text(
+                text = buildString {
+                    append(label)
+                    if (g.round > 0) {
+                        append(" · ")
+                        append(g.round)
+                        append('/')
+                        append(if (g.maxRounds > 0) g.maxRounds else "?")
+                    }
+                    if (g.exhausted) append(" · 预算用尽")
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = color,
+            )
+        }
+    }
+}
+
 // ---------------------------------------------------------------- 任务清单
 
 @Composable
@@ -179,6 +263,87 @@ fun TodoPanel(todos: List<TodoItem>, modifier: Modifier = Modifier) {
             }
 
             todos.sortedBy { it.sort }.forEach { todo -> TodoRow(todo) }
+        }
+    }
+}
+
+/**
+ * 任务清单弹窗：顶栏「三点」菜单的入口（B 接线，`showTaskList` 为 true 时挂载）。
+ *
+ * 为什么从输入卡上方搬到这里：清单常驻会在输入框上方压一块与正文无关的区域，
+ * 用户要的是「想看时看得到、不看时不占地方」。弹窗读的是同一份 [todos]，
+ * 内核推 todo 帧时计数与勾选**实时**变化，不需要额外的刷新入口。
+ */
+@Composable
+fun TaskListDialog(
+    todos: List<TodoItem>,
+    onDismiss: () -> Unit,
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        val done = todos.count { it.status == TodoStatus.Completed }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
+                .padding(horizontal = 18.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                GlyphIcon(
+                    glyph = Glyph.Check,
+                    size = 14.dp,
+                    color = Clay,
+                    strokeWidth = 2.2.dp,
+                    modifier = Modifier.padding(end = 8.dp),
+                )
+                Text(
+                    text = "任务清单",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    text = "$done/${todos.size}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(end = 2.dp),
+                )
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .clickable(onClick = onDismiss)
+                        .padding(6.dp),
+                ) {
+                    GlyphIcon(
+                        glyph = Glyph.Close,
+                        size = 15.dp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        strokeWidth = 1.8.dp,
+                    )
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            if (todos.isEmpty()) {
+                Text(
+                    text = "当前没有任务",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 6.dp),
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    todos.sortedBy { it.sort }.forEach { TodoRow(it) }
+                }
+            }
         }
     }
 }

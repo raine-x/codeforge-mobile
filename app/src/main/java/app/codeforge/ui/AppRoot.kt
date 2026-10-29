@@ -8,6 +8,8 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.togetherWith
@@ -38,6 +40,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -46,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -65,11 +69,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.codeforge.ui.chat.BackgroundTasksSheet
 import app.codeforge.ui.chat.Composer
-import app.codeforge.ui.chat.ContextMeter
+import app.codeforge.ui.chat.GoalStrip
+import app.codeforge.ui.chat.LocalAttachmentRoot
 import app.codeforge.ui.chat.MessageList
 import app.codeforge.ui.chat.SubagentBar
-import app.codeforge.ui.chat.TodoPanel
 import app.codeforge.ui.common.Glyph
 import app.codeforge.ui.common.ToastHost
 import app.codeforge.ui.common.GlyphIcon
@@ -80,6 +85,10 @@ import app.codeforge.ui.common.WindowMode
 import app.codeforge.ui.common.currentWindowMode
 import app.codeforge.ui.common.isLandscape
 import app.codeforge.ui.common.noRippleClickable
+import app.codeforge.ui.sessions.FileTreePanel
+import app.codeforge.ui.sessions.McpSidebarPanel
+import app.codeforge.ui.sessions.NewProjectPanel
+import app.codeforge.ui.sessions.ProjectActionsSheet
 import app.codeforge.ui.sessions.SessionActionsSheet
 import app.codeforge.ui.sessions.SessionPane
 import app.codeforge.ui.settings.SettingsSheet
@@ -113,31 +122,136 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var sessionActions by remember { mutableStateOf<app.codeforge.model.SessionItem?>(null) }
+    var projectActions by remember { mutableStateOf<app.codeforge.model.ProjectItem?>(null) }
+    var showTodos by rememberSaveable { mutableStateOf(false) }
+    // 后台脚本任务面板：从顶栏三点菜单进入（任务归内核进程，切会话不丢）
+    var showTasks by rememberSaveable { mutableStateOf(false) }
+    // 侧栏浮层："" = 会话主侧栏，mcp = MCP 面板，tree = 文件树（均铺满侧栏）
+    var sidebarPage by rememberSaveable { mutableStateOf("") }
+    // 文件树是从「新建项目」里打开的：选完路径要回到新建面板
+    var treeForProject by rememberSaveable { mutableStateOf(false) }
+    var showNewProject by rememberSaveable { mutableStateOf(false) }
+    var pickedWorkspace by rememberSaveable { mutableStateOf("") }
+    // 本地一次性提示：「已有空的新项目」这类判断发生在 UI 侧，不往协议里加东西
+    var notice by remember { mutableStateOf<Banner?>(null) }
 
+    // 附件/媒体块的相对路径根：与 ChatViewModel.applySessionSpace 的优先级逐字一致
+    //（会话元信息 workspace → 当前项目 → 应用私有 inbox）。消息里存的是内核 history
+    // 原样的相对路径，只有用**同一棵树**去解析，缩略图与播放器才找得到文件（问题 1）。
+    val appCtx = androidx.compose.ui.platform.LocalContext.current
+    val attachmentRoot = remember(state.currentSessionId, state.sessions, state.currentWorkspace) {
+        state.sessions.firstOrNull { it.id == state.currentSessionId }
+            ?.workspace?.takeIf { it.isNotBlank() }
+            ?: state.currentWorkspace.takeIf { it.isNotBlank() }
+            ?: EnvKit.inboxSpace(appCtx).absolutePath
+    }
+
+    val openNewProject: () -> Unit = {
+        // 「已有空的新项目」：刚建好的项目还没发过任何消息时再点新建，只提示不重开面板。
+        // 项目列表是按会话聚合的（没有会话就没有项目行），所以判定看
+        // 「当前项目有会话 + 当前对话还是空的」，而不是 sessionCount == 0。
+        val emptyCurrentProject = state.currentWorkspace.isNotBlank() &&
+            state.messages.isEmpty() &&
+            !state.running &&
+            state.sessions.any { it.workspace == state.currentWorkspace && !it.archived }
+        if (emptyCurrentProject) {
+            notice = Banner("已有空的新项目", isError = false)
+        } else {
+            pickedWorkspace = ""
+            showNewProject = true
+        }
+    }
+
+    // 输入卡「＋ → 当前目录的文件」：打开工作区文件树（浏览态，不做建项目回填）
+    val openWorkspaceFiles: () -> Unit = {
+        treeForProject = false
+        sidebarPage = "tree"
+        viewModel.loadTree("")
+    }
+
+    CompositionLocalProvider(LocalAttachmentRoot provides attachmentRoot) {
+    app.codeforge.ui.theme.AppBackground(Modifier.fillMaxSize()) {
     Box(Modifier.fillMaxSize()) {
         RotateWithDevice {
             // 档位判定必须放在旋转层内：LocalOrientation 由它提供，
             // 横持时内容盒宽高对调，自动切到网页端同款双栏布局
             val mode = currentWindowMode()
-            when (mode) {
-                WindowMode.Compact -> CompactLayout(
-                    state,
-                    viewModel,
-                    onOpenSettings = { showSettings = true },
-                    onSessionLongPress = { sessionActions = it },
-                    archived = state.archivedSessions,
-                    onExpandArchived = viewModel::loadArchived,
-                    onRestoreArchived = { id -> viewModel.unarchive(id) },
-                )
-                WindowMode.Medium, WindowMode.Expanded ->
-                    TwoPaneLayout(
+            Box(Modifier.fillMaxSize()) {
+                when (mode) {
+                    WindowMode.Compact -> CompactLayout(
                         state,
                         viewModel,
-                        mode,
                         onOpenSettings = { showSettings = true },
                         onSessionLongPress = { sessionActions = it },
+                        onNewProject = openNewProject,
+                        onOpenMcp = { sidebarPage = "mcp" },
+                        onProjectLongPress = { projectActions = it },
+                        onOpenTodos = { showTodos = true },
+                        onOpenTasks = { showTasks = true },
+                        onOpenWorkspaceFiles = openWorkspaceFiles,
                     )
+                    WindowMode.Medium, WindowMode.Expanded ->
+                        TwoPaneLayout(
+                            state,
+                            viewModel,
+                            mode,
+                            onOpenSettings = { showSettings = true },
+                            onSessionLongPress = { sessionActions = it },
+                            onNewProject = openNewProject,
+                            onOpenMcp = { sidebarPage = "mcp" },
+                            onProjectLongPress = { projectActions = it },
+                            onOpenTodos = { showTodos = true },
+                            onOpenTasks = { showTasks = true },
+                            onOpenWorkspaceFiles = openWorkspaceFiles,
+                        )
+                }
+
+                // 侧栏浮层放在旋转层里：横持时面板跟内容一起转（同 P-009 的边界）
+                AnimatedVisibility(
+                    visible = sidebarPage == "mcp",
+                    enter = fadeIn(tween(160)) + scaleIn(tween(200), initialScale = 0.94f),
+                    exit = fadeOut(tween(140)) + scaleOut(tween(160), targetScale = 0.94f),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    McpSidebarPanel(vm = viewModel, onClose = { sidebarPage = "" })
+                }
+                AnimatedVisibility(
+                    visible = sidebarPage == "tree",
+                    enter = fadeIn(tween(160)) + scaleIn(tween(200), initialScale = 0.90f),
+                    exit = fadeOut(tween(140)) + scaleOut(tween(160), targetScale = 0.90f),
+                    modifier = Modifier.fillMaxSize(),
+                ) {
+                    FileTreePanel(
+                        entries = state.treeEntries,
+                        path = state.treePath,
+                        parent = state.treeParent,
+                        error = state.treeError,
+                        onLoad = { path -> viewModel.loadTree(path) },
+                        onPick = { path ->
+                            pickedWorkspace = path
+                            sidebarPage = ""
+                            if (treeForProject) {
+                                // 「新建项目」里选目录：带着路径回到新建面板
+                                treeForProject = false
+                                showNewProject = true
+                            } else {
+                                // 浏览态（输入卡「当前目录的文件」）选中的目录直接切工作区
+                                viewModel.switchProject(path)
+                            }
+                        },
+                        onClose = {
+                            sidebarPage = ""
+                            treeForProject = false
+                        },
+                    )
+                }
             }
+        }
+
+        // 浮层打开时返回键先收浮层（抽屉自己的 BackHandler 在 CompactLayout 里）
+        BackHandler(enabled = sidebarPage.isNotEmpty()) {
+            sidebarPage = ""
+            treeForProject = false
         }
 
         // 首启「环境准备中」遮罩：模型解压期间盖住整屏，完成自动消失。
@@ -156,16 +270,142 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
             )
         }
 
+        projectActions?.let { project ->
+            ProjectActionsSheet(
+                project = project,
+                vm = viewModel,
+                onDismiss = { projectActions = null },
+            )
+        }
+
+        if (showNewProject) {
+            NewProjectPanel(
+                initialWorkspace = pickedWorkspace,
+                defaultPermission = state.permissionMode,
+                onCreate = { name, workspace, permission ->
+                    viewModel.createProject(name, workspace, permission)
+                    showNewProject = false
+                    pickedWorkspace = ""
+                },
+                onPickFolder = {
+                    // 新建面板先让位，文件树选完带着路径回来（面板会带着新路径重开）
+                    showNewProject = false
+                    treeForProject = true
+                    sidebarPage = "tree"
+                    viewModel.loadTree("")
+                },
+                onDismiss = { showNewProject = false },
+            )
+        }
+
+        // 任务清单：从右上角三点菜单进来，数据是 state.todos 的实时快照
+        if (showTodos) {
+            TodoSheet(todos = state.todos, onDismiss = { showTodos = false })
+        }
+
+        // 后台脚本任务：打开期间面板自己按 1s 轮询 /api/tasks
+        if (showTasks) {
+            BackgroundTasksSheet(
+                tasks = state.tasks,
+                onRefresh = viewModel::refreshTasks,
+                onStart = viewModel::startTask,
+                onKill = viewModel::killTask,
+                onDismiss = { showTasks = false },
+                // 弹层盖住 ToastHost，错误必须在本层显示（P-024）。
+                // 只传 error 横幅：成功提示走列表本身，避免把「已启动」染成红色。
+                banner = state.banner?.takeIf { it.isError }?.text,
+            )
+        }
+
         // 放在所有弹层之后：设置页里点保存，提示才不会被弹层盖住。
+        // 本地提示（如「已有空的新项目」）优先于 ViewModel 的 banner。
         ToastHost(
-            banner = state.banner,
-            onDismiss = viewModel::dismissBanner,
+            banner = notice ?: state.banner,
+            onDismiss = {
+                notice = null
+                viewModel.dismissBanner()
+            },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 150.dp)
                 .padding(horizontal = 32.dp),
         )
     }
+    }
+    }
+}
+
+// ---------------------------------------------------------------- 任务清单弹层
+
+/**
+ * 任务清单弹层（右上角三点菜单 → 任务清单）。
+ *
+ * 读的是 `state.todos`（内核 todo 帧推的实时快照），不新增任何协议；
+ * 计数也在标题里实时显示，用户不用展开面板就知道还剩几项。
+ */
+@Composable
+private fun TodoSheet(todos: List<app.codeforge.model.TodoItem>, onDismiss: () -> Unit) {
+    val done = todos.count { it.status == app.codeforge.model.TodoStatus.Completed }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                if (todos.isEmpty()) "任务清单" else "任务清单 $done/${todos.size}",
+            )
+        },
+        text = {
+            if (todos.isEmpty()) {
+                Text(
+                    text = "暂无任务。模型开始分步执行时会在这里出现清单。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    todos.sortedBy { it.sort }.forEach { todo ->
+                        val (mark, tint) = when (todo.status) {
+                            app.codeforge.model.TodoStatus.Completed ->
+                                "✓" to Clay
+                            app.codeforge.model.TodoStatus.InProgress ->
+                                "…" to MaterialTheme.colorScheme.onSurface
+                            app.codeforge.model.TodoStatus.Cancelled ->
+                                "✕" to MaterialTheme.colorScheme.onSurfaceVariant
+                            app.codeforge.model.TodoStatus.Pending ->
+                                "○" to MaterialTheme.colorScheme.onSurfaceVariant
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = mark,
+                                style = MaterialTheme.typography.labelMedium,
+                                color = tint,
+                            )
+                            Text(
+                                text = todo.content,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (todo.status == app.codeforge.model.TodoStatus.Completed) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("关闭") }
+        },
+    )
 }
 
 // ---------------------------------------------------------------- 环境准备
@@ -261,9 +501,12 @@ private fun CompactLayout(
     vm: ChatViewModel,
     onOpenSettings: () -> Unit,
     onSessionLongPress: (app.codeforge.model.SessionItem) -> Unit,
-    archived: List<app.codeforge.model.SessionItem> = emptyList(),
-    onExpandArchived: () -> Unit = {},
-    onRestoreArchived: (String) -> Unit = {},
+    onNewProject: () -> Unit,
+    onOpenMcp: () -> Unit,
+    onProjectLongPress: (app.codeforge.model.ProjectItem) -> Unit,
+    onOpenTodos: () -> Unit,
+    onOpenTasks: () -> Unit,
+    onOpenWorkspaceFiles: () -> Unit,
 ) {
     // 附件面板开合（提升到这里才能盖遮罩实现「点外部收起」）
     var attachOpen by rememberSaveable { mutableStateOf(false) }
@@ -302,6 +545,27 @@ private fun CompactLayout(
                         .heightIn(max = 360.dp)
                         .verticalScroll(androidx.compose.foundation.rememberScrollState()),
                 ) {
+                    // 未完成轮次：保留用户原话、截掉未完成回复并回退文件（内核 retry 语义）
+                    if (state.resumeBack >= 0) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                .noRippleClickable {
+                                    vm.retryUnfinished()
+                                    rewindDialog = false
+                                }
+                                .padding(10.dp),
+                        ) {
+                            Text(
+                                "重试未完成的轮次（保留提问、回退文件）",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        androidx.compose.foundation.layout.Spacer(Modifier.height(6.dp))
+                    }
                     if (state.checkpoints.isEmpty()) {
                         Text(
                             "暂无检查点（执行过文件改动的步骤才会产生）。",
@@ -379,8 +643,12 @@ private fun CompactLayout(
                 modifier = Modifier.width(310.dp),
             ) {
                 SessionPane(
+                    projects = state.projects,
                     sessions = state.sessions,
                     currentId = state.currentSessionId,
+                    currentWorkspace = state.currentWorkspace,
+                    currentWorkspaceName = state.currentWorkspaceName,
+                    workspaceSwitching = state.workspaceSwitching,
                     onSelect = { id ->
                         vm.switchSession(id)
                         scope.launch { drawerState.close() }
@@ -389,14 +657,25 @@ private fun CompactLayout(
                         vm.createSession()
                         scope.launch { drawerState.close() }
                     },
+                    onNewProject = {
+                        // 新建项目是大幅弹层（Dialog 层级），抽屉先收起来
+                        scope.launch { drawerState.close() }
+                        onNewProject()
+                    },
                     onOpenSettings = onOpenSettings,
-                    onSessionLongPress = onSessionLongPress,
-                    archived = archived,
-                    onExpandArchived = onExpandArchived,
-                    onRestoreArchived = { id ->
-                        onRestoreArchived(id)
+                    onOpenMcp = onOpenMcp,
+                    onSelectProject = { project ->
+                        vm.switchProject(project.workspace)
                         scope.launch { drawerState.close() }
                     },
+                    onProjectLongPress = onProjectLongPress,
+                    onNewSessionInProject = { workspace ->
+                        // 切项目与 new_session 必须是**一个原子序列**：先 POST 工作区、
+                        // 等成功后再建会话，否则新会话会落进上一个项目（问题 2）。
+                        vm.newSessionInProject(workspace)
+                        scope.launch { drawerState.close() }
+                    },
+                    onSessionLongPress = onSessionLongPress,
                     onDeleteSessions = vm::deleteSessions,
                 )
             }
@@ -434,6 +713,13 @@ private fun CompactLayout(
                     rewindDialog = true
                 },
                 onOpenSettings = onOpenSettings,
+                projectName = state.currentWorkspaceName,
+                switching = state.workspaceSwitching,
+                running = state.running,
+                todoLabel = todoMenuLabel(state.todos),
+                onOpenTodos = onOpenTodos,
+                taskLabel = taskMenuLabel(state.tasks),
+                onOpenTasks = onOpenTasks,
             )
             // 需要「重试」的内核故障才用常驻横幅（按钮得点得到）；
             // 保存成功、状态变更这类一次性反馈走 ToastHost 气泡。
@@ -453,15 +739,18 @@ private fun CompactLayout(
                 }
             }
 
-            // 三条状态区：上下文表 → 任务清单 → 子智能体，有数据才占位
-            ContextMeter(state.contextUsage)
-            TodoPanel(state.todos)
+            // 状态区：目标账本 → 子智能体，有数据才占位。
+            // 上下文条按用户要求删除（占比改由输入卡侧的细线表达）；
+            // 任务清单折叠进右上角三点菜单，这里不再常驻。
+            GoalStrip(state.goal)
             SubagentBar(state.subagents)
 
             Composer(
                 running = state.running,
                 permissionMode = state.permissionMode,
                 modelName = state.modelName,
+                // 供应商的真相在内核 config（问题 8）：弹层不再自己维护一个空字符串
+                activeProvider = state.kernelConfig?.provider.orEmpty(),
                 sessionId = state.currentSessionId,
                 draftText = vm.draftOf(state.currentSessionId),
                 onDraftChange = vm::saveDraft,
@@ -475,6 +764,19 @@ private fun CompactLayout(
                 maxLines = maxComposerLines(),
                 attachPanelOpen = attachOpen,
                 onAttachPanelChange = { attachOpen = it },
+                skills = state.skills,
+                builtinPlugins = state.builtinPlugins,
+                mcpPlugins = state.mcpPlugins,
+                actionPanel = state.actionPanel,
+                onDismissActionPanel = vm::dismissActionPanel,
+                onSendActionPanel = vm::sendActionPanel,
+                contextUsage = state.contextUsage,
+                onOpenTaskList = onOpenTodos,
+                onOpenWorkspaceFiles = onOpenWorkspaceFiles,
+                editBack = state.editBack,
+                editText = state.editText,
+                editAttachments = state.editAttachments,
+                onCancelEdit = vm::clearEdit,
             )
         }
     }
@@ -489,6 +791,12 @@ private fun TwoPaneLayout(
     mode: WindowMode,
     onOpenSettings: () -> Unit,
     onSessionLongPress: (app.codeforge.model.SessionItem) -> Unit,
+    onNewProject: () -> Unit,
+    onOpenMcp: () -> Unit,
+    onProjectLongPress: (app.codeforge.model.ProjectItem) -> Unit,
+    onOpenTodos: () -> Unit,
+    onOpenTasks: () -> Unit,
+    onOpenWorkspaceFiles: () -> Unit,
 ) {
     var attachOpen by rememberSaveable { mutableStateOf(false) }
     val listState = rememberLazyListState()
@@ -511,6 +819,27 @@ private fun TwoPaneLayout(
                         .heightIn(max = 360.dp)
                         .verticalScroll(androidx.compose.foundation.rememberScrollState()),
                 ) {
+                    // 未完成轮次：保留用户原话、截掉未完成回复并回退文件（内核 retry 语义）
+                    if (state.resumeBack >= 0) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(androidx.compose.foundation.shape.RoundedCornerShape(10.dp))
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                                .noRippleClickable {
+                                    vm.retryUnfinished()
+                                    rewindDialog = false
+                                }
+                                .padding(10.dp),
+                        ) {
+                            Text(
+                                "重试未完成的轮次（保留提问、回退文件）",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        androidx.compose.foundation.layout.Spacer(Modifier.height(6.dp))
+                    }
                     if (state.checkpoints.isEmpty()) {
                         Text(
                             "暂无检查点（执行过文件改动的步骤才会产生）。",
@@ -593,15 +922,24 @@ private fun TwoPaneLayout(
             .then(insetMod),
     ) {
         SessionPane(
+            projects = state.projects,
             sessions = state.sessions,
             currentId = state.currentSessionId,
+            currentWorkspace = state.currentWorkspace,
+            currentWorkspaceName = state.currentWorkspaceName,
+            workspaceSwitching = state.workspaceSwitching,
             onSelect = vm::switchSession,
             onCreate = vm::createSession,
+            onNewProject = onNewProject,
             onOpenSettings = onOpenSettings,
+            onOpenMcp = onOpenMcp,
+            onSelectProject = { project -> vm.switchProject(project.workspace) },
+            onProjectLongPress = onProjectLongPress,
+            onNewSessionInProject = { workspace ->
+                // 同上：切工作区与建会话串行，避免会话归属到上一个项目
+                vm.newSessionInProject(workspace)
+            },
             onSessionLongPress = onSessionLongPress,
-            archived = state.archivedSessions,
-            onExpandArchived = vm::loadArchived,
-            onRestoreArchived = vm::unarchive,
             onDeleteSessions = vm::deleteSessions,
             modifier = Modifier
                 .width(paneWidth)
@@ -630,6 +968,13 @@ private fun TwoPaneLayout(
                     rewindDialog = true
                 },
                 onOpenSettings = onOpenSettings,
+                projectName = state.currentWorkspaceName,
+                switching = state.workspaceSwitching,
+                running = state.running,
+                todoLabel = todoMenuLabel(state.todos),
+                onOpenTodos = onOpenTodos,
+                taskLabel = taskMenuLabel(state.tasks),
+                onOpenTasks = onOpenTasks,
             )
             // 需要「重试」的内核故障才用常驻横幅（按钮得点得到）；
             // 保存成功、状态变更这类一次性反馈走 ToastHost 气泡。
@@ -649,15 +994,17 @@ private fun TwoPaneLayout(
                 }
             }
 
-            // 三条状态区：上下文表 → 任务清单 → 子智能体，有数据才占位
-            ContextMeter(state.contextUsage)
-            TodoPanel(state.todos)
+            // 状态区：目标账本 → 子智能体，有数据才占位。
+            // 上下文条删除、任务清单进右上角菜单 —— 与竖屏一致。
+            GoalStrip(state.goal)
             SubagentBar(state.subagents)
 
             Composer(
                 running = state.running,
                 permissionMode = state.permissionMode,
                 modelName = state.modelName,
+                // 供应商的真相在内核 config（问题 8）：弹层不再自己维护一个空字符串
+                activeProvider = state.kernelConfig?.provider.orEmpty(),
                 sessionId = state.currentSessionId,
                 draftText = vm.draftOf(state.currentSessionId),
                 onDraftChange = vm::saveDraft,
@@ -671,6 +1018,19 @@ private fun TwoPaneLayout(
                 maxLines = maxComposerLines(),
                 attachPanelOpen = attachOpen,
                 onAttachPanelChange = { attachOpen = it },
+                skills = state.skills,
+                builtinPlugins = state.builtinPlugins,
+                mcpPlugins = state.mcpPlugins,
+                actionPanel = state.actionPanel,
+                onDismissActionPanel = vm::dismissActionPanel,
+                onSendActionPanel = vm::sendActionPanel,
+                contextUsage = state.contextUsage,
+                onOpenTaskList = onOpenTodos,
+                onOpenWorkspaceFiles = onOpenWorkspaceFiles,
+                editBack = state.editBack,
+                editText = state.editText,
+                editAttachments = state.editAttachments,
+                onCancelEdit = vm::clearEdit,
             )
         }
     }
@@ -711,6 +1071,11 @@ private fun ChatBody(
                 onFetchOutput = vm::fetchToolReplay,
                 listState = listState,
                 running = state.running,
+                onContinue = if (state.resumeBack >= 0 && !state.running) {
+                    { vm.continueTurn() }
+                } else {
+                    null
+                },
             )
         }
     }
@@ -782,8 +1147,10 @@ private fun buildGreetings(): List<String> {
 
 /**
  * 顶栏：不等长三线菜单 + 居中小标题 + 右侧新建。
- * 运行状态不再放顶栏（Claude 也不放）—— 输入卡上的停止键已经说明了一切；
- * 只有「未连接」还需要提示，因为它影响的是所有操作。
+ *
+ * 标题下面补一行当前项目名与运行状态：用户要求「工作区切换/项目运行」在顶栏可见 ——
+ * 多项目并行时，只靠输入卡的停止键看不出是哪个项目在跑。
+ * 只有「未连接」还需要在最右提示，因为它影响的是所有操作。
  */
 @Composable
 private fun TopBar(
@@ -797,6 +1164,13 @@ private fun TopBar(
     onContinueTurn: (() -> Unit)? = null,
     onRewind: () -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    projectName: String = "",
+    switching: Boolean = false,
+    running: Boolean = false,
+    todoLabel: String = "任务清单",
+    onOpenTodos: () -> Unit = {},
+    taskLabel: String = "后台任务",
+    onOpenTasks: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier
@@ -819,17 +1193,48 @@ private fun TopBar(
             Spacer(Modifier.width(8.dp))
         }
 
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            textAlign = TextAlign.Center,
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = 4.dp),
-        )
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center,
+            )
+            if (projectName.isNotBlank() || switching || running) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    if (switching) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(9.dp),
+                            strokeWidth = 1.2.dp,
+                            color = Clay,
+                        )
+                    } else if (running) {
+                        Box(
+                            modifier = Modifier
+                                .size(5.dp)
+                                .background(Clay, CircleShape),
+                        )
+                    }
+                    Text(
+                        text = projectName.ifBlank { if (switching) "切换工作区…" else "" },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
 
         if (!connected) {
             Text(
@@ -866,6 +1271,15 @@ private fun TopBar(
                 androidx.compose.material3.DropdownMenu(
                     expanded = menuOpen,
                     onDismissRequest = { menuOpen = false },
+                    // 显式用主题表面色：Material3 默认取 surfaceContainer，而本项目
+                    // 的暖色主题没有为这套 token 配色，弹出菜单会与页面明显两个色系（问题 7）。
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 0.dp,
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        MaterialTheme.colorScheme.outlineVariant,
+                    ),
                 ) {
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("新建对话") },
@@ -893,6 +1307,17 @@ private fun TopBar(
                         text = { Text("回滚文件到断点…") },
                         onClick = { menuOpen = false; onRewind() },
                     )
+                    // 任务清单：原来常驻在输入卡上方，用户要求折叠进这个菜单。
+                    // 标题带实时计数（state.todos），一眼看出还剩几项。
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(todoLabel) },
+                        onClick = { menuOpen = false; onOpenTodos() },
+                    )
+                    // 后台脚本任务：AI（run_background）与手动启动都在这里查看/取消
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(taskLabel) },
+                        onClick = { menuOpen = false; onOpenTasks() },
+                    )
                     // 设置入口也放这里：平板上侧栏底部的头像按钮在部分 ROM 上
                     // 会落在系统手势区里点不到（真机实测），菜单是更可靠的一条路。
                     androidx.compose.material3.DropdownMenuItem(
@@ -903,6 +1328,19 @@ private fun TopBar(
             }
         }
     }
+}
+
+/** 三点菜单里「任务清单」的标题：带实时进度，不必展开就知道还剩几项。 */
+private fun todoMenuLabel(todos: List<app.codeforge.model.TodoItem>): String {
+    if (todos.isEmpty()) return "任务清单"
+    val done = todos.count { it.status == app.codeforge.model.TodoStatus.Completed }
+    return "任务清单 $done/${todos.size}"
+}
+
+/** 三点菜单里「后台任务」的标题：只报运行中的数量（已结束的不值得占标题）。 */
+private fun taskMenuLabel(tasks: List<app.codeforge.model.BackgroundTask>): String {
+    val running = tasks.count { it.status == "running" }
+    return if (running > 0) "后台任务（$running 运行中）" else "后台任务"
 }
 
 /** 把整段对话拼成纯文本走系统分享面板。 */

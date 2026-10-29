@@ -203,13 +203,27 @@ fun ModelPickerSheet(
                         )
 
                         PickerPage.Provider -> {
-                            // 供应商 = 设置里的真库 + 模型库里出现但不在库中的
-                            val fromModels = libraryModels
-                                .map { it.provider }
-                                .filter { it.isNotBlank() }
-                                .distinct()
-                            val merged = (libraryProviders + fromModels.filter { it !in libraryProviders })
-                                .distinct()
+                            // 供应商在两份数据里用的是**两套键**：
+                            //  - /api/providers/list（libraryProviders）给的是显示名；
+                            //  - 模型库（libraryModels）给的是 provider_id + provider_name。
+                            // 直接把两串拼起来（旧实现）会让同一家供应商出现两次：
+                            // 设置里明明只有 1 个，弹层却显示 2 个（名称一次、id 一次）。
+                            // 这里以「显示名」为身份：模型库的 provider_name 优先，
+                            // 设置里那些还没有模型的供应商再按显示名补进来。
+                            val modelProviderNames = libraryModels
+                                .filter { it.provider.isNotBlank() }
+                                .map { it.providerName.ifBlank { it.provider } }
+                            val modelProviderIds = libraryModels.map { it.provider }.toSet()
+                            val merged = buildList {
+                                addAll(modelProviderNames.distinct())
+                                libraryProviders.forEach { p ->
+                                    val name = p.trim()
+                                    // 名字本身或对应的 id 已经由模型库代表 → 跳过
+                                    if (name.isNotBlank() && name !in this && name !in modelProviderIds) {
+                                        add(name)
+                                    }
+                                }
+                            }
                             ProviderPage(
                                 currentProvider = currentProvider,
                                 onProviderSelect = onProviderSelect,

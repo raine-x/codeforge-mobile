@@ -1,7 +1,11 @@
 package app.codeforge.core
 
+import app.codeforge.model.BackgroundTask
+import app.codeforge.model.BuiltinPluginInfo
 import app.codeforge.model.KernelConfigSummary
+import app.codeforge.model.SkillInfo
 import app.codeforge.model.SubagentPolicy
+import app.codeforge.model.TreeEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Cookie
@@ -10,6 +14,7 @@ import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
@@ -101,11 +106,102 @@ class KernelApi(private val host: String, private val port: Int) {
         maxSteps?.let { put("max_steps", it) }
     }) { ApiResult.Ok(Unit) }
 
+    // ---------------------------------------------------------------- 后台任务
+
+    /**
+     * GET /api/tasks：全部后台脚本任务（含最近输出尾部）。
+     *
+     * 任务归内核进程，不归会话 —— 页面关掉脚本照跑，重开 App 也能拉回列表。
+     */
+    suspend fun listTasks(): ApiResult<List<BackgroundTask>> =
+        get("/api/tasks") { body ->
+            val arr = JSONObject(body).optJSONArray("items") ?: org.json.JSONArray()
+            (0 until arr.length()).mapNotNull { i ->
+                val o = arr.optJSONObject(i) ?: return@mapNotNull null
+                val id = o.optString("id")
+                if (id.isBlank()) {
+                    null
+                } else {
+                    BackgroundTask(
+                        id = id,
+                        label = o.optString("label"),
+                        command = o.optString("command"),
+                        cwd = o.optString("cwd"),
+                        status = o.optString("status", "running"),
+                        exitCode = o.optInt("exit_code", 0),
+                        startedAt = o.optLong("started_at", 0),
+                        endedAt = o.optLong("ended_at", 0),
+                        output = o.optString("output"),
+                    )
+                }
+            }
+        }
+
+    /**
+     * POST /api/tasks/start：手动启动后台脚本。返回任务 id。
+     *
+     * [cwd] 留空 = 内核当前工作区根；内核会做工作区围栏校验。
+     */
+    suspend fun startTask(command: String, label: String = "", cwd: String = ""): ApiResult<String> =
+        post("/api/tasks/start", JSONObject().apply {
+            put("command", command)
+            if (label.isNotBlank()) put("label", label)
+            if (cwd.isNotBlank()) put("cwd", cwd)
+        }) { body ->
+            JSONObject(body).optJSONObject("task")?.optString("id").orEmpty()
+                .ifEmpty { error("内核未返回任务 id") }
+        }
+
+    /** POST /api/tasks/kill：取消运行中的任务（连同子进程整组杀掉）。 */
+    suspend fun killTask(id: String): ApiResult<Unit> =
+        post("/api/tasks/kill", JSONObject().put("id", id)) { }
+
     // ---------------------------------------------------------------- 权限
 
     /** POST /api/perm：readonly / ask / auto 三档，热生效。 */
     suspend fun setPerm(mode: String): ApiResult<Unit> =
         post("/api/perm", JSONObject().put("mode", mode)) { }
+
+    // ---------------------------------------------------------------- 附件
+
+    /**
+     * POST /api/upload_file（multipart）：把本地文件原子写入**内核当前工作区**的
+     * `attachments/`，返回相对工作区路径（staged_path）。
+     *
+     * 为什么不让壳侧直接猜落点：工作区在会话创建那一刻才固定（还可能是项目目录），
+     * 壳侧按会话 id 拼出来的目录与内核读附件用的 `FS.root()` 不是同一棵 ——
+     * 这正是「发送后图片转圈、路径不对」的根因（问题 1）。交给内核落盘，
+     * 写入方与读取方天然同一个根。
+     */
+    suspend fun uploadFile(file: java.io.File): ApiResult<String> = withContext(Dispatchers.IO) {
+        if (!handshaked) {
+            (init() as? ApiResult.Err)?.let { return@withContext it as ApiResult<String> }
+        }
+        runCatching {
+            val body = okhttp3.MultipartBody.Builder()
+                .setType(okhttp3.MultipartBody.FORM)
+                .addFormDataPart(
+                    "file",
+                    file.name,
+                    file.asRequestBody(
+                        okhttp3.MediaType.Companion.run { "application/octet-stream".toMediaType() },
+                    ),
+                )
+                .build()
+            client.newCall(Request.Builder().url("$base/api/upload_file").post(body).build())
+                .execute().use { resp ->
+                    val text = resp.body?.string().orEmpty()
+                    if (!resp.isSuccessful) {
+                        return@withContext ApiResult.Err("HTTP ${resp.code}：${text.take(120)}")
+                    }
+                    val staged = JSONObject(text).optString("staged_path")
+                    if (staged.isBlank()) {
+                        return@withContext ApiResult.Err("内核未返回附件路径")
+                    }
+                    ApiResult.Ok(staged)
+                }
+        }.getOrElse { ApiResult.Err(it.message ?: it.javaClass.simpleName) }
+    }
 
     /** GET /api/perm：读内核当前权限档（Ready 后回填 UI，防两端不一致）。 */
     suspend fun getPerm(): ApiResult<String> =
@@ -205,7 +301,26 @@ class KernelApi(private val host: String, private val port: Int) {
     // 以下端点的响应形态按「{items:[…]} 或裸数组」双形态防御解析；字段名以
     // models 命令行实测为准，联调期允许显示降级（Err 落到界面可见处）。
 
-    data class ModelEntry(val id: String, val name: String, val provider: String, val badge: String = "")
+    data class ModelEntry(
+        val id: String,
+        val name: String,
+        /** 归属供应商 id（内核下发的键是 `provider_id`；空 = 未归属/旧格式自带连接）。 */
+        val provider: String,
+        val badge: String = "",
+        /** 供应商显示名（`provider_name`，内核已拼好，界面不必再拉供应商表）。 */
+        val providerName: String = "",
+        val ctxIn: Int = 0,
+        val ctxOut: Int = 0,
+        /** 三态：null = 未声明（≠ 不支持，见 [saveModelFull] 注释）。 */
+        val vision: Boolean? = null,
+        val video: Boolean? = null,
+        val rpm: Int = 0,
+        val keySource: String = "",
+        val keyName: String = "",
+        val keySet: Boolean = false,
+        val baseUrl: String = "",
+        val protocol: String = "",
+    )
 
     /** GET /api/models/list：可用模型库。 */
     suspend fun listModels(): ApiResult<List<ModelEntry>> =
@@ -218,12 +333,29 @@ class KernelApi(private val host: String, private val port: Int) {
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 val id = o.optString("id").ifEmpty { o.optString("model") }
-                if (id.isEmpty()) null else ModelEntry(
-                    id = id,
-                    name = o.optString("display_name").ifEmpty { o.optString("name").ifEmpty { id } },
-                    provider = o.optString("provider"),
-                    badge = o.optString("badge"),
-                )
+                if (id.isEmpty()) {
+                    null
+                } else {
+                    ModelEntry(
+                        id = id,
+                        name = o.optString("display_name").ifEmpty { o.optString("name").ifEmpty { id } },
+                        // 内核 models[] 的归属键是 provider_id（provider_name 只是显示名）。
+                        // 旧解析读的 `provider` 键内核从不下发 → 分组与回填永远是空。
+                        provider = o.optString("provider_id").ifEmpty { o.optString("provider") },
+                        badge = o.optString("badge"),
+                        providerName = o.optString("provider_name"),
+                        ctxIn = o.optInt("ctx_in", 0),
+                        ctxOut = o.optInt("ctx_out", 0),
+                        vision = triState(o, "vision"),
+                        video = triState(o, "video"),
+                        rpm = o.optInt("rpm", 0),
+                        keySource = o.optString("key_source"),
+                        keyName = o.optString("key_name"),
+                        keySet = o.optBoolean("key_set", false),
+                        baseUrl = o.optString("base_url"),
+                        protocol = o.optString("protocol"),
+                    )
+                }
             }
         }
 
@@ -361,10 +493,17 @@ class KernelApi(private val host: String, private val port: Int) {
      *
      * 与 `save_batch` 的区别：这个端点接受**完整字段**，包括
      * `ctx_in` / `ctx_out`（上下文与输出上限）、`vision` / `video`（三态多模态能力）、
-     * `rpm`（客户端节流）。批量接口只带 id/name/provider，规格会丢。
+     * `rpm`（客户端节流）、`key_source` / `key_name` / `key_value`（密钥覆盖）、
+     * `inherit_key`（是否清掉条目上的密钥覆盖、改用供应商的）。
+     * 批量接口只带 id/name/provider，规格会丢。
      *
      * [vision] / [video] 传 null 表示**未声明**，不能传 false —— 内核把
      * 「未声明」和「明确不支持」分得很开：前者乐观发送、撞墙再记忆，后者直接拦。
+     *
+     * 密钥三件套：[keySource] 取 `env`（用 [keyName] 指向的环境变量）或 `plain`
+     * （用 [keyValue] 明文）；编辑时 [keyValue] 留空 = 不动库里的旧密钥。
+     * 只要给了密钥字段，`inherit_key` 会被强制为 false —— 内核在 inherit_key=true
+     * 时会把 [keyValue] 清掉（见 handleModelSave），声明继承与会手输密钥互斥。
      */
     suspend fun saveModelFull(
         id: String,
@@ -377,6 +516,10 @@ class KernelApi(private val host: String, private val port: Int) {
         rpm: Int = 0,
         baseUrl: String = "",
         protocol: String = "",
+        keySource: String = "",
+        keyName: String = "",
+        keyValue: String = "",
+        inheritKey: Boolean = true,
     ): ApiResult<Unit> = post("/api/models/save", JSONObject().apply {
         put("id", id)
         put("name", name)
@@ -388,7 +531,13 @@ class KernelApi(private val host: String, private val port: Int) {
         if (rpm > 0) put("rpm", rpm)
         if (baseUrl.isNotBlank()) put("base_url", baseUrl)
         if (protocol.isNotBlank()) put("protocol", protocol)
-        put("inherit_key", true)
+        if (keySource.isNotBlank()) put("key_source", keySource)
+        if (keyName.isNotBlank()) put("key_name", keyName)
+        if (keyValue.isNotBlank()) put("key_value", keyValue)
+        put(
+            "inherit_key",
+            inheritKey && keySource.isBlank() && keyName.isBlank() && keyValue.isBlank(),
+        )
     }) { }
 
     /** POST /api/models/delete —— 从模型库移除一个模型。 */
@@ -406,7 +555,12 @@ class KernelApi(private val host: String, private val port: Int) {
 
     // ---------------------------------------------------------------- 归档 / diff
 
-    /** GET /api/sessions?archived=1：已归档会话（侧栏折叠组）。 */
+    /**
+     * GET /api/sessions?archived=1：已归档会话（归档管理页）。
+     *
+     * 这个端点的条目同样带 workspace/workspace_name/archived_at，
+     * 字段解析与 WS 的 sessions 帧保持一致（P-008 的教训：不跨帧类推键名）。
+     */
     suspend fun listArchivedSessions(): ApiResult<List<app.codeforge.model.SessionItem>> =
         get("/api/sessions?archived=1") { body ->
             val arr = JSONObject(body).optJSONArray("items") ?: org.json.JSONArray(body)
@@ -417,8 +571,33 @@ class KernelApi(private val host: String, private val port: Int) {
                     title = o.optString("title").ifEmpty { "已归档会话" },
                     updatedAt = o.optLong("updated_at", 0L),
                     busy = o.optBoolean("busy", false),
+                    workspace = o.optString("workspace"),
+                    workspaceName = o.optString("workspace_name"),
+                    archived = true,
                 )
             }.filter { it.id.isNotEmpty() }
+        }
+
+    /**
+     * POST /api/undo {session_id}：撤销该会话最近一次文件写入。
+     * 内核按会话分桶、带字节预算与 spill；成功/失败都必须把 [message] 原样给用户。
+     */
+    data class UndoResult(
+        val ok: Boolean,
+        val path: String = "",
+        val remaining: Int = 0,
+        val message: String = "",
+    )
+
+    suspend fun undo(sessionId: String): ApiResult<UndoResult> =
+        post("/api/undo", JSONObject().put("session_id", sessionId)) { body ->
+            val o = JSONObject(body)
+            UndoResult(
+                ok = o.optBoolean("ok", false),
+                path = o.optString("path"),
+                remaining = o.optInt("remaining", 0),
+                message = o.optString("message"),
+            )
         }
 
     /** GET /api/diff?session=&call_id=：历史工具卡的 diff/output 回放。 */
@@ -458,16 +637,47 @@ class KernelApi(private val host: String, private val port: Int) {
     suspend fun deleteMemory(id: String): ApiResult<Unit> =
         request("DELETE", "/api/memory?id=$id", null) { }
 
-    /** GET /api/skills：技能列表（{items:[{name,description}]} 或字符串数组）。 */
-    suspend fun listSkills(): ApiResult<List<Pair<String, String>>> =
+    /** POST /api/memory：新增一条用户记忆（按当前工作区隔离）。 */
+    suspend fun addMemory(content: String): ApiResult<Unit> =
+        post("/api/memory", JSONObject().put("content", content)) { }
+
+    /** PATCH /api/memory：按数字 id 更新记忆内容。 */
+    suspend fun updateMemory(id: String, content: String): ApiResult<Unit> =
+        request(
+            "PATCH",
+            "/api/memory",
+            JSONObject().put("id", id.toLongOrNull() ?: 0L).put("content", content),
+        ) { }
+
+    /**
+     * GET /api/skills：技能列表（{items:[{name,display_name,description,triggers,enabled}]}）。
+     *
+     * 内核的 `name` 是 SKILL.md 目录名（= @ 补全 token），`display_name` 才是界面文案；
+     * 旧解析只取 name/description，技能页因此看不到触发词与显示名。
+     */
+    suspend fun listSkills(): ApiResult<List<SkillInfo>> =
         get("/api/skills") { body ->
             val arr = JSONObject(body).optJSONArray("items") ?: org.json.JSONArray(body)
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i)
-                if (o != null) {
-                    o.optString("name").ifEmpty { o.optString("id") } to o.optString("description")
+                if (o == null) {
+                    // 裸字符串数组形态：只能拿到 slug
+                    val raw = arr.optString(i)
+                    if (raw.isEmpty()) return@mapNotNull null
+                    SkillInfo(slug = raw, name = raw)
                 } else {
-                    arr.optString(i).ifEmpty { null } to ""
+                    val slug = o.optString("name").ifEmpty { o.optString("id") }
+                    if (slug.isEmpty()) {
+                        null
+                    } else {
+                        SkillInfo(
+                            slug = slug,
+                            name = o.optString("display_name").ifEmpty { slug },
+                            description = o.optString("description"),
+                            triggers = jsonStringList(o.optJSONArray("triggers")),
+                            enabled = o.optBoolean("enabled", true),
+                        )
+                    }
                 }
             }
         }
@@ -527,6 +737,8 @@ class KernelApi(private val host: String, private val port: Int) {
      * POST /api/plugins —— 添加一个 MCP 插件。
      *
      * [type] 取 `mcp`（stdio，需 [command]）或 `mcp-http`（远程，需 [endpoint]）。
+     * [env] 是子进程的环境变量（内核按 `map[string]string` 的 `env` 键接收，
+     * 见 handlePlugins 的 POST 分支），空列表时不写这个键。
      * 内核会做增量热加载：只拉起新增插件，不重启其他运行中的 MCP。
      */
     suspend fun addMcpPlugin(
@@ -537,6 +749,7 @@ class KernelApi(private val host: String, private val port: Int) {
         args: List<String>,
         endpoint: String,
         description: String,
+        env: List<Pair<String, String>> = emptyList(),
     ): ApiResult<Unit> = post("/api/plugins", JSONObject().apply {
         put("name", name)
         put("display_name", displayName)
@@ -545,40 +758,175 @@ class KernelApi(private val host: String, private val port: Int) {
         if (args.isNotEmpty()) put("args", org.json.JSONArray(args))
         if (endpoint.isNotBlank()) put("endpoint", endpoint)
         if (description.isNotBlank()) put("description", description)
+        if (env.isNotEmpty()) {
+            put("env", JSONObject().apply { env.forEach { (k, v) -> put(k, v) } })
+        }
     }) { }
 
     /** DELETE /api/plugins?name= —— 删除一个 MCP 插件。 */
     suspend fun deleteMcpPlugin(name: String): ApiResult<Unit> =
         request("DELETE", "/api/plugins?name=$name", null) { }
 
-    /** GET /api/builtin-plugins：内置功能开关（plan/goal/vuln/reverse）。 */
-    suspend fun listBuiltinPlugins(): ApiResult<List<Pair<String, Boolean>>> =
+    /**
+     * GET /api/builtin-plugins：内置功能（{items:[{id,name,purpose,when_to_use,enabled}]}）。
+     *
+     * 内核同时下发 `purpose`（做什么）与 `when_to_use`（何时该开），
+     * 设置页的说明文案直接来自这里，不必在壳侧另编一份映射表。
+     */
+    suspend fun listBuiltinPlugins(): ApiResult<List<BuiltinPluginInfo>> =
         get("/api/builtin-plugins") { body ->
             val arr = JSONObject(body).optJSONArray("items") ?: org.json.JSONArray(body)
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
                 val id = o.optString("id").ifEmpty { o.optString("name") }
-                if (id.isEmpty()) null else id to o.optBoolean("enabled", false)
+                if (id.isEmpty()) {
+                    null
+                } else {
+                    BuiltinPluginInfo(
+                        id = id,
+                        name = o.optString("name").ifEmpty { id },
+                        purpose = o.optString("purpose"),
+                        whenToUse = o.optString("when_to_use"),
+                        enabled = o.optBoolean("enabled", false),
+                    )
+                }
             }
         }
 
     /** POST /api/builtin-plugins：开关内置功能。 */
+    // 内置插件启停是 PATCH（同 P-025）：POST 在该端点没有定义，会被 405 拒掉，
+    // 表现为「开关点了没反应」。
     suspend fun setBuiltinPlugin(id: String, enabled: Boolean): ApiResult<Unit> =
-        post("/api/builtin-plugins", JSONObject().put("id", id).put("enabled", enabled)) { }
+        request("PATCH", "/api/builtin-plugins", JSONObject().put("id", id).put("enabled", enabled)) { }
 
-    /** GET /api/workspaces：工作区列表（分组用；形态未定，双形态解析）。 */
-    suspend fun listWorkspaces(): ApiResult<List<Pair<String, String>>> =
+    /** 项目（工作区）条目：GET /api/workspaces 的完整结构。 */
+    data class WorkspaceEntry(
+        val workspace: String,
+        val name: String = "",
+        val count: Int = 0,
+        val archived: Boolean = false,
+    )
+
+    /**
+     * GET /api/workspaces —— 项目列表。
+     *
+     * 内核当前实际返回 `{items: ["<路径>", …]}`（纯字符串数组，见
+     * history.ListWorkspaces），未来若升级成对象数组要能直接吃下，
+     * 所以两种形态都解析（P-008：契约按写方代码核对，不按相似端点类推）。
+     */
+    suspend fun listWorkspaces(): ApiResult<List<WorkspaceEntry>> =
         get("/api/workspaces") { body ->
             val arr = JSONObject(body).optJSONArray("items") ?: org.json.JSONArray(body)
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i)
                 if (o != null) {
-                    o.optString("id").ifEmpty { o.optString("path") } to o.optString("name").ifEmpty { o.optString("path") }
+                    val ws = o.optString("workspace")
+                        .ifEmpty { o.optString("path").ifEmpty { o.optString("id") } }
+                    if (ws.isEmpty() && !o.has("name")) {
+                        null
+                    } else {
+                        WorkspaceEntry(
+                            workspace = ws,
+                            name = o.optString("name").ifEmpty { dirName(ws) },
+                            count = o.optInt("count", o.optInt("session_count", 0)),
+                            archived = o.optBoolean("archived", false),
+                        )
+                    }
                 } else {
-                    arr.optString(i).ifEmpty { null }?.let { it to it }
+                    // 纯字符串数组形态：拿不到显示名，回落路径末段（界面同款兜底）
+                    val ws = arr.optString(i)
+                    if (ws.isEmpty()) null else WorkspaceEntry(workspace = ws, name = dirName(ws))
                 }
             }
         }
+
+    /**
+     * PATCH /api/workspaces —— 重命名（只改显示名）/ 归档整组。
+     *
+     * `archive` 在内核是 `*bool`：显式传 false 才是「恢复整组」。
+     * [archive] 传 null 表示不改归档态；[newName] 传 null 表示不改名。
+     */
+    suspend fun patchWorkspace(
+        workspace: String,
+        newName: String? = null,
+        archive: Boolean? = null,
+    ): ApiResult<Unit> =
+        request("PATCH", "/api/workspaces", JSONObject().apply {
+            put("workspace", workspace)
+            newName?.let { put("new_name", it) }
+            archive?.let { put("archive", it) }
+        }) { }
+
+    /** DELETE /api/workspaces?workspace= —— 删除整个项目及其全部会话。 */
+    suspend fun deleteWorkspace(workspace: String): ApiResult<Unit> =
+        request("DELETE", "/api/workspaces?workspace=${encode(workspace)}", null) { }
+
+    /** GET /api/tree 的响应：root/path/parent/items + 读取错误（权限等）。 */
+    data class TreeResult(
+        val root: String = "",
+        val path: String = "",
+        val parent: String = "",
+        val items: List<TreeEntry> = emptyList(),
+        val error: String? = null,
+    )
+
+    /**
+     * GET /api/tree —— 工作区文件树（懒加载）。
+     *
+     * [path] 空 = 工作区根；绝对路径必须落在工作区内，除非 [picker]（选工作区
+     * 的目录选择器要能浏览区外）。`read_error` 与「空目录」必须分开报：
+     * 安卓未授权存储时目录 stat 成功但读不出内容，吞掉错误会渲染成一个假的空目录。
+     */
+    suspend fun listTree(path: String = "", depth: Int = 1, picker: Boolean = false): ApiResult<TreeResult> {
+        val q = buildString {
+            append("/api/tree?depth=").append(depth.coerceIn(1, 5))
+            if (path.isNotBlank()) append("&path=").append(encode(path))
+            if (picker) append("&picker=1")
+        }
+        return get(q) { body ->
+            val o = JSONObject(body)
+            val arr = o.optJSONArray("items") ?: org.json.JSONArray()
+            TreeResult(
+                root = o.optString("root"),
+                path = o.optString("path"),
+                parent = o.optString("parent"),
+                items = (0 until arr.length()).mapNotNull { i ->
+                    val e = arr.optJSONObject(i) ?: return@mapNotNull null
+                    TreeEntry(
+                        name = e.optString("name"),
+                        path = e.optString("path"),
+                        isDir = e.optBoolean("is_dir", false),
+                        size = e.optLong("size", 0L),
+                    )
+                },
+                error = o.optString("read_error").ifEmpty { null },
+            )
+        }
+    }
+
+    /** 路径末段（项目默认显示名）；空串回落空串，由调用方决定占位文案。 */
+    private fun dirName(path: String): String =
+        path.trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\')
+
+    /**
+     * 三态布尔：键缺失或为 null → null（未声明），否则取真值。
+     *
+     * `optBoolean(key, false)` 会把「没写这个字段」读成 false —— 对 vision/video
+     * 这类三态字段，那就等于替用户声明了「不支持图片」，图片从此收不到（P-027 同源）。
+     */
+    private fun triState(o: JSONObject, key: String): Boolean? =
+        if (!o.has(key) || o.isNull(key)) null else o.optBoolean(key)
+
+    /** JSON 字符串数组 → List<String>；null 或空数组给空列表。 */
+    private fun jsonStringList(arr: org.json.JSONArray?): List<String> =
+        if (arr == null) {
+            emptyList()
+        } else {
+            (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotEmpty() }
+        }
+
+    /** query 参数必须编码：工作区是绝对路径，含 `/`、`: `、中文与空格。 */
+    private fun encode(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")
 
     // ---------------------------------------------------------------- 通用
 
