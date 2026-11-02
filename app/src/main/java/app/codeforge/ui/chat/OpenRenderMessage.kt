@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -40,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.AnnotatedString
@@ -58,6 +60,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.codeforge.render.OpenRenderDocument
@@ -93,7 +96,9 @@ fun OpenRenderContent(
     bodyStyle: TextStyle = SerifBody,
 ) {
     val density = LocalDensity.current.density
-    val doc = remember(density) { OpenRenderDocument(density) }
+    // cacheDir 给公式渲染落地 Unicode 回退字体用（Android 无系统字体）
+    val cacheDir = LocalContext.current.cacheDir.absolutePath
+    val doc = remember(density, cacheDir) { OpenRenderDocument(density, cacheDir = cacheDir) }
     DisposableEffect(doc) { onDispose { doc.close() } }
 
     if (!OpenRenderNative.available) {
@@ -345,42 +350,169 @@ private fun TableBlock(table: RenderTable?, bodyStyle: TextStyle) {
     if (table == null || (table.header.isEmpty() && table.rows.isEmpty())) return
     val cols = maxOf(table.header.size, table.rows.maxOfOrNull { it.size } ?: 0)
     if (cols == 0) return
-    val weights = (0 until cols).map { c ->
-        val headerLen = table.header.getOrNull(c)?.let(::spansLength) ?: 0
-        val rowLen = table.rows.maxOfOrNull { it.getOrNull(c)?.let(::spansLength) ?: 0 } ?: 0
-        maxOf(headerLen, rowLen, 4)
-    }
+    val density = LocalDensity.current.density
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(8.dp),
-    ) {
-        TableRow(table.header, table.align, weights, bodyStyle, header = true)
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        table.rows.forEach { row ->
-            TableRow(row, table.align, weights, bodyStyle, header = false)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val widths = columnWidths(table, cols, maxWidth, density)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .padding(8.dp),
+        ) {
+            TableRow(table.header, table.align, widths, bodyStyle, header = true)
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            table.rows.forEach { row ->
+                TableRow(row, table.align, widths, bodyStyle, header = false)
+            }
         }
     }
+}
+
+/** 表格单元格字号；列宽换算要用同一个值，否则算出来的比例和实际排版对不上。 */
+private val tableCellFontSize = 13.sp
+
+/** 每格左右各 5dp 内边距。 */
+private const val TABLE_CELL_PADDING = 5f
+
+/**
+ * 按**实际渲染宽度**分配列宽。
+ *
+ * 早先按「字符个数」加权，且公式一律算 6 个字 —— 公式越宽越吃亏：
+ * `1+nx^{2n}` 出图 60dp 却只折算成 6 个字，而一串 16 个中文能折算成 16，
+ * 列宽比例整个失真，表头会被挤到换行（「分母」和公式被拆成两行）。
+ *
+ * 现在按 dp 算：公式与图片用出图像素宽除以屏幕密度，中文按一个字宽、
+ * 西文按半个字宽。分列宽时先给每列留**保底**（公式图折不烂，只能占这么宽），
+ * 余量再按「期望宽 - 保底宽」分配；全都不够时按保底比例挤。
+ */
+private fun columnWidths(
+    table: RenderTable,
+    cols: Int,
+    available: Dp,
+    density: Float,
+): List<Dp> {
+    val desired = FloatArray(cols)
+    val floor = FloatArray(cols)
+    for (c in 0 until cols) {
+        table.header.getOrNull(c)?.let { cell ->
+            desired[c] = maxOf(desired[c], spansWidth(cell, density))
+            floor[c] = maxOf(floor[c], unbreakableWidth(cell, density))
+        }
+        for (row in table.rows) {
+            row.getOrNull(c)?.let { cell ->
+                desired[c] = maxOf(desired[c], spansWidth(cell, density))
+                floor[c] = maxOf(floor[c], unbreakableWidth(cell, density))
+            }
+        }
+    }
+
+    // 卡片内边距 8dp×2，每格再扣左右各 5dp，剩下的才是文字可用宽
+    val avail = (available.value - 16f - TABLE_CELL_PADDING * 2 * cols).coerceAtLeast(1f)
+    val sumDesired = desired.sum()
+    val sumFloor = floor.sum()
+
+    val shares = FloatArray(cols)
+    when {
+        sumDesired <= avail -> {
+            // 内容装得下：按比例放大把整行填满，避免右侧留白
+            val k = avail / sumDesired.coerceAtLeast(1f)
+            for (c in 0 until cols) shares[c] = desired[c] * k
+        }
+
+        sumFloor > avail -> {
+            // 连保底都放不下：按保底比例挤，宁可折行也不让公式图溢出
+            for (c in 0 until cols) {
+                shares[c] = if (sumFloor > 0f) avail * floor[c] / sumFloor else avail / cols
+            }
+        }
+
+        else -> {
+            // 灌水分配：每列先拿到保底（公式图折不烂），够用的列拿满自己的
+            // 期望宽就停手，剩下的空间只在仍缺空间的列之间均分。
+            // 关键在于「按期望宽分」而不是「按期望宽减保底分」——
+            // 后者会把本该给宽公式列的余量摊给长文本列，表头照样被挤到换行。
+            var remaining = avail
+            var active = (0 until cols).toMutableList()
+            while (active.isNotEmpty() && remaining > 0f) {
+                val share = remaining / active.size
+                val full = active.filter { desired[it] <= share }
+                if (full.isEmpty()) {
+                    for (c in active) shares[c] = share
+                    remaining = 0f
+                    active.clear()
+                } else {
+                    for (c in full) {
+                        shares[c] = desired[c]
+                        remaining -= desired[c]
+                    }
+                    active.removeAll(full.toSet())
+                }
+            }
+        }
+    }
+    return shares.map { (it + TABLE_CELL_PADDING * 2).dp }
+}
+
+/** 单元格内容的自然宽度（dp）：公式/图片用出图像素宽，其余按字宽估算。 */
+private fun spansWidth(spans: List<RenderSpan>, density: Float): Float {
+    var w = 0f
+    for (span in spans) {
+        w += when (span.type) {
+            "latex_inline" -> span.math?.takeIf { it.width > 0 }?.let { it.width / density }
+                ?: textWidth(span.text)
+
+            "image" -> span.width.takeIf { it > 0 }?.let { it / density }
+                ?: textWidth(span.text)
+
+            else -> textWidth(span.text)
+        }
+    }
+    return w
+}
+
+/** 折不了行的内容宽度（dp）：公式图与图片，列窄到这份宽度以下就会溢出。 */
+private fun unbreakableWidth(spans: List<RenderSpan>, density: Float): Float {
+    var w = 0f
+    for (span in spans) {
+        w += when (span.type) {
+            "latex_inline" -> span.math?.takeIf { it.width > 0 }?.let { it.width / density } ?: 0f
+            "image" -> span.width.takeIf { it > 0 }?.let { it / density } ?: 0f
+            else -> 0f
+        }
+    }
+    return w
+}
+
+/** 文本宽度估算（dp）：中文与全角标点一个字宽，西文半个字宽，空格更窄。 */
+private fun textWidth(text: String): Float {
+    var units = 0f
+    for (ch in text) {
+        units += when {
+            ch == ' ' -> 0.28f
+            ch.code > 0x2E80 -> 1.0f
+            else -> 0.52f
+        }
+    }
+    return units * tableCellFontSize.value
 }
 
 @Composable
 private fun TableRow(
     cells: List<List<RenderSpan>>,
     align: List<String>,
-    weights: List<Int>,
+    widths: List<Dp>,
     bodyStyle: TextStyle,
     header: Boolean,
 ) {
     Row(modifier = Modifier.fillMaxWidth()) {
-        weights.forEachIndexed { c, weight ->
+        widths.forEachIndexed { c, width ->
             val cell = cells.getOrNull(c).orEmpty()
             InlineSpans(
                 spans = cell,
                 style = bodyStyle.copy(
-                    fontSize = 13.sp,
+                    fontSize = tableCellFontSize,
                     lineHeight = 19.sp,
                     fontWeight = if (header) FontWeight.Medium else FontWeight.Normal,
                 ),
@@ -391,8 +523,8 @@ private fun TableRow(
                     else -> TextAlign.Start
                 },
                 modifier = Modifier
-                    .weight(weight.toFloat())
-                    .padding(horizontal = 5.dp, vertical = 3.dp),
+                    .width(width)
+                    .padding(horizontal = TABLE_CELL_PADDING.dp, vertical = 3.dp),
             )
         }
     }
@@ -896,15 +1028,6 @@ private fun RenderSpan.inlineHeightSp(density: Float): androidx.compose.ui.unit.
 }
 
 private fun RenderSpan.urlOrSrc(): String = src.ifBlank { url }
-
-private fun spansLength(spans: List<RenderSpan>): Int =
-    spans.sumOf { span ->
-        when (span.type) {
-            "image" -> 8
-            "latex_inline" -> 6
-            else -> span.text.length
-        }
-    }
 
 private fun firstNonBlankLine(s: String): String? =
     s.lines().firstOrNull { it.isNotBlank() }?.trim()

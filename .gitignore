@@ -1,7 +1,9 @@
 *.iml
 .gradle/
+.kotlin/
 local.properties
 .idea/
+.trae/
 .DS_Store
 build/
 captures/
@@ -15,3 +17,4 @@ captures/
 .zcode/
 .source/
 .envkit/
+.frames/

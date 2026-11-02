@@ -222,6 +222,11 @@ private fun JSONArray?.toStringList(): List<String> {
 internal class OpenRenderDocument(
     private val density: Float,
     private val fontSize: Float = 15f,
+    /**
+     * 应用 cacheDir —— 公式渲染需要落地 Unicode 回退字体，Android 上没有
+     * 可发现的系统字体（见 [OpenRenderNative.useRatex]）。
+     */
+    private val cacheDir: String = "",
 ) : AutoCloseable {
 
     // 库能 load 不代表符号能解析（包名/R8/ABI 任一错都会在首次调用时抛
@@ -245,7 +250,7 @@ internal class OpenRenderDocument(
         runCatching {
             engine?.configure()
             // 公式走 ratex：PNG 像素尺寸 = em × DPR，宿主按 dp 展示即与正文 15sp 对齐
-            engine?.useRatex(fontSize, density.coerceAtLeast(1f))
+            engine?.useRatex(fontSize, density.coerceAtLeast(1f), cacheDir)
         }
     }
 
@@ -390,3 +395,4 @@ internal fun normalizeMathDelimiters(src: String): String {
     }
     return out.toString()
 }
+

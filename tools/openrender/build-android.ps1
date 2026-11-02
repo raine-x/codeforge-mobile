@@ -5,6 +5,9 @@
 
   Pinned upstream: raine-x/OpenRender @ 6f11851722772b1a18388364b20a613a0aa2a020
   (2026-10-28). The vendored patch `app_jni.rs` adds the CodeForge JNI surface.
+  It also embeds `fonts/NotoSansSC-Subset.ttf` (OFL-1.1) as the Unicode
+  fallback font — Android has no discoverable system CJK font, so without it
+  every formula containing CJK fails to render.
 
   Prerequisites:
     rustup target add aarch64-linux-android
@@ -38,6 +41,9 @@ if (-not (Test-Path (Join-Path $WorkDir 'Cargo.toml'))) {
 
 $src = Join-Path $WorkDir 'crates\openrender-core\src'
 Copy-Item (Join-Path $PSScriptRoot 'app_jni.rs') (Join-Path $src 'app_jni.rs') -Force
+# Unicode 回退字体：app_jni.rs 用 include_bytes! 引用它，必须与 app_jni.rs 同目录。
+# Android 上没有可发现的系统 CJK 字体，没有它则含中文的公式整块渲染不出来。
+Copy-Item (Join-Path $PSScriptRoot 'fonts\NotoSansSC-Subset.ttf') (Join-Path $src 'NotoSansSC-Subset.ttf') -Force
 $lib = Join-Path $src 'lib.rs'
 $libText = Get-Content $lib -Raw
 if ($libText -notmatch 'mod app_jni;') {

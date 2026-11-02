@@ -120,4 +120,5 @@ class RenderIrTest {
         assertFalse(other.apply("""{"v":1,"rev":0,"ops":[],"error":"internal_error"}"""))
         assertTrue(other.failed)
     }
+
 }

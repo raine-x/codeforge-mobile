@@ -32,9 +32,15 @@ internal class OpenRenderNative(
         if (handle != 0L) nativeReset(handle)
     }
 
-    /** 开启公式 PNG 渲染（RaTeX，内嵌 KaTeX 字体，离线、无 WebView）。 */
-    fun useRatex(fontSize: Float, devicePixelRatio: Float): Boolean =
-        if (handle != 0L) nativeUseRatex(handle, fontSize, devicePixelRatio) else false
+    /**
+     * 开启公式 PNG 渲染（RaTeX，内嵌 KaTeX 字体，离线、无 WebView）。
+     *
+     * [cacheDir] 用来落地 Unicode 回退字体：RaTeX 内嵌的 KaTeX 字体只覆盖拉丁与
+     * 数学符号，公式里的中文需要回退字体，而 Android 上没有可发现的系统字体
+     * （见 `app_jni.rs` 的 `install_unicode_font`）。传应用 cacheDir 即可。
+     */
+    fun useRatex(fontSize: Float, devicePixelRatio: Float, cacheDir: String): Boolean =
+        if (handle != 0L) nativeUseRatex(handle, fontSize, devicePixelRatio, cacheDir) else false
 
     /** 解析开关与上限；与上游 `configure()` 字段一致。 */
     fun configure(
@@ -77,6 +83,7 @@ internal class OpenRenderNative(
         handle: Long,
         fontSize: Float,
         devicePixelRatio: Float,
+        cacheDir: String,
     ): Boolean
 
     private external fun nativeConfigure(

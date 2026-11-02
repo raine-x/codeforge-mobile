@@ -15,6 +15,42 @@ use crate::config::Config;
 use crate::engine::Engine;
 use crate::ir::Delta;
 
+/// 内嵌的 Unicode 回退字体（Noto Sans SC 子集，OFL-1.1）。
+///
+/// RaTeX 内嵌的是 KaTeX 字体，只覆盖拉丁与数学符号。公式里的中文
+/// （`\text{圆的面积}`）需要 **Unicode 回退字体**，而 `ratex-unicode-font`
+/// 只查三处：`RATEX_UNICODE_FONT` 环境变量、Linux/macOS/Windows 的系统字体路径、
+/// fontdb —— **Android 上三处都没有**，于是含中文的公式整块渲染失败：
+/// 引擎返回 `None`，IR 里 `math` 为 null，界面退回原始 `$$…$$` 源码。
+///
+/// 这里把字体写进应用 cacheDir 再指向它：用的是该 crate **本就支持**的环境变量，
+/// 不新增依赖、不改上游 crate，也不用改引擎逻辑。字体是 GB2312 常用字子集，
+/// 3.2MB。
+///
+/// 构建时该文件须与 `app_jni.rs` 同目录（见 `build-android.ps1` 的复制步骤）。
+static EMBEDDED_UNICODE_FONT: &[u8] = include_bytes!("NotoSansSC-Subset.ttf");
+
+/// 把内嵌字体落到 `cache_dir` 并让 `ratex-unicode-font` 找到它。
+///
+/// 时机很关键：该 crate 用 `OnceLock` 缓存字体查找结果，**第一次查找之后
+/// 再设环境变量也不生效**。所以必须早于首次公式渲染 —— 本函数在
+/// `nativeUseRatex` 里调用，而渲染器正是在那之后才被喂公式。
+pub fn install_unicode_font(cache_dir: &str) {
+    static ONCE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    ONCE.get_or_init(|| {
+        if cache_dir.is_empty() {
+            return;
+        }
+        let path = std::path::Path::new(cache_dir).join("ratex-unicode-sc.ttf");
+        if std::fs::write(&path, EMBEDDED_UNICODE_FONT).is_ok() {
+            // 环境变量是该 crate 优先级最高的发现源。
+            // ignore: set_var 在多线程下理论上有竞态；此处只在进程早期写一次，
+            //         读取方在自己的 OnceLock 初始化里，不构成实际风险。
+            unsafe { std::env::set_var("RATEX_UNICODE_FONT", &path) };
+        }
+    });
+}
+
 #[no_mangle]
 pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeNew(
     _env: JNIEnv,
@@ -137,11 +173,12 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeConfigur
 /// Install the built-in RaTeX renderer (PNG output with embedded fonts).
 #[no_mangle]
 pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeUseRatex(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _this: JObject,
     handle: jlong,
     font_size: jfloat,
     device_pixel_ratio: jfloat,
+    cache_dir: JString,
 ) -> jboolean {
     let Some(engine) = (unsafe { engine_ref(handle) }) else {
         return 0;
@@ -149,6 +186,13 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeUseRatex
 
     #[cfg(feature = "ratex")]
     {
+        // 必须在创建渲染器之前装好回退字体：字体查找结果被 OnceLock 缓存。
+        let dir: String = env
+            .get_string(&cache_dir)
+            .map(|s| s.into())
+            .unwrap_or_default();
+        install_unicode_font(&dir);
+
         let mut renderer = openrender_latex::RatexRenderer::default();
         if font_size.is_finite() && font_size > 0.0 {
             renderer.font_size = font_size;
@@ -162,7 +206,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeUseRatex
 
     #[cfg(not(feature = "ratex"))]
     {
-        let _ = (font_size, device_pixel_ratio);
+        let _ = (font_size, device_pixel_ratio, cache_dir);
         0
     }
 }
