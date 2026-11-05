@@ -17,6 +17,7 @@ An AI coding workbench for Android. Go runs the kernel, Rust does the typesettin
 5. [Build](#build)
 6. [Engineering discipline](#engineering-discipline)
 7. [Known limits](#known-limits)
+8. [License](#license)
 
 ---
 
@@ -321,3 +322,37 @@ docs/                              design docs and parity checklists
 4. Referencing a file in conversation from the file tree is not implemented. Tapping a file only handles directories.
 5. There is no dedicated subagent panel, only an inline card strip in the message stream plus settings.
 6. The signing key password sits in plaintext in the build script. That is fine for sideloading, but it must move to an offline-held key plus environment variables before any store release.
+
+---
+
+## License
+
+This project is released under the GNU General Public License v3.0 with one additional restriction: commercial use is not permitted without a separate written license.
+
+### Free to do
+
+- Personal study, research, teaching, non-profit public benefit, review and security auditing
+- Clone the repository, deploy, modify and use it without receiving any consideration
+- Submit code, docs, translations, issue reports or patches
+- Keep copies for personal backup and disaster recovery
+- Public redistribution, including through mirrors and package managers, provided the full LICENSE and copyright notices travel with it
+
+### Not free to do
+
+Without prior written permission from the copyright holder, the software or any part of it (source, APK, derivative works) may not be used for any commercial purpose. That covers selling, renting, charging for distribution, subscriptions, hosting fees, offering it as a SaaS or other paid on-demand service, building a paid product around it, or shipping it as a component of a closed-source commercial product.
+
+Use that violates this clause receives no rights under this license and bears all resulting liability.
+
+A commercial license must be requested in writing from the maintainers, stating purpose, scope and term, and takes effect only when signed by the copyright holder.
+
+### Two things to know
+
+**First, this is not free software in the FSF sense.** GPL-3.0 itself permits commercial use, and adding the non-commercial clause makes the work as a whole fail the free-software definition. Adopters should know this. It is the same trade-off the CodeForge-Go kernel repository makes.
+
+**Second, the third-party components are unaffected.** The APK bundles a typesetting engine (MIT), a Noto Sans SC font subset (SIL OFL 1.1), proot and an Alpine rootfs, and bundled skills. Each remains under its own license, owned by its own authors. The additional terms here do not change or extend to them. See the third-party section of LICENSE for the full list.
+
+### Distributing as an APK
+
+You must also make the complete corresponding source available, as GPL-3.0 section 6 requires. This repository is the primary channel; build instructions are in the Build section above.
+
+The full terms and the complete license text are in [LICENSE](LICENSE).

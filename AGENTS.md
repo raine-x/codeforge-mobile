@@ -14,6 +14,7 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 ├── README.md                          门面：只讲性能、特点、特性（炫技向）
 ├── README_ZH.md                       中文详版：使用方法、技术实现、原理
 ├── README_EN.md                       英文详版：同上
+├── LICENSE                            GPL-3.0 + 禁止商用附加条款 + 第三方组件清单
 ├── AGENTS.md                          记录一：工作准则（本文件）
 ├── 工作进程.md                        记录二：待办与已办
 ├── 改动历史.md                        记录三：变更流水
