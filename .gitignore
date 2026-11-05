@@ -20,8 +20,9 @@ captures/
 .frames/
 
 # Go 内核参考副本：独立 git 仓库（P-048，禁止在其内做 git 写操作）
-source/CodeForge-GO/
+/source/CodeForge-GO/
 # 内核源码压缩包：本地参考资料，不进版本库（单个 60MB+）
-source/*.zip
-# OpenRender 上游克隆：独立 git 仓库，构建脚本会自己拉固定 commit
-OpenRender/
+/source/*.zip
+# OpenRender 上游克隆：独立 git 仓库，构建脚本会自己拉固定 commit。
+# 必须用前导 / 锚到根目录 —— 否则会误伤 tools/openrender/（Windows 下 gitignore 大小写不敏感）
+/OpenRender/
