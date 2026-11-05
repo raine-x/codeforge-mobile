@@ -4,4 +4,6 @@
     <cache-path name="camera" path="camera/" />
     <!-- 诊断日志：分享前把日志写到 cache/logs/，经 FileProvider 交给系统分享 -->
     <cache-path name="logs" path="logs/" />
+    <!-- 内置浏览器导出的 HTML 页面：写 cache/pages/，经 FileProvider 交给系统浏览器 -->
+    <cache-path name="pages" path="pages/" />
 </paths>

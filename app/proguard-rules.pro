@@ -3,14 +3,10 @@
 # consumer rules 自动并入（Compose/OkHttp/Coroutines 均自带）。
 
 # --- OpenRender：JNI 符号按 Java_包名_类名_方法名 绑定，类/方法改名即 UnsatisfiedLinkError ---
--keep class app.codeforge.render.OpenRenderNative { *; }
+-keep class com.hxy.codeforge.render.OpenRenderNative { *; }
 
-# --- Vosk：JNI native 回调按类名/方法名查找，改名即崩 ---
-# 0.3.75 起改 JNA 绑定（修 16KB 页），AAR 不带 consumer rules，JNA 必须手动保
--keep class org.vosk.** { *; }
--dontwarn org.vosk.**
--keep class com.sun.jna.** { *; }
--dontwarn com.sun.jna.**
+# --- 内置离线语音（Vosk）已移除：模型资产、libvosk.so、vosk-android 依赖一并去掉。
+# 对应的 JNA/Vosk keep 规则随之删除（R8 会对不存在的类告警）。
 
 # --- OkHttp / OkIO：大量按名反射与可选依赖探测 ---
 -dontwarn okhttp3.**

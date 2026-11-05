@@ -24,7 +24,7 @@
 
 ### 1.1 Android 并不是「只跑通对话流」
 
-当前 `app/src/main/java/app/codeforge` 已有 **41 个 Kotlin 文件、约 15,520 行**，其中已经落地：
+当前 `app/src/main/java/com/hxy/codeforge` 已有 **41 个 Kotlin 文件、约 15,520 行**，其中已经落地：
 
 - 会话侧栏、切换、重命名、归档、删除（`ui/sessions/SessionPane.kt`、`SessionActionsSheet.kt`）
 - HITL 审批卡片与决策（`ui/chat/ApprovalCardView.kt`、`ChatViewModel.decideApproval`）

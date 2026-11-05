@@ -1,7 +1,7 @@
 # Android 未实现/半实现的 Web 前端 UI 清单
 
 > 来源：逐项阅读 `web/dist/index.html`（733 行，页面骨架与全部设置页）与 `web/dist/ui.js`（7,607 行，动态面板与交互）。
-> 对照：`app/src/main/java/app/codeforge` 现有 Compose 组件。
+> 对照：`app/src/main/java/com/hxy/codeforge` 现有 Compose 组件。
 > 状态：❌ = Android 完全没有；◐ = 有等价物但缺字段/交互；✅ = 已对齐；— = 平台差异，不适用。
 > 说明：UI 形态允许不同（Compose 不需要照抄 DOM），但**语义**必须一致。
 

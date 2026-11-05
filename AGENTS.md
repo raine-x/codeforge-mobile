@@ -11,21 +11,25 @@ CodeForge-Go 的 Android 宿主壳。Go 内核是一个 AI 编码 agent，原本
 
 ```
 CodeForgeAPP/                       ← 本仓库，管 Android 壳
-├── README.md                          产品门面：只讲能力与取舍，不讲实现
+├── README.md                          门面：只讲性能、特点、特性（炫技向）
+├── README_ZH.md                       中文详版：使用方法、技术实现、原理
+├── README_EN.md                       英文详版：同上
 ├── AGENTS.md                          记录一：工作准则（本文件）
 ├── 工作进程.md                        记录二：待办与已办
 ├── 改动历史.md                        记录三：变更流水
 ├── docs/android-native-plan.md        参考：方案与架构（不属于三份记录）
-├── app/src/main/java/app/codeforge/   Kotlin + Compose，无 XML 布局
+├── app/src/main/java/com/hxy/codeforge/   Kotlin + Compose，无 XML 布局
 └── source/CodeForge-GO/               Go 内核**参考副本**（独立 git 仓库，只读参考）
 ```
 
 **边界**：
 - 原内核仓库在 `C:\Users\26536\Desktop\Code\CodeForge-GO`（内含 `CodeForge-go` 子仓库）。
 - 本仓库的 `source/CodeForge-GO/` 只是那份代码的副本，它自己也带 `.git` 和同名远端。
-- **禁止在 `source/CodeForge-GO` 下执行 `git add/commit/push`**：会直接改动内核远端（P-041）。
+- **禁止在 `source/CodeForge-GO` 下执行 `git add/commit/push`**：会直接改动内核远端（P-048）。
   内核改动一律在原仓库完成、在原仓库提交推送，再把 `libcodeforge.so` 产物拷回本仓库。
 - 要改内核必须明确说明并单独确认——它有独立的 git 仓库和 `AGENTS.md`。
+- **包名 `com.hxy.codeforge`**（2026-11-04 定，原 `app.codeforge`）——Kotlin 包、namespace、
+  applicationId、JNI 符号、proguard keep 规则五处必须同步，见 P-047。
 
 ---
 
@@ -73,57 +77,66 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 | 层 | 目录/文件 | 职责 | 行数 |
 |---|---|---|---|
 | 入口层 | `MainActivity.kt`、`CodeForgeApp.kt` | 建窗口、edge-to-edge、通知权限、拉起 CoreService、启动流水线（§2.6）、挂 ViewModel | 117 / 77 |
-| 界面层 | `ui/AppRoot.kt` | 横屏=内容旋转接网页式双栏（侧栏+聊天）、「环境准备中」遮罩、设置弹层挂载、顶栏、横幅、空态问候页 | 1405 |
+| 界面层 | `ui/AppRoot.kt` | 横屏=内容旋转接网页式双栏（侧栏+聊天）、「环境准备中」遮罩、设置弹层挂载、顶栏、横幅、空态问候页、内置浏览器浮层 | 1494 |
 | | `ui/chat/MessageList.kt` | 列表、贴底跟随、回到最新、探索分组 | 385 |
 | | `ui/chat/MessageBubble.kt` | 气泡 / 通知行 / 思考折叠 / 操作行（正文块渲染入口，见 OpenRenderMessage） | 717 |
-| | `ui/chat/OpenRenderMessage.kt` | OpenRender IR → Compose：全块型/全 span 排版、公式 PNG、表格按实际宽度分列、媒体围栏路由、流式光标 | 965 |
+| | `ui/chat/OpenRenderMessage.kt` | OpenRender IR → Compose：全块型/全 span 排版、公式 PNG、表格按实际宽度分列、媒体围栏路由、HTML 块合并、流式光标 | 1014 |
 | | `ui/chat/MessageBlocks.kt` | 宿主侧媒体渲染：SVG（WebView）/图片/视频/音频/附件缩略图与全屏；`LocalAttachmentRoot` 解析相对路径 | 554 |
 | | `ui/chat/ToolCard.kt` | 工具卡片、diff 着色 | 460 |
-| | `ui/chat/ToolLabels.kt` | 工具名/结果文案映射（与 Web 一致） | 230 |
+| | `ui/chat/ToolLabels.kt` | 工具名/结果文案映射（与 Web 一致） | 166 |
 | | `ui/chat/ApprovalCardView.kt` | 审批卡片 | 181 |
-| | `ui/chat/Composer.kt` | 悬浮输入卡、四态主按钮、三引擎语音路由（云端→系统→离线）、模型/附件弹层、@ 补全 | 1965 |
+| | `ui/chat/Composer.kt` | 悬浮输入卡、四态主按钮、两引擎语音路由（云端→系统）、模型/附件弹层、@ 补全、页面元素 chip | 2106 |
 | | `ui/chat/ActionPanel.kt` | `@plan` 计划书操作面板 | 200 |
 | | `ui/chat/BackgroundTasksSheet.kt` | 后台脚本任务面板：轮询日志、启动、取消 | 347 |
-| | `ui/chat/ModelPickerSheet.kt` | 选择模型弹层：供应商/模型/思考强度拉条/权限 | 787 |
+| | `ui/chat/ModelPickerSheet.kt` | 选择模型弹层：供应商（按 id 归一）/模型分组/思考强度拉条/权限 | 952 |
 | | `ui/chat/StatusStrips.kt` | 上下文表、目标模式、任务清单、子智能体卡 | 520 |
+| 浏览器层 | `ui/browser/BrowserOverlay.kt` | 内置浏览器全屏页：返回/刷新/选择元素/全屏/三点菜单 | 399 |
+| | `ui/browser/PageBridge.kt` | JS 桥 `window.__cf`（inspect/list/click/evaluate/contentHeight/viewport） | 358 |
+| | `ui/browser/BrowserWebView.kt` | WebView 封装（调试开关、离屏截图、页面高度上报） | 150 |
+| | `ui/browser/HtmlBlockView.kt` | 对话流内嵌 HTML 块（高度按内容实测，夹在 140–520dp） | 183 |
+| | `ui/browser/HtmlDetection.kt` | 裸 HTML 识别与合并（`looksLikeHtmlDocument` / `mergeHtmlBlocks`） | 85 |
+| | `ui/browser/BrowserModels.kt` | 浏览器数据类：`PickedElement` / `ElementInsert` / `BrowserTarget` | 104 |
+| | `ui/browser/BrowserController.kt` | 浏览器控制器（CompositionLocal 下传） | 33 |
 | | `ui/sessions/SessionPane.kt` | 会话侧栏：项目分组、项目行＋新建会话、MCP 入口、头像=设置 | 639 |
 | | `ui/sessions/ProjectPanel.kt` | 新建项目、项目重命名/归档/删除 | 399 |
 | | `ui/sessions/FileTreePanel.kt` | 全屏文件树、`..` 返回、选择工作区/跳过 | 300 |
 | | `ui/sessions/McpSidebarPanel.kt` | 侧栏 MCP 全屏面板、启停/删除/添加 | 361 |
-| | `ui/sessions/SessionActionsSheet.kt` | 会话重命名/归档/删除动作面板 | 250 |
+| | `ui/sessions/SessionActionsSheet.kt` | 会话重命名/归档/删除动作面板 | 189 |
 | | `ui/settings/AppSettings.kt` | 设置存储：Compose 状态 + 加密 SharedPreferences（旋转/语音/外观/云端 STT） | 284 |
-| | `ui/settings/SettingsSheet.kt` | 设置弹层：12 个二级页（模型服务/外观/记忆/技能/插件/MCP/归档/环境/文件传输/内核/语音/诊断） | 1719 |
+| | `ui/settings/SettingsSheet.kt` | 设置弹层：12 个二级页（模型服务/外观/记忆/技能/插件/MCP/归档/环境/文件传输/内核/语音/诊断） | 1736 |
 | | `ui/settings/FileTransferSection.kt` | 文件传输：导入到默认工作区、打包导出到 `Download/CodeForge/` | 222 |
 | | `ui/settings/ModelEditorSection.kt` | 模型完整表单：上下文/三态能力/RPM/密钥/测试/发现 | 653 |
 | | `ui/settings/KernelSettingsSection.kt` | 内核设置：生成/重试/压缩/子智能体/通知/记忆/技能/插件 | 1032 |
 | | `ui/settings/EnvPackagesSection.kt` | 兼容环境软件包安装（apk 预设 + probe + DNS） | 153 |
 | | `ui/common/Responsive.kt` | 横竖屏三档判定（优先读旋转后内容尺寸 LocalOrientation） | 57 |
-| | `ui/common/Glyphs.kt` | 火焰 Logo 与手绘描边图标库 | 659 |
+| | `ui/common/Glyphs.kt` | 火焰 Logo 与手绘描边图标库（含 Inspect/Fullscreen/MenuDots/Sidebar） | 747 |
 | | `ui/common/NoRipple.kt` | 无涟漪点击扩展（圆形/胶囊按钮专用） | 26 |
 | | `ui/common/VoiceInput.kt` | 系统语音引擎封装（SpeechRecognizer，zh-CN） | 208 |
 | | `ui/common/DeviceRotation.kt` | 物理姿态检测（迟滞角可配）与内容旋转层（insets 已转 dp，见 P-013） | 230 |
-| | `ui/common/ToastHost.kt` | 应用内 Toast 宿主 | 120 |
+| | `ui/common/ToastHost.kt` | 应用内 Toast 宿主 | 87 |
 | | `ui/theme/Theme.kt` | 明暗配色（Claude 暖色系）、字体、AppBackground、文字色覆盖 | 303 |
-| 状态层 | `ui/ChatViewModel.kt` | 单一状态源、事件折叠、发送串行队列、项目/工作区、后台任务 | 2438 |
+| 状态层 | `ui/ChatViewModel.kt` | 单一状态源、事件折叠、发送串行队列、项目/工作区、后台任务、页面元素登记 | 2654 |
 | 协议层 | `core/CoreTransport.kt` | `CoreEvent` 24 种 + `CoreTransport` 接口 | 187 |
 | | `core/MockCoreTransport.kt` | 假内核，驱动界面开发（未覆盖 `task` 等新事件） | 340 |
 | | `core/HttpCoreTransport.kt` | OkHttp HTTP + WS，自愈重连、帧解析（对照 ws_handler 下行帧） | 678 |
-| | `core/AttachmentParsers.kt` | 附件解析（图片尺寸/时长/音视频元信息） | 250 |
-| 语音层 | `voice/OfflineVoice.kt` | Vosk 离线引擎 + 首启解压流水线 + `releaseModel()` | 467 |
-| | `voice/CloudVoice.kt` | 云端识别（硅基流动 OpenAI 兼容）：AudioRecord 16k PCM → WAV → multipart 上传 | 292 |
+| | `core/AttachmentParsers.kt` | 附件解析（图片尺寸/时长/音视频元信息） | 176 |
+| | `core/EnvProbe.kt` | 环境探针（可执行/库存在性检查） | 55 |
+| 语音层 | `voice/CloudVoice.kt` | 云端识别（硅基流动 OpenAI 兼容）：AudioRecord 16k PCM → WAV → multipart 上传 | 292 |
 | 服务层 | `core/CoreService.kt` | specialUse 前台服务：拉起 `libcodeforge.so`、PORT 握手、日志落盘、退避重启 | 334 |
 | | `core/KernelConfig.kt` | 设置页 ↔ 内核 local.yaml 的桥（llm 段写入） | 48 |
 | | `core/EnvKit.kt` | 统一兼容环境：proot+Alpine 首启解压、路径契约（$CELL 单根）、cfrun、文件传输、软件包安装 | 666 |
-| | `core/KernelApi.kt` | 内核 REST 客户端（config/perm/sessions/workspace/models/providers/tasks/upload 等），Cookie 同 WS | 905 |
-| 模型层 | `model/CoreModels.kt` | 纯数据类，无逻辑无 Android 依赖 | 278 |
+| | `core/BuiltinSkills.kt` | 内置纯知识技能：assets zip → 工作区 `.codeforge/skills/`（幂等，不覆盖用户自建技能） | 173 |
+| | `core/KernelApi.kt` | 内核 REST 客户端（config/perm/sessions/workspace/models/providers/tasks/upload 等），Cookie 同 WS | 995 |
+| 模型层 | `model/CoreModels.kt` | 纯数据类，无逻辑无 Android 依赖 | 296 |
 
 渲染引擎层（旁挂原生库）：
 | 目录/文件 | 职责 | 行数 |
 |---|---|---|
 | `render/OpenRenderNative.kt` | `libopenrender.so` 的 JNI 封装（含 RaTeX 开关与 `cacheDir` 透传）；加载失败进程级判死，界面退纯文本 | 102 |
 | `render/RenderIr.kt` | IR 数据类、delta 应用器、`\(\)`/`\[\]` 公式定界符归一、按消息前缀 diff 喂引擎 | 362 |
-| `tools/openrender/app_jni.rs` | JNI 桥补丁 + `install_unicode_font`（内嵌 Noto Sans SC 子集，设 `RATEX_UNICODE_FONT`，见 P-039） | 223 |
-| `tools/openrender/build-android.ps1` | 可复现构建脚本（固定上游 commit，拷字体进 crate 目录供 `include_bytes!`） | 73 |
+| `tools/openrender/app_jni.rs` | JNI 桥补丁 + `install_unicode_font`（内嵌 Noto Sans SC 子集，设 `RATEX_UNICODE_FONT`，见 P-039）；函数名 `Java_com_hxy_codeforge_render_OpenRenderNative_*` | 230 |
+| `tools/openrender/build-android.ps1` | 可复现构建脚本（Windows，固定上游 commit，拷字体进 crate 目录供 `include_bytes!`） | 82 |
+| `tools/openrender/build-android.sh` | 同上（Linux 版，供无 PowerShell 的构建机使用） | 71 |
 | `tools/openrender/fonts/` | Noto Sans SC 子集（OFL-1.1）+ LICENSE；改字体必须同步重编 `.so` | 3,233,576 B |
 
 语音层说明：`voice/` 不属于协议层（不碰内核帧），是跨界面能力，被 `ui/chat/Composer.kt`
@@ -134,7 +147,7 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 
 ### 2.3 层间规则（硬性）
 
-1. **界面层不许碰协议层**。`ui/` 下任何文件都不许 `import app.codeforge.core.HttpCoreTransport`。要新数据就加 `ChatUiState` 字段。
+1. **界面层不许碰协议层**。`ui/` 下任何文件都不许 `import com.hxy.codeforge.core.HttpCoreTransport`。要新数据就加 `ChatUiState` 字段。
 2. **界面层不许有自己的业务状态**。展开/折叠这类纯视觉状态可以用 `rememberSaveable`；会话、消息、运行状态一律来自 `ChatUiState`。
 3. **状态层不许碰 Android UI**。`ChatViewModel` 只依赖 `CoreTransport` 和 `model`，不引 Compose。
 4. **协议层不依赖界面**。`core/` 不许 import `ui/`。事件用 `CoreEvent` 表达，不把原始 JSON 透传给上层。
@@ -149,8 +162,8 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 | 改气泡样式、间距、圆角 | `ui/chat/MessageBubble.kt` |
 | 改横竖屏断点或分栏宽度 | `ui/common/Responsive.kt`、`ui/AppRoot.kt` |
 | 改「横持旋转」行为（阈值/迟滞/动画） | `ui/common/DeviceRotation.kt`（窗口锁竖屏在 manifest，别改回系统旋转） |
-| 改语音输入（语言/交互/降级文案） | `ui/common/VoiceInput.kt` → `ui/chat/Composer.kt`（三引擎路由：云端 → 系统 → 离线） |
-| 改云端语音配置（供应商/模型/Key） | `ui/settings/AppSettings.kt` 的 `sttCloud*` + `ui/settings/SettingsSheet.kt` 的 VoiceSection + `voice/CloudVoice.kt`（云端启用时 `Composer` 会调 `OfflineVoiceEngine.releaseModel()` 释放 Vosk 内存） |
+| 改语音输入（语言/交互/降级文案） | `ui/common/VoiceInput.kt` → `ui/chat/Composer.kt`（两引擎路由：云端 → 系统 `SpeechRecognizer`） |
+| 改云端语音配置（供应商/模型/Key） | `ui/settings/AppSettings.kt` 的 `sttCloud*` + `ui/settings/SettingsSheet.kt` 的 VoiceSection + `voice/CloudVoice.kt` |
 | 改输入框行为（多行、发送键） | `ui/chat/Composer.kt` |
 | 改贴底跟随 / 回到最新 | `ui/chat/MessageList.kt` |
 | 改配色、字体、深色模式 | `ui/theme/Theme.kt` |
@@ -159,6 +172,11 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 | 改公式定界符兼容（`$`/`$$`/`\(\)`/`\[\]`） | `render/RenderIr.kt` 的 `normalizeMathDelimiters`（注意跳过代码围栏与 `$$` 内的 `\\[2pt]`） |
 | 改公式里的中文渲染（Android 无 Unicode 回退字体，见 P-039） | `tools/openrender/app_jni.rs` 的 `install_unicode_font` + `tools/openrender/fonts/` 的字体子集；改了要重编 `.so` |
 | 改表格列宽 | `ui/chat/OpenRenderMessage.kt` 的 `columnWidths`（按实际渲染宽度分配，别退回字符数加权） |
+| 改 AI 出题/可交互网页（HTML 块、内置浏览器、元素挑选） | `ui/browser/`（`PageBridge.kt` JS 桥、`BrowserOverlay.kt` 全屏浏览器、`HtmlBlockView.kt` 内嵌块）+ `ui/chat/OpenRenderMessage.kt` 的 `mergeHtmlBlocks`；引擎**没有** Html 块类型，见 P-041 |
+| 改注入给模型的能力说明（提示词） | `ui/ChatViewModel.kt` 的 `HTML_CAPABILITY_PROMPT`（只能混进上行文本，见 P-042） |
+| 改横屏左侧栏折叠 | `ui/AppRoot.kt` 的双栏布局（`sidebarCollapsed` + `animateDpAsState` 宽度过渡）+ `TopBar` 的 `onToggleSidebar`（三横线在主界面顶栏） |
+| 改模型库 / 探测 / 测试连接 | `core/KernelApi.kt` 的 `discoverModels` / `testModel` —— **字段名必须与内核 `modelTestReq` 一致**，见 P-043 |
+| 改供应商显示 | `ui/chat/ModelPickerSheet.kt` 的 `buildProviderEntries` + `ui/chat/Composer.kt` 的 provider 派生；**身份用 id**，见 P-044 |
 | 改回复闪烁/流式滚动/新问题定位 | `ui/chat/MessageList.kt`（勿回加 animateItem，见改动历史 22:25 条） |
 | 改消息块渲染（SVG/图片/视频/音频/原样开关） | `ui/chat/MessageBlocks.kt`（宿主媒体渲染）+ `model/CoreModels.kt` 的 verbatim 字段 |
 | 改工具卡片展开逻辑、diff 着色 | `ui/chat/ToolCard.kt` |
@@ -168,10 +186,13 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 | 改状态栏显隐（默认隐藏） | `AppSettings.showStatusBar`（存储）+ `MainActivity.kt`（WindowInsetsController） |
 | 改附件选择/上传/预览 | `ui/chat/Composer.kt`（stageAttachment → outbox）+ `ui/ChatViewModel.kt`（uploadAttachments → `/api/upload_file`）+ `ui/chat/MessageBlocks.kt`（`LocalAttachmentRoot` 解析相对路径） |
 | 改手机文件导入/导出（sdcard） | `core/EnvKit.kt` 的文件传输段 + `ui/settings/FileTransferSection.kt` |
+| 改内置技能（内容/增删/触发词） | 资产 `app/src/main/assets/builtin-skills.zip` + `core/BuiltinSkills.kt`；**frontmatter 必须扁平单行**（见 P-052）；上游是 MiniMax-AI/skills |
+| 改环境软件包（增删包/探测命令） | `core/EnvKit.kt` 的 `packages`；**probe 不许带管道**（见 P-051） |
+| 改 @ 补全候选（来源/条数/滚动） | `ui/chat/Composer.kt` 的 `mentionCandidates` 与 `mentionMatches`；**列表用 LazyColumn + heightIn 上限，候选不许 take(n) 截断**（见 P-053） |
 | 改消息滚动/自动跟随 | `ui/chat/MessageList.kt`（尾部只能 1dp 哨兵，勿回加 `fillParentMaxHeight`） |
 | 改后台脚本任务（启动/列表/取消/日志） | Go 内核 `pkg/tasks`（进程组、输出环形缓冲）+ `pkg/server/tasks.go`（REST/WS）+ `ui/chat/BackgroundTasksSheet.kt` + `ChatViewModel.refreshTasks/startTask/killTask` |
 | 改内核运行设置（生成/重试/压缩/子智能体/通知） | `ui/settings/KernelSettingsSection.kt` → `ChatViewModel` 服务操作 → `core/KernelApi.kt` |
-| 改首启「环境准备」流程 | `voice/OfflineVoice.kt` + `CodeForgeApp.kt`（注册处），并同步 §2.6 |
+| 改首启「环境准备」流程 | `core/EnvKit.kt` + `CodeForgeApp.kt`（注册处），并同步 §2.6 |
 | 改审批卡片字段或按钮 | `model/CoreModels.kt` → `ui/chat/ApprovalCardView.kt` → `core/HttpCoreTransport.kt` 的 `hitl_request` 分支 |
 | **新增一种内核事件** | ① `core/CoreTransport.kt` 加 `CoreEvent` 子类 ② `ui/ChatViewModel.kt` 的 `onEvent` 加分支 ③ `core/HttpCoreTransport.kt` 的 `handleFrame` 加解析（帧名/键名以 `pkg/agent/agent.go` 常量表与 `pkg/server/ws_handler.go` 为准，注意 P-008 的键名陷阱） |
 | 改协议字段名 / 新增字段 | `core/HttpCoreTransport.kt` 的 `handleFrame` 与 `parse*` 系列 |
@@ -193,35 +214,35 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 1. 崩溃落盘 + 前后台可见性 —— 安装 `UncaughtExceptionHandler`（`filesDir/logs/crash-*.txt`，保留 5 份），
    并用 `ProcessLifecycleOwner` 维护 `AppVisibility`（切后台时内核据此决定是否发系统通知）；
 2. `AppSettings.init` —— 读持久化设置（旋转/语音/外观/云端 STT），必须在首帧前完成；
-3. `System.loadLibrary("vosk")` 预加载 —— 失败只记日志，真正用时由 OfflineVoiceEngine 捕获降级；
-4. `OfflineVoice.ensureReady` —— **首启「环境准备中」**：把 APK 内置的离线语音模型
-   （`assets/voice-model-zh.zip`，zip 在 build.gradle 里声明 `noCompress` 才能拿到
-   精确长度显示百分比）解压到 `filesDir/voice-model-zh`，期间 AppRoot 盖
-   「环境准备中」遮罩（星标 + 进度条），成功后写 `.ready` 标记，后续启动秒过；
-   失败不挡屏，设置页可看原因并重试；
-5. 附件孤儿清理 —— 删 `filesDir/workspace/attachments` 下超过 7 天的文件（给 regenerate 留缓冲）；
-6. `EnvKit.ensureReady` —— 兼容环境：解压 assets 里的 env-kit.tgz（proot）与
+3. 附件孤儿清理 —— 删 `filesDir/workspace/attachments` 下超过 7 天的文件（给 regenerate 留缓冲）；
+4. `EnvKit.ensureReady` —— **首启「环境准备中」**：兼容环境解压 assets 里的 env-kit.tgz（proot）与
    rootfs-alpine.tgz（Alpine minirootfs）到 filesDir，生成统一执行入口 `usr/bin/cfrun`；
-   进度并入「环境准备中」遮罩；`.ready` 标记跳过。**环境契约**（路径单一事实源）
+   期间 AppRoot 盖「环境准备中」遮罩（星标 + 进度条），成功后写 `.ready` 标记，后续启动秒过；
+   失败不挡屏，设置页可看原因并重试。**环境契约**（路径单一事实源）
    见 EnvKit 类注释：一切锚定 filesDir 单根，proot 以同路径绑定 HOME/tmp，
    内核经 CF_EXEC_WRAPPER 走 cfrun，内外同一棵目录树。
-7. 通知渠道与内核进程 —— 由 `CoreService.onStartCommand` 的 `ensureChannel()` 创建；
+5. 通知渠道与内核进程 —— 由 `CoreService.onStartCommand` 的 `ensureChannel()` 创建；
    `MainActivity.onStart` 每次进前台 `startForegroundService`，服务内部幂等。内核的拉起/
    PORT 握手/退避重启也在 CoreService（握手协议见其类注释）。
 
 规则：任何「首启要做、之后跳过」的环境准备都走这条流水线——状态用
-`voice/OfflineVoice.kt` 的 Status 模式（Idle/Preparing/Ready/Failed），
+`core/EnvKit.kt` 的 Status 模式（Idle/Preparing/Ready/Failed），
 **不要各自发明**；解压类步骤的目标目录一律 `filesDir` 下独立子目录 + 就绪标记。
+
+> 内置离线语音模型（Vosk）已于 2026-11-05 移除（APK 瘦身 47 MB），首启不再有
+> 语音模型解压这一步；语音改走「云端 → 系统 `SpeechRecognizer`」两档。
+> 见 `改动历史.md` 2026-11-05 条目与 `NoOfflineVoiceTest` 守护测试。
 
 ---
 
 ## 3. 开工前必读
 
-1. `README.md` —— 产品门面与能力清单
-2. `工作进程.md` —— 现在做到哪、下一步是什么
-3. 本文件第 2 节（架构分层）与第 9 节（踩过的坑）
-4. `docs/android-native-plan.md` —— 架构为什么这么设计、有哪些已知风险
-5. 要改的文件本身
+1. `README.md` —— 门面：性能、特点、特性
+2. `README_ZH.md` —— 中文详版：使用方法、技术实现、原理
+3. `工作进程.md` —— 现在做到哪、下一步是什么
+4. 本文件第 2 节（架构分层）与第 9 节（踩过的坑）
+5. `docs/android-native-plan.md` —— 架构为什么这么设计、有哪些已知风险
+6. 要改的文件本身
 
 **不许**只看待办清单就动手。待办里没写的约束，往往在分层规则和坑列表里。
 
@@ -361,7 +382,7 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 - **本仓库的推送目标只有一个**：`origin` = `https://gitee.com/cola_estarhy/code-forge-m.git`。
   未经用户明确要求不要 push；用户要求 push 时也只推这个仓库。
 - **禁止在 `source/CodeForge-GO` 下执行任何 git 写操作**（add/commit/push/reset）：
-  那是内核参考副本，自带 `.git` 与内核远端，误操作会直接污染内核仓库（P-041）。
+  那是内核参考副本，自带 `.git` 与内核远端，误操作会直接污染内核仓库（P-048）。
 - 不要 `--no-verify` 跳过钩子。
 
 ---
@@ -437,7 +458,7 @@ targetSdk 35+ 的 app，`dataSync` 类型前台服务每天累计只能跑 6 小
 现在已是 git 仓库（`origin` = gitee `code-forge-m`），有远端与提交历史。
 
 **保留的教训**：在仓库里执行 git 命令前先 `git remote -v` 确认目标；
-`source/` 这类参考目录里的仓库是**另一个仓库**，见 P-041。
+`source/` 这类参考目录里的仓库是**另一个仓库**，见 P-048。
 
 ### P-007 · KDoc 注释里出现 `*/` 会提前终止块注释
 
@@ -479,7 +500,8 @@ targetSdk 35+ 的 app，`dataSync` 类型前台服务每天累计只能跑 6 小
 
 ### P-011 · assets 里的压缩包拿不到精确长度，除非声明 `noCompress`
 
-`app/build.gradle.kts` / `voice/OfflineVoice.kt`
+`app/build.gradle.kts`（**当时**是语音模型 `voice/OfflineVoice.kt`；
+2026-11-05 模型移除后已无 `openFd` 调用，`noCompress += "zip"` 随之删除）
 
 **现象**：`AssetFileDescriptor.openFd` 对默认资源抛 `FileNotFoundException`，
 「环境准备中」无法显示百分比。
@@ -489,6 +511,8 @@ targetSdk 35+ 的 app，`dataSync` 类型前台服务每天累计只能跑 6 小
 `openFd().length` 即精确大小。
 **推广**：任何需要「读 assets 进度/随机访问」的资源都要进 noCompress 白名单；
 代价是包体里这块不压缩，大文件要掂量。
+**反过来也成立**：只走 `assets.open` 流式读的包（如 `builtin-skills.zip`）
+**不要**进 noCompress 白名单 —— 压缩存储更省包体。
 
 ### P-012 · AAPT2 会自动解压 `.gz` 后缀的资产并去后缀
 
@@ -528,7 +552,8 @@ targetSdk 35+ 的 app，`dataSync` 类型前台服务每天累计只能跑 6 小
 
 ### P-016 · 库加载失败的二次异常是 NoClassDefFoundError，catch Exception 拦不住
 
-`voice/OfflineVoice.kt`（OfflineVoiceEngine.start）
+任意 `System.loadLibrary` 依赖的类（**当时**是 Vosk 的 `OfflineVoiceEngine.start`，
+2026-11-05 该引擎已随内置离线语音一起移除 —— 但这个坑对**任何**原生库都成立）
 
 **现象**：16KB 页设备点语音，第一次弹「原生库加载失败」提示，之后每次点击**直接崩进程**，崩溃日志 `NoClassDefFoundError: org.vosk.LibVosk`（主线程触摸事件里）。
 **根因**：类静态初始化器里的 `System.loadLibrary` 失败一次后，JVM 把该类标记为初始化失败，后续引用抛 NoClassDefFoundError / ExceptionInInitializerError —— 都是 **LinkageError** 家族，不是 Exception 子类；原 catch 只接 UnsatisfiedLinkError 和 Exception，两扇门都漏。另一根因是 libvosk.so 0.3.47 全段 4KB 对齐（16KB 页设备 dlopen 必败）——升 vosk-android 0.3.75（全段 0x4000）修根。
@@ -661,9 +686,9 @@ AAPT=/d/AndroidSDK/build-tools/36.0.0/aapt2.exe
 
 **现象**：库明明在包里，`System.loadLibrary` 成功，但第一次 `feed` 就 `UnsatisfiedLinkError`。
 
-**根因**：JNI 导出符号是 `Java_app_codeforge_render_OpenRenderNative_nativeFeed`，与 Kotlin 的包/类/方法名逐字绑定。改包名、改类名、或 release 里 R8 改名，符号就对不上；另外 Rust 交叉编译必须带 `aarch64` 目标与 `--features jni,ratex`，否则没有这些导出。
+**根因**：JNI 导出符号是 `Java_com_hxy_codeforge_render_OpenRenderNative_nativeFeed`（原 `Java_app_codeforge_…`，2026-11-04 改包名，见 P-047），与 Kotlin 的包/类/方法名逐字绑定。改包名、改类名、或 release 里 R8 改名，符号就对不上；另外 Rust 交叉编译必须带 `aarch64` 目标与 `--features jni,ratex`，否则没有这些导出。
 
-**修法**：`app/proguard-rules.pro` 加 `-keep class app.codeforge.render.OpenRenderNative { *; }`；改 Kotlin 包/类名时同步改 `app_jni.rs` 的函数名；重编后用 `llvm-readelf -sW libopenrender.so | grep Java_app_codeforge` 核对符号。
+**修法**：`app/proguard-rules.pro` 加 `-keep class com.hxy.codeforge.render.OpenRenderNative { *; }`；改 Kotlin 包/类名时同步改 `app_jni.rs` 的函数名；重编后用 `llvm-readelf -sW libopenrender.so | grep Java_com_hxy_codeforge` 核对符号。
 
 **推广**：任何 `System.loadLibrary` 的类都要同时满足三件事——符号名对齐、R8 keep、ELF 的 `PT_LOAD` 对齐 ≥ 0x4000（16KB 页设备）。本条与 P-016 配套：加载失败要进程级判死，不要重试。
 
@@ -874,7 +899,205 @@ curl -L -o "$D/gradle-8.14.6-bin.zip" \
 touch "$D/gradle-8.14.6-bin.zip.ok"
 ```
 
-### P-041 · `source/` 下的内核参考副本不是原仓库，禁止在它里面做 git 写操作
+### P-041 · 引擎没有 Html 块类型，裸 HTML 会以纯文本落在 paragraph 里
+
+**现象**：模型直接输出一整页 HTML（不包 ```html 围栏）时，界面显示的是一屏尖括号。
+
+**根因**：`crates/openrender-core/src/markdown.rs` 里 `Event::Html` → `push_text(&html)`，
+即**裸 HTML 被当作普通文本推进 paragraph**。`BlockKind` 一共 9 种，没有 Html。
+
+**修法（壳侧，不动引擎）**：
+- 围栏形态：引擎给的是 `code_block` + `lang="html"` → `CodeFenceBlock` 里分流到 `HtmlBlockView`；
+- 裸 HTML 形态：壳侧按文本特征认 —— `ui/browser/HtmlDetection.kt` 的 `looksLikeHtmlDocument`
+  + `mergeHtmlBlocks`。
+  **但事后合并救不了带缩进的文档** —— 碎片在引擎提交时就丢了，见 **P-049**；
+  裸 HTML 的正规做法是**喂引擎之前**判定原文并直接挂页面（P-049 的 `looksLikeWholeHtmlDocument`）。
+
+**合并是必须的**：markdown 的 HTML 块在**空行**处断开，一份带空行的 HTML 文档
+（`<head>` 与 `<body>` 之间通常有空行）会被切成好几段，逐段看谁都不像完整文档。
+
+**判定门槛为什么定这么高**（认错就是 bug）：
+- 整段必须以 `<` 开头 —— 行内 HTML 混在文字里的不认；
+- 必须是完整文档（doctype，或 `<html>` 且有闭合）或带 style/script 的整块；
+- 必须够长（≥40 / ≥120）且以 `>` 收尾 —— 短片段多半是正文里贴的一行标签。
+
+**流式期间不做识别**：文档还没写完，提前渲染只会得到半张页面。
+
+### P-042 · 内核没有「系统提示词」字段，能力说明只能混进上行文本
+
+**现状**：`GET /api/config` 只有模型、温度、重试、步数、权限、workDir 这些，
+**没有 instructions / system_prompt / AGENTS 之类的入口**。
+`POST /api/config` 同理。想让模型知道「这个客户端能渲染 HTML」，只有一条路：
+把说明混进上行文本。
+
+**关键**：**上行文本与气泡文本是分开的**（`PendingSend(text, attachments, bubbleText)`）。
+所以注入只影响模型看到的内容，用户气泡里仍然是自己写的那句话。
+
+**副作用**：用户重发（`resendUser`）时用的是 `message.text`（气泡文本），
+元素布局信息会丢 —— 与附件的行为一致，可接受。
+
+**回放泄露**：内核把上行文本原样存进历史，下一轮 `history` 帧回放时整段替换消息列表，
+注入内容会漏回用户气泡。修法见 `ChatViewModel.stripInjectedText` —— 按标记切掉后缀，
+而不是重算（上行文本是「用户文本 + 固定后缀」的结构，切掉后缀即精确还原原话）。
+
+### P-043 · 内核 `modelTestReq` 的字段名必须逐字对齐，Go 会静默忽略未知字段
+
+**现象**：
+- 「获取模型列表」探测出来的模型不对 —— 用的不是该供应商的地址与密钥；
+- 「测试连接」永远报「API Key 为空」，从来没测过任何东西。
+
+**根因**：内核的请求体是
+
+```go
+type modelTestReq struct {
+    ProviderID string `json:"provider_id"`   // ← 不是 "provider"
+    Protocol   string `json:"protocol"`
+    BaseURL    string `json:"base_url"`
+    Model      string `json:"model"`         // ← 不是 "id"
+    KeySrc     string `json:"key_source"`
+    KeyName    string `json:"key_name"`
+    KeyValue   string `json:"key_value"`
+    ProbeContext bool `json:"probe_context"`
+}
+```
+
+而 App 早先发的是 `{"provider": …}` 与 `{"id": …}`。
+**Go 的 `json.Decoder` 静默忽略未知字段** —— 不报错、不警告，
+内核收到的是一片空：供应商 id 空 → `applyProviderDefaults` 直接返回 →
+地址与密钥回退到 `s.cfg.LLM`（**当前生效模型**的那一份）。
+于是「探测供应商 A」实际打的是当前模型的网关、用的是当前模型的密钥。
+
+**修法**：`KernelApi.discoverModels` / `testModel` 逐字对齐字段名，
+并**主动带上供应商的明文密钥**（内核 `/api/providers/list` 每个供应商都回填 `key_plain`，
+早先 App 把这个字段丢了）。
+
+**推广**：
+- 对着内核源码核字段名，别照着「看起来像」的命名写；
+- 内核 `handleModelDiscover` 在「请求里没有可用密钥」时会回退到**当前生效模型**的密钥，
+  并用 `key_from_active` 如实回报 —— **前端必须把这个字段显示出来**，
+  否则「探测用的到底是谁的密钥」是黑箱，用户只会看到「探测失败」。
+
+### P-044 · 供应商身份用 id，显示名只是外观
+
+**现象**：模型选择栏里同时出现「anthropic」（内核 config 给的 provider id）
+与「DeepSeek 官方」（供应商显示名），看着像两个不同的东西。
+
+**根因**：供应商在几份数据里是**不同的键**：
+内核 `config.provider` 给 **id**；模型库给 `provider_id` + `provider_name`；
+`/api/providers/list` 给**显示名** + `key_plain`。早先把「显示名列表」拿去和内核的 id 比，
+永远比不中。
+
+**修法**：`ui/chat/ModelPickerSheet.kt` 的 `buildProviderEntries` 统一**以 id 为身份**，
+显示时才翻成名字；去重时**按名字**判（供应商库那份只有名字没有 id，按 id 判会列成两家）。
+
+### P-045 · 内核 `config.provider` 是协议族，不是供应商 id
+
+**现象**：模型选择弹层的供应商行显示 `anthropic`，点进供应商页却是「DeepSeek 官方」。
+
+**根因**：内核 `config/default.yaml` 里
+
+```yaml
+llm:
+  provider: "anthropic"    # anthropic | openai
+```
+
+**这个字段是「协议族」**（决定请求走哪种协议），与供应商库里那些
+（id 如 `deepseek`、带显示名的）记录是**两个命名空间**。
+壳侧把它当成 provider id 去映射显示名，映射查不到就落回原始 id ——
+于是界面看着一点没变。
+
+**当前供应商的真相**：**当前生效模型所属的供应商**，要从模型库条目反查
+（`ui/chat/ModelPickerSheet.kt` 的 `resolveActiveProviderId`）。
+模型库为空 / 生效模型被删 → **没有当前供应商** → 显示「未选择」。
+
+**首装状态长什么样**：内核会预置一个供应商（如 DeepSeek 官方），
+但**模型库是空的**（模型要靠探测添加）。所以「供应商页有东西、模型库为空」
+是正常的，不是加载失败。
+
+**内核早给了信号**：`configView()` 返回 `model_in_library`
+（「当前生效模型是否仍在模型库中」）—— App 早先没解析。
+用它来区分「模型库空了」与「一切正常」，别再拿默认配置的模型 id 冒充当前模型。
+
+### P-046 · 签名密钥不能放在「会被清空」的路径上
+
+**现象**：真机装包报「安装包签名不正确」/ 无法覆盖安装。
+
+**根因**：AGP 默认的 debug keystore 落在 `$ANDROID_HOME/.android/debug.keystore`，
+而本沙箱的 `$ANDROID_HOME` 是 `/opt` —— **容器重启就被清空**，
+于是每轮构建生成一把新密钥。实测指纹：
+
+```
+v3 / v4  → 7b0523dd…   （同一轮工具链内，一致）
+v5      → 54d000f2…   （中间 /opt 被清空过，换了）
+```
+
+签名一变，Android 就拒绝覆盖安装（`INSTALL_PARSE_FAILED_*`）。
+
+**修法**：固定密钥放在**仓库内**的 `app/keystore/codeforge.keystore`
+（`*.keystore` 已被 `.gitignore` 覆盖，不进版本库），`app/build.gradle.kts` 里
+显式建 `signingConfigs["cf"]` 并让 debug / release 都用它。
+
+**⚠️ 这把密钥是命根子**：丢了就装不了任何更新（只能卸载重装，用户数据全没）。
+换机器构建时必须把它拷到 `app/keystore/` 下。
+口令：`codeforge`（store 与 key 同名，alias `codeforge`）。
+
+**推广**：**凡是需要跨环境稳定的产物（签名、密钥、证书），都不能依赖
+「构建机的某个目录」** —— 先确认那个目录在容器重启后还在。
+
+**签名方案要全开**（v1 + v2 + v3）：只开 v2 时，部分国产 ROM 自带的安装器
+（自己解析 APK 而不走系统 PackageInstaller）会判成「安装包签名不正确」。
+开 v1 多写一份 `META-INF/CERT.SF + CERT.RSA`，体积代价可忽略。
+验证时 `apksigner verify` 在 minSdk 26 下**不会**报 v1（它按 minSdk 决定验哪些），
+要 `apksigner verify --min-sdk-version 23` 才看得到 v1 的真实状态。
+
+**⚠️ 2026-11-05 补充：配置写了全开 ≠ 真的全开。**
+上面这套 `signingConfigs["cf"]` 是在 `persistentKeystore.exists()` **为真**时才创建；
+密钥不存在时 build.gradle.kts 会 `?: signingConfigs.getByName("debug")` 回落 debug，
+而 **debug keystore 只有 v2**（没有 v3）——于是产物签名方案是 v2-only，
+而配置里明明写着「v1 + v2 + v3 全开」，看代码完全看不出来。
+本轮的实际状况就是如此：`app/keystore/` 目录压根不存在。
+**查签名方案要看产物，不要看构建脚本**：
+
+```bash
+apksigner verify --verbose app/build/outputs/apk/release/app-release.apk
+```
+
+本轮补上密钥后（keytool 生成，RSA 2048 / 10000 天 / 口令 codeforge，
+生成命令写在 `app/build.gradle.kts` 的注释里），产物才是
+`v2: true / v3: true`（v1 因 minSdk 26 不再被 apksigner 单独验证，
+但 `META-INF/CERT.SF` + `CERT.RSA` 确实在包里）。
+
+真机侧可交叉验证：`dumpsys package <包名> | grep signatures`，
+`PackageSignatures{... version:3, ...}` 里的 **version:3** 就是 v3 生效的证据。
+
+**换签名 = 装不上更新**：debug 换成自建证书后，设备上旧包无法覆盖
+（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`），只能卸载重装（用户数据全没）。
+换签名方案前先跟用户说清楚。
+
+### P-047 · 改 Kotlin 包名要同步改 JNI 符号并重编 .so
+
+JNI 的符号名是 `Java_<包名下划线化>_<类名>_<方法名>`。
+把 `app.codeforge` 改成 `com.hxy.codeforge` 后，原来的
+`Java_app_codeforge_render_OpenRenderNative_*` **全部对不上**，
+运行时会 `UnsatisfiedLinkError`（而且只在真机上炸，编译期无感）。
+
+**四处必须同步**：
+
+1. `tools/openrender/app_jni.rs` 的函数名（`Java_com_hxy_codeforge_render_OpenRenderNative_*`）
+2. `app/proguard-rules.pro` 的 `-keep class com.hxy.codeforge.render.OpenRenderNative`
+3. 全部 `.kt` 的 `package` / `import`（本仓 61 个文件）
+4. **重编 `libopenrender.so`**（Linux 用新增的 `tools/openrender/build-android.sh`）
+
+**验符号**（改完必查）：
+
+```bash
+llvm-readelf -W --dyn-syms libopenrender.so | grep -oE "Java_[a-z_]*OpenRenderNative_[a-zA-Z]*"
+```
+
+> 注：`.so` 重编时为省内存关了 LTO（`CARGO_PROFILE_RELEASE_LTO=false`、
+> `codegen-units=16`），产物比 LTO 版大约 600 KB —— 换来的是 3GB 内存下能编过。
+
+### P-048 · `source/` 下的内核参考副本不是原仓库，禁止在它里面做 git 写操作
 
 全仓（`source/CodeForge-GO`）
 
@@ -893,12 +1116,167 @@ touch "$D/gradle-8.14.6-bin.zip.ok"
 **推广**：vendored/reference 目录、submodule、多仓库工作树里，git 命令的作用域永远是「当前目录」；
 凡是可能写远端/历史的命令，先确认仓库身份再执行。
 
+### P-049 · CommonMark 的 HTML 块在空行处结束，缩进行会被切碎，碎片拼不回原文
+
+**现象（雷电真机，2026-11-04）**：模型输出整页 HTML（缩进 + 空行），界面显示成一堆
+代码块与段落碎片，**内嵌浏览器完全不出现**。
+
+**根因**：CommonMark 规定 HTML 块（type 6）在**空行**处结束，之后的内容重新按
+markdown 解析。于是缩进 ≥4 空格的 HTML 行变成 **indented code block**，
+正文被从中间打断，**缩进还被引擎吃掉 4 格**。实测 IR：
+
+```
+paragraph "<!DOCTYPE html>\n"
+paragraph "<html>\n"
+code_block "<div id=\"a\">\n\n    <span>x</span>\n\n</div>\n"   ← 中间的碎片
+paragraph "</body>\n"
+```
+
+引擎还是**增量**的（`find_commit_point` 在空行处提交前缀），碎片一旦提交就
+**再也拼不回原文** —— 边界丢了、缩进丢了。壳侧事后合并（`mergeHtmlBlocks`）
+只对「连续的 paragraph」有效，中间夹着 code_block 就断。
+
+**修法（壳侧，喂引擎之前判定）**：`ui/browser/HtmlDetection.kt` 的
+`looksLikeWholeHtmlDocument(raw)` 判**原文**是不是一整份文档
+（有 doctype 或 `<html>`，且有 `</html>` / `</body>` 闭合，以 `<` 开头、以 `>` 收尾）；
+`OpenRenderContent` 在 `!streaming` 时先判这个，命中就**直接挂 `HtmlBlockView`**，
+完全不经过 markdown 引擎。
+
+**为什么不在引擎侧改**：引擎是上游 `raine-x/OpenRender`（钉死 commit，见版本锁定），
+改它要重编 `.so`；而且碎片在提交时就丢了，引擎侧也没有「原文」可依据。
+判定必须在**引擎看到文本之前**发生。
+
+**判定门槛仍要保守**：认错就是把正文里贴的一小段标签当整页渲染（吞掉周围文字）。
+围栏形态（```html）由 `code_block` + `lang="html"` 另走一条路，不进这条判定。
+
+### P-050 · 触屏没有 hover，元素挑选不能靠 `mousemove` 记住当前元素
+
+**现象（雷电真机，2026-11-04）**：内置浏览器的「选择元素」模式能开启
+（提示条出现、JS 桥通、`startPick` 返回 ok），但**点页面上的任何元素都没反应**，
+不弹气泡。
+
+**根因一（hover 不存在）**：原实现靠 `ov.addEventListener('mousemove')` 记住
+当前悬停元素，click 时取用。**触屏设备根本没有 mousemove**，`current` 永远是
+null，点什么都没反应。这条在真机上也一样犯 —— 手机上用手指点同样没有 mousemove。
+
+**根因二（覆盖层挡着自己）**：透明覆盖层盖在页面上，`document.elementFromPoint(x, y)`
+返回的是**覆盖层自己**。必须用 `elementsFromPoint` 拿整条命中链，
+跳过覆盖层/高亮/提示/气泡，取第一个真正的页面元素。
+
+**根因三（矩形字段名对不上）**：`describe` 给的矩形是 `{x, y, width, height}`，
+而 `placeBubble` 读的是 `r.left` / `r.top` / `r.bottom` —— **全是 undefined**，
+气泡被摆到无效位置。已改为统一用 `x` / `y` / `height`。
+
+**修法**：`ui/browser/PageBridge.kt` 的 `SCRIPT` 里
+- `click` 与 `touchend` **都**按坐标现场取元素（`pickAt`），不依赖 hover 状态；
+- `touchend` 的坐标在 `changedTouches[0]`，`touchmove` 的在 `touches[0]`；
+- `mousemove` 只用来做「预览高亮」，不再是取元素的唯一途径。
+
+**推广**：任何「鼠标 hover → 点击」的 WebView 交互，在触屏上都要另给一条
+「按坐标现场取目标」的通路；依赖 hover 状态的实现等于只支持鼠标。
+
+### P-051 · 探测命令带管道，退出码取的是 `head` 的，恒为 0
+
+**现象（雷电真机，2026-11-05）**：「运行环境 → 环境软件包」里，C/C++、Java 17、
+FFmpeg 三项**默认就是「已装」**（陶土色 + 勾图标），可 rootfs 里连 gcc 都没有。
+用户报「默认情况不自带语言但是环境那里却勾选了好几个」。
+
+**根因**：`EnvKit.EnvPackage.probe` 是「跑一下看退出码」的**存在性探测**，
+但三个包写成了带管道的形式：
+
+```kotlin
+EnvPackage("C/C++", "apk add --no-cache build-base", "gcc --version | head -1")
+EnvPackage("Java 17", "...", "java -version 2>&1 | head -1")
+EnvPackage("FFmpeg", "...", "ffmpeg -version | head -1")
+```
+
+**管道的退出码取自最后一个命令**（`head`）。命令不存在时 shell 报
+`gcc: inaccessible or not found`，但 `head` 照样成功退出 0 →
+探测结论恒为「已装」。
+
+真机 rootfs 内实测（`/bin/sh -c 'gcc --version | head -1 >/dev/null 2>&1; echo $?'`）：
+`gcc` 根本不存在，退出码却是 **0**；去掉管道后是 **127**（command not found）。
+
+**修法**：probe 一律用**不带管道**的单条命令，退出码即目标命令自己的退出码：
+
+```kotlin
+EnvPackage("C/C++", "apk add --no-cache build-base", "gcc --version")
+EnvPackage("Java 17", "...", "java -version")
+EnvPackage("FFmpeg", "...", "ffmpeg -version")
+```
+
+**推广**：凡是「靠退出码判断成败」的探测命令，**不许带管道**（`| head` / `| tail` /
+`| grep` 会换掉退出码）。要截输出就把重定向放在**整条管道之后**
+（`cmd >/dev/null 2>&1`），别在中间插管道。同理 `cmd || true` 也会抹掉失败。
+
+### P-052 · 内核的 frontmatter 解析器不支持 YAML 块标量
+
+**现象（2026-11-05）**：内置纯知识技能（MiniMax skills 仓的 6 个）铺进工作区后，
+内核 `/api/skills` 返回的 `description` 只剩一个 **`|`**，触发词全空，技能列表里
+每个技能只有一根竖线。
+
+**根因**：内核的 frontmatter 解析（`pkg/agent/skills.go` 的 `parseSkill`）是
+**逐行 `strings.Cut(line, ":")`**，不是 YAML 解析器。而上游 skill 普遍用
+YAML 块标量写多行描述：
+
+```yaml
+description: |
+  iOS application development guide covering UIKit, SnapKit, and SwiftUI...
+  Use when: developing iOS apps, implementing UI, ...
+```
+
+逐行切的结果：第一行 `description: |` → `description="|"`；后面的缩进行各自被
+当成 `key: value` 切碎（`Use when` 之类），键名对不上就整行丢弃。
+
+**修法**：内置资源的 frontmatter 一律改写成内核认的**扁平单行**形式：
+
+```yaml
+---
+name: ios-application-dev
+display_name: iOS 应用开发
+description: iOS 应用开发指南：UIKit、SwiftUI、布局与安全区、导航、动态字体、深色模式与无障碍。
+triggers: ios 应用, ios 开发, swiftui, uikit, swift 开发
+enabled: true
+---
+```
+
+`name` 必须与目录名一致（内核用它做 @ 补全 token）；`triggers` 逗号分隔。
+
+**推广**：跨进程传结构化元数据前，先确认**对面**的解析器到底吃哪种语法 ——
+「对方支持 YAML」这个假设往往是错的。本仓已有单测
+（`BuiltinSkillsAssetTest`）按内核的朴素规则复刻解析并断言，防回归。
+
+### P-053 · 列表「能滚」和「装得下」是两件事，截断会伪装成前者没问题
+
+**现象（2026-11-05）**：用户反馈「@补全弹出的窗口怎么不支持滑动？」
+
+**根因有两层，第二层才是主因**：
+
+1. 候选列表用普通 `Column` + `forEach` —— 无高度上限、无滚动；
+2. **候选被 `.take(4)` 硬截断** —— 只出 4 条。这条更隐蔽：**4 条永远装得下**，
+   所以哪怕把容器换成可滚的，也没有「可滑的内容」；用户看到的是
+   「后面那些补不出来」，而不是「列表被截断了」。
+
+**修法**（`ui/chat/Composer.kt`）：`LazyColumn` + `.heightIn(max = 240.dp)`，
+`.take(4)` → `.take(50)`（留兜底防极端渲染量，不再截断）。
+
+**推广**：给「下拉/补全列表」做滚动之前，先问一句**条目数会不会超过一屏** ——
+「加了 LazyColumn 就能滚」这个假设不成立，截断会先把内容吃光。
+反过来，用户抱怨「列表不能滚」时，先查**是不是被 `take(n)` 截断了**，
+而不是直接去改容器。
+
+**注意**：断言 `take(4)` 消失时要**限定范围** —— 附件芯片与元素芯片另有
+`take(4)`（那里是刻意只显示前 4 个 + “+N”），全文件扫会误报。
+本仓用 `MentionListScrollTest` 守住这三点。
+
 ### 版本锁定（不要随手升）
 
 - Compose `1.9.5` —— 再高要求 AGP 9.1 + compileSdk 37，整条链要一起动
 - AGP `8.13.2` / Gradle `8.14.6` / Kotlin `2.4.21` —— 三者互相配套
 - OkHttp `4.12.0` / Coroutines `1.10.2` —— REST、WS 自愈重连、云端语音 multipart；升级要回归重连与转写
-- `vosk-android` `0.3.75`（16KB 页对齐，2026-10-25 从 0.3.47 升；传递依赖 JNA 5.18.1 已加 keep） —— Maven Central；升版本要重验 `RecognitionListener` API 与首启解压
+- 内置离线语音（Vosk）已于 2026-11-05 **整体移除**（模型 41.9 MB + libvosk.so 10 MB + 依赖）——
+  APK 18.2 MB。语音改走「云端 → 系统 `SpeechRecognizer`」两档，**没有离线兜底**。
+  `NoOfflineVoiceTest` 守着它不被加回来。
 - R8 已启用（release）：规则在 `app/proguard-rules.pro`；**真机日志反混淆必须用**
   `app/build/outputs/mapping/release/mapping.txt`（retrace）。改 keep 规则前先读 P-012 同目录的注释
 - 兼容环境资产：`env-kit.tgz`（proot 5.1.107.101 + libtalloc 2.5.0 + libandroid-shmem 0.7，源 Termux 仓库）
@@ -914,10 +1292,15 @@ touch "$D/gradle-8.14.6-bin.zip.ok"
   仅用于本地完整性解码的内存保护，超预算只校验头部、不拒绝上传
 - `jniLibs/arm64-v8a/libopenrender.so` —— 产物，上游 `raine-x/OpenRender` @
   `6f11851722772b1a18388364b20a613a0aa2a020`（2026-10-28，0.1 preview），
-  `--features jni,ratex`；**8.3 MB**（内嵌 KaTeX 字体 + Noto Sans SC 子集，16KB 页对齐）；
-  重编走 `tools/openrender/build-android.ps1`（JNI 桥补丁在 `tools/openrender/app_jni.rs`）。
+  `--features jni,ratex`；**8.9 MB**（内嵌 KaTeX 字体 + Noto Sans SC 子集，16KB 页对齐；
+  重编时为省内存关 LTO，比 LTO 版大约 600 KB，见 P-047）；
+  重编走 `tools/openrender/build-android.ps1`（Windows）或 `build-android.sh`（Linux），
+  JNI 桥补丁在 `tools/openrender/app_jni.rs`。
   字体子集在 `tools/openrender/fonts/`（`include_bytes!` 要求与 `app_jni.rs` 同目录，
   改字体必须同步 `.so`）。升上游前必须重跑 Rust workspace 测试 + 核对 IR 键名（P-027）
+- **包名 `com.hxy.codeforge`**（2026-11-04 定，原 `app.codeforge`）—— Kotlin 包、namespace、
+  applicationId、JNI 符号、proguard keep 规则五处同步，见 P-047
+- **签名密钥 `app/keystore/codeforge.keystore`** —— 固定密钥，丢了装不了更新，见 P-046
 
 ### 已确认的设计取舍
 
@@ -926,7 +1309,7 @@ touch "$D/gradle-8.14.6-bin.zip.ok"
 | UI 框架 | Compose 而非 Flutter | 现有壳已是 Compose，`configChanges` 已声明，换 Flutter 等于推倒重来 |
 | 横竖屏判定 | `LocalConfiguration` 而非裸加速度计 | 旋转锁定 / 躺姿 / 分屏三种场景下裸传感器会误判（此条仍适用于分栏判定） |
 | 横屏策略 | 窗口锁 `portrait` + `DeviceRotation` 转内容 | 用户要求「不是简单转成横屏」：竖屏元素原样旋转，布局/动画零改动；代价见 P-009（IME 与弹层不随转） |
-| 语音识别 | 三引擎：云端（硅基流动，设置里独立配置）→ 系统 `SpeechRecognizer` → Vosk 离线兜底（模型 41 MB zip 打进包体，首启解压，见 §2.6） | 云端只存 Key、接口与模型内置；系统服务在国内 ROM 常缺失；离线保证开箱可用；启用云端时释放 Vosk 内存 |
+| 语音识别 | 两引擎：云端（硅基流动，设置里独立配置）→ 系统 `SpeechRecognizer` | 云端只存 Key、接口与模型内置；系统服务在国内 ROM 常缺失；**没有离线兜底**（内置 Vosk 已于 2026-11-05 移除，见 §2.6 注） |
 | 对话兜底 | 只走内核；内置测试模型链路已移除 | 壳侧不再维护第二套对话栈，避免两套状态机分叉 |
 | 内核改造 | 端口握手 + Server 级运行注册表 + 后台任务（pkg/tasks）；其余零改动 | 现有 REST + WS 契约已完整，新增能力都走独立端点/帧 |
 | 三语言路线 | Python/Java 走进程内，只有 Go 需要 exec | 前两者是 ART 上的字节码，天然符合 W^X |
@@ -934,6 +1317,7 @@ touch "$D/gradle-8.14.6-bin.zip.ok"
 | Markdown 引擎 | 内置 Rust `libopenrender.so`（增量 IR）而非 Kotlin 手写解析 + 公式 WebView | 流式复杂度从 O(N²) 降到 O(增量)，公式离线 PNG 化，去掉每公式一个 WebView；代价是 +4.85 MB `.so` 与上游 0.1 preview 风险 |
 | 图片附件上限 | 不设像素上限；单张 20MiB、最多 4 张、单条消息图片总量 20MiB | 用户要求取消像素限制并把单张上限提到 20MB；总量不放大避免单次请求体膨胀上百 MB |
 | 无文件夹项目的默认工作区 | `$CELL/workspace/<项目id>`，显示名写入 `workspace_names` | 工作区必须在会话创建前定好且事后不可改；项目 id 稳定、无碰撞，重命名只改显示名不动目录 |
+| 网页承载 | 内置 WebView（`ui/browser/`）而非扩展渲染引擎 | 引擎无 Html 块类型（P-041），且用户要「能点的页面 + 选元素」，扩展引擎做不到；裸 HTML 要在喂引擎**之前**认（P-049），元素挑选要支持触屏（P-050） |
 
 ---
 

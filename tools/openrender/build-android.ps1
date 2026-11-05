@@ -1,6 +1,6 @@
 <#
   Cross-compile OpenRender for Android arm64 (libopenrender.so) with:
-    - feature `jni`   : exports Java_app_codeforge_render_OpenRenderNative_*
+    - feature `jni`   : exports Java_com_hxy_codeforge_render_OpenRenderNative_*
     - feature `ratex` : pure-Rust KaTeX-compatible math -> PNG (embedded fonts)
 
   Pinned upstream: raine-x/OpenRender @ 6f11851722772b1a18388364b20a613a0aa2a020
@@ -47,7 +47,7 @@ Copy-Item (Join-Path $PSScriptRoot 'fonts\NotoSansSC-Subset.ttf') (Join-Path $sr
 $lib = Join-Path $src 'lib.rs'
 $libText = Get-Content $lib -Raw
 if ($libText -notmatch 'mod app_jni;') {
-  $libText = $libText -replace '(?m)^(\s*mod jni_bridge;)$', "`$1`r`n`r`n// CodeForge host JNI bridge (app.codeforge.render).`r`n#[cfg(feature = `"jni`")]`r`nmod app_jni;"
+  $libText = $libText -replace '(?m)^(\s*mod jni_bridge;)$', "`$1`r`n`r`n// CodeForge host JNI bridge (com.hxy.codeforge.render).`r`n#[cfg(feature = `"jni`")]`r`nmod app_jni;"
   Set-Content -Path $lib -Value $libText -NoNewline
 }
 

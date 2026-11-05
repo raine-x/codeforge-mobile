@@ -7,7 +7,7 @@
 
 | 智能体 | 独占文件 |
 |---|---|
-| A · 数据/协议 | `app/src/main/java/app/codeforge/model/CoreModels.kt`、`core/KernelApi.kt`、`ui/ChatViewModel.kt` |
+| A · 数据/协议 | `app/src/main/java/com/hxy/codeforge/model/CoreModels.kt`、`core/KernelApi.kt`、`ui/ChatViewModel.kt` |
 | B · 项目/侧栏 | `ui/sessions/SessionPane.kt`、`ui/AppRoot.kt`、新文件 `ui/sessions/ProjectPanel.kt`、`ui/sessions/FileTreePanel.kt`、`ui/sessions/McpSidebarPanel.kt` |
 | C · 输入区 | `ui/chat/Composer.kt`、新文件 `ui/chat/ActionPanel.kt` |
 | D · 设置/模型/外观 | `ui/settings/SettingsSheet.kt`、`ui/settings/KernelSettingsSection.kt`、`ui/settings/AppSettings.kt`、新文件 `ui/settings/ModelEditorSection.kt` |

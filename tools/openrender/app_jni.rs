@@ -1,7 +1,7 @@
 //! JNI bridge for the CodeForge Android host.
 //!
 //! The upstream `jni_bridge` binds to `ai.openrender.NativeEngine`. CodeForge
-//! keeps its own package (`app.codeforge.render.OpenRenderNative`), so this
+//! keeps its own package (`com.hxy.codeforge.render.OpenRenderNative`), so this
 //! module exports a parallel surface with the same semantics plus the optional
 //! RaTeX math renderer entry point that the upstream Kotlin wrapper does not
 //! expose.
@@ -52,7 +52,7 @@ pub fn install_unicode_font(cache_dir: &str) {
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeNew(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeNew(
     _env: JNIEnv,
     _this: JObject,
     throttle_ms: jint,
@@ -73,7 +73,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeNew(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeFree(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeFree(
     _env: JNIEnv,
     _this: JObject,
     handle: jlong,
@@ -87,7 +87,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeFree(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeFeed(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeFeed(
     mut env: JNIEnv,
     _this: JObject,
     handle: jlong,
@@ -107,7 +107,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeFeed(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeFlush(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeFlush(
     mut env: JNIEnv,
     _this: JObject,
     handle: jlong,
@@ -122,7 +122,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeFlush(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeFinish(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeFinish(
     mut env: JNIEnv,
     _this: JObject,
     handle: jlong,
@@ -137,7 +137,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeFinish(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeReset(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeReset(
     _env: JNIEnv,
     _this: JObject,
     handle: jlong,
@@ -148,7 +148,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeReset(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeConfigure(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeConfigure(
     _env: JNIEnv,
     _this: JObject,
     handle: jlong,
@@ -172,7 +172,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeConfigur
 
 /// Install the built-in RaTeX renderer (PNG output with embedded fonts).
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeUseRatex(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeUseRatex(
     mut env: JNIEnv,
     _this: JObject,
     handle: jlong,
@@ -212,7 +212,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeUseRatex
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeVersion(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeVersion(
     mut env: JNIEnv,
     _this: JObject,
 ) -> jstring {
@@ -220,7 +220,7 @@ pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeVersion(
 }
 
 #[no_mangle]
-pub extern "system" fn Java_app_codeforge_render_OpenRenderNative_nativeEmptyDelta(
+pub extern "system" fn Java_com_hxy_codeforge_render_OpenRenderNative_nativeEmptyDelta(
     mut env: JNIEnv,
     _this: JObject,
 ) -> jstring {
