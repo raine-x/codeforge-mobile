@@ -46,6 +46,7 @@ import com.hxy.codeforge.ui.theme.Clay
  * 技能 / 记忆 / 内置插件 / MCP 已拆成独立子页（见本文件下方四个 public 组合函数），
  * 这里不再混排 —— 原来六组挤在一页，手机上要滑很久才能找到目标项。
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun KernelSettingsSection(vm: ChatViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
@@ -89,6 +90,40 @@ fun KernelSettingsSection(vm: ChatViewModel) {
     }
     var temperature by rememberSaveable(cfg.temperature) {
         mutableStateOf(if (cfg.temperature > 0) cfg.temperature.toString() else "")
+    }
+    // 预设档位：最大 tokens 直接点选，32K 到 512K（与模型库 ctx_out 同口径）
+    val maxTokensPresets = listOf(
+        32_000 to "32K",
+        64_000 to "64K",
+        128_000 to "128K",
+        256_000 to "256K",
+        512_000 to "512K",
+    )
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.padding(vertical = 4.dp),
+    ) {
+        maxTokensPresets.forEach { (v, label) ->
+            val selected = maxTokens == v.toString()
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (selected) Clay else MaterialTheme.colorScheme.surfaceVariant)
+                    .noRippleClickable { maxTokens = v.toString() }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+            }
+        }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedTextField(

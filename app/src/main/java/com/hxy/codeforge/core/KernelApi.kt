@@ -106,7 +106,13 @@ class KernelApi(private val host: String, private val port: Int) {
         model?.let { put("model", it) }
         provider?.let { put("provider", it) }
         maxSteps?.let { put("max_steps", it) }
-    }) { ApiResult.Ok(Unit) }
+    }) { body ->
+        // 与 saveModelFull 同理：200 + ok:false 不是成功
+        val o = runCatching { JSONObject(body) }.getOrNull()
+        if (o != null && !o.optBoolean("ok", true)) {
+            throw IllegalStateException(o.optString("error").ifEmpty { "配置保存失败" })
+        }
+    }
 
     // ---------------------------------------------------------------- 后台任务
 
@@ -641,7 +647,14 @@ class KernelApi(private val host: String, private val port: Int) {
             "inherit_key",
             inheritKey && keySource.isBlank() && keyName.isBlank() && keyValue.isBlank(),
         )
-    }) { }
+    }) { body ->
+        // 内核失败时也是 200，用 ok:false + error 表达；不校验响应体的话
+        // 壳侧会把失败当成成功，还弹「模型已保存」（与 discoverModels 同款）
+        val o = runCatching { JSONObject(body) }.getOrNull()
+        if (o != null && !o.optBoolean("ok", true)) {
+            throw IllegalStateException(o.optString("error").ifEmpty { "模型保存失败" })
+        }
+    }
 
     /** POST /api/models/delete —— 从模型库移除一个模型。 */
     suspend fun deleteModel(id: String): ApiResult<Unit> =

@@ -2081,7 +2081,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         val a = api ?: run { bannerNoKernel(); return }
         viewModelScope.launch {
             when (val r = a.updateConfig(maxTokens = maxTokens, temperature = temperature)) {
-                is KernelApi.ApiResult.Ok -> refreshKernelSummaries()
+                is KernelApi.ApiResult.Ok -> {
+                    refreshKernelSummaries()
+                    toast("生成参数已保存")
+                }
                 is KernelApi.ApiResult.Err -> _state.update { it.copy(banner = Banner(r.message, true)) }
             }
         }
@@ -2105,7 +2108,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 retryMode = mode,
                 retryIntervalSec = intervalSec,
             )) {
-                is KernelApi.ApiResult.Ok -> refreshKernelSummaries()
+                is KernelApi.ApiResult.Ok -> {
+                    refreshKernelSummaries()
+                    toast("重试设置已保存")
+                }
                 is KernelApi.ApiResult.Err -> _state.update { it.copy(banner = Banner(r.message, true)) }
             }
         }
@@ -2383,10 +2389,12 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         keyName: String = "",
         keyValue: String = "",
         inheritKey: Boolean = true,
+        onDone: (ok: Boolean, message: String?) -> Unit = { _, _ -> },
     ) {
-        val a = api ?: run { bannerNoKernel(); return }
+        val a = api ?: run { bannerNoKernel(); onDone(false, "内核未连接"); return }
         if (id.isBlank()) {
             toast("模型 id 不能为空", isError = true)
+            onDone(false, "模型 id 不能为空")
             return
         }
         viewModelScope.launch {
@@ -2409,11 +2417,26 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 // 模型表跟着刷新一次：新增/改写后弹层里要立刻看到
                 is KernelApi.ApiResult.Ok -> {
                     refreshKernelSummaries()
-                    toast("模型已保存")
+                    // 改了当前生效模型的规格 → 当场重应用，否则改了看不到效果，
+                    // 直到用户下一次在模型库点「设为当前」才 apply（客服项 8 的同一解法）
+                    val current = _state.value.kernelConfig?.model
+                    if (current != null && current == id) {
+                        when (val ap = a.applyModel(id)) {
+                            is KernelApi.ApiResult.Ok ->
+                                toast("模型已保存，已应用到当前会话")
+                            is KernelApi.ApiResult.Err ->
+                                toast("模型已保存，但应用失败：${ap.message}", isError = true)
+                        }
+                    } else {
+                        toast("模型已保存")
+                    }
+                    onDone(true, null)
                 }
 
-                is KernelApi.ApiResult.Err ->
+                is KernelApi.ApiResult.Err -> {
                     _state.update { it.copy(banner = Banner(r.message, true)) }
+                    onDone(false, r.message)
+                }
             }
         }
     }

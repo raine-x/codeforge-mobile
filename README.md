@@ -24,14 +24,14 @@ Three languages, one process, one 17.4 MB APK — and it runs real code.
 | 运行   | arm64-v8a，minSdk 26，随包携带完整 Linux 兼容环境             |
 | 测试   | 66 个单元测试，零失败                                      |
 
-| Item       | Value                                                                                  |
-| ---------- | -------------------------------------------------------------------------------------- |
-| Package    | 17.4 MB single APK (was 65.5 MB, 72% smaller after removing the bundled voice model)    |
-| UI         | 100% native Compose, zero XML layouts, 25,727 lines across 56 Kotlin files             |
-| Kernel     | 16.6 MB Go native library, 36 REST endpoints plus 1 WebSocket connection                |
-| Typesetter | 8.5 MB Rust native library, in-house incremental Markdown IR, in-house formula layout   |
-| Runtime    | arm64-v8a, minSdk 26, complete Linux compat environment shipped in the package          |
-| Tests      | 66 unit tests, zero failures                                                            |
+| Item       | Value                                                                                 |
+| ---------- | ------------------------------------------------------------------------------------- |
+| Package    | 17.4 MB single APK (was 65.5 MB, 72% smaller after removing the bundled voice model)  |
+| UI         | 100% native Compose, zero XML layouts, 25,727 lines across 56 Kotlin files            |
+| Kernel     | 16.6 MB Go native library, 36 REST endpoints plus 1 WebSocket connection              |
+| Typesetter | 8.5 MB Rust native library, in-house incremental Markdown IR, in-house formula layout |
+| Runtime    | arm64-v8a, minSdk 26, complete Linux compat environment shipped in the package        |
+| Tests      | 66 unit tests, zero failures                                                          |
 
 ***
 
@@ -112,16 +112,16 @@ Formulas, tables, code blocks and diff coloring are all typeset locally, with no
 | 交互  | 横竖屏三档自适应，背景图、模糊、亮度、文字色可调，语音输入双引擎                     |
 | 工程  | 单一状态源，单向数据流，四级验证标准如实标注                               |
 
-| Area        | Highlight                                                                            |
-| ----------- | ------------------------------------------------------------------------------------ |
-| Sessions    | Parallel sessions, workspace bound at creation, archive, restore and delete laid out separately |
-| Models      | Custom endpoints with base URL, key, context, RPM, three-state capabilities, connection test, providers keyed by id |
-| Skills      | SKILL.md skills, built-in plugins, MCP, dynamic at-completion in the input box        |
-| Agents      | Subagents with their own context, goal mode with verdict and findings, per-call approval cards with diffs |
+| Area        | Highlight                                                                                                                           |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Sessions    | Parallel sessions, workspace bound at creation, archive, restore and delete laid out separately                                     |
+| Models      | Custom endpoints with base URL, key, context, RPM, three-state capabilities, connection test, providers keyed by id                 |
+| Skills      | SKILL.md skills, built-in plugins, MCP, dynamic at-completion in the input box                                                      |
+| Agents      | Subagents with their own context, goal mode with verdict and findings, per-call approval cards with diffs                           |
 | Rendering   | Paragraph-level re-typesetting on incremental IR, native Chinese formulas, measured table widths, collapsible and pinnable thinking |
-| Web         | Whole HTML pages rendered as interactive ones; built-in browser with back, refresh, fullscreen, snapshots and element picking |
-| Interaction | Three responsive tiers, adjustable wallpaper, blur, brightness and text color, dual voice engines |
-| Engineering | Single source of truth, unidirectional data flow, four verification levels reported honestly |
+| Web         | Whole HTML pages rendered as interactive ones; built-in browser with back, refresh, fullscreen, snapshots and element picking       |
+| Interaction | Three responsive tiers, adjustable wallpaper, blur, brightness and text color, dual voice engines                                   |
+| Engineering | Single source of truth, unidirectional data flow, four verification levels reported honestly                                        |
 
 ***
 
@@ -133,11 +133,11 @@ Formulas, tables, code blocks and diff coloring are all typeset locally, with no
 | 排版引擎 | Rust，libopenrender.so | 8.5 MB           | 解析、排版、公式  |
 | 内核   | Go，libcodeforge.so    | 16.6 MB          | 执行、协议、工作区 |
 
-| Layer      | Tech                  | Size               | Responsibility  |
-| ---------- | --------------------- | ------------------ | --------------- |
-| UI         | Kotlin plus Compose   | 56 files / 25,727 lines | Interaction  |
-| Typesetter | Rust, libopenrender.so | 8.5 MB            | Parsing, layout, formulas |
-| Kernel     | Go, libcodeforge.so   | 16.6 MB            | Execution, protocol, workspace |
+| Layer      | Tech                   | Size                    | Responsibility                 |
+| ---------- | ---------------------- | ----------------------- | ------------------------------ |
+| UI         | Kotlin plus Compose    | 56 files / 25,727 lines | Interaction                    |
+| Typesetter | Rust, libopenrender.so | 8.5 MB                  | Parsing, layout, formulas      |
+| Kernel     | Go, libcodeforge.so    | 16.6 MB                 | Execution, protocol, workspace |
 
 界面与内核之间是进程内直连。
 UI and kernel are connected in-process, directly.
@@ -147,7 +147,6 @@ UI and kernel are connected in-process, directly.
 ## 状态 / Status
 
 0.1.0，arm64-v8a，targetSdk 28
-0.1.0, arm64-v8a, targetSdk 28
 
 ***
 

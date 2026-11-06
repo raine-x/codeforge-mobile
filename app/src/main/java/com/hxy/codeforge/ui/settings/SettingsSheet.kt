@@ -950,12 +950,14 @@ private fun ModelSection(vm: ChatViewModel) {
                         keyName = spec?.keyName.orEmpty(),
                         keySet = spec?.keySet ?: false,
                     ),
-                    onSaved = {
-                        // 模型表 + 供应商详情都重拉一次：新增模型会改动两边
-                        vm.loadKernelExtras()
-                        vm.refreshProviderDetails()
-                        sub = "library"
-                        editingModelId = null
+                    onSaved = { ok ->
+                        if (ok) {
+                            // 保存成功后模型表 + 供应商详情都重拉一次：新增模型会改动两边
+                            vm.loadKernelExtras()
+                            vm.refreshProviderDetails()
+                            sub = "library"
+                            editingModelId = null
+                        }
                     },
                     onCancel = {
                         sub = "library"

@@ -55,7 +55,7 @@ fun ModelEditorSection(
     vm: ChatViewModel,
     providers: List<Pair<String, String>>,
     initial: ModelEditorInitial = ModelEditorInitial(),
-    onSaved: () -> Unit,
+    onSaved: (Boolean) -> Unit,
     onCancel: () -> Unit,
 ) {
     // 编辑既有模型时 id 不能改：内核按 id 判重，改 id 等于新建，会把规格挂到另一条上
@@ -88,6 +88,8 @@ fun ModelEditorSection(
         mutableStateOf(initial.rpm.takeIf { it > 0 }?.toString().orEmpty())
     }
     var formError by remember(initial.id) { mutableStateOf<String?>(null) }
+    var saveError by remember(initial.id) { mutableStateOf<String?>(null) }
+    var saving by remember(initial.id) { mutableStateOf(false) }
     var testResult by remember(initial.id) { mutableStateOf<String?>(null) }
     var testError by remember(initial.id) { mutableStateOf<String?>(null) }
     var testing by remember(initial.id) { mutableStateOf(false) }
@@ -346,9 +348,9 @@ fun ModelEditorSection(
         )
 
         // ---------------- 结果区 ----------------
-        if (formError != null) {
+        if (formError != null || saveError != null) {
             Text(
-                text = formError.orEmpty(),
+                text = (saveError ?: formError).orEmpty(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier
@@ -383,9 +385,14 @@ fun ModelEditorSection(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             EditorPill(
-                label = if (editing) "保存修改" else "保存",
+                label = when {
+                    saving -> "保存中…"
+                    editing -> "保存修改"
+                    else -> "保存"
+                },
                 primary = true,
             ) {
+                if (saving) return@EditorPill
                 val id = modelId.trim()
                 if (id.isEmpty()) {
                     formError = "模型 id 不能为空"
@@ -402,6 +409,8 @@ fun ModelEditorSection(
                     else -> null
                 }
                 formError = null
+                saveError = null
+                saving = true
                 vm.saveModelFull(
                     id = id,
                     name = displayName.trim().ifBlank { id },
@@ -419,8 +428,12 @@ fun ModelEditorSection(
                     keyName = if (!inherit && keySource == "env") keyName.trim() else "",
                     keyValue = if (!inherit && keySource == "plain") keyValue.trim() else "",
                     inheritKey = inherit,
-                )
-                onSaved()
+                ) { ok, message ->
+                    saving = false
+                    // 失败不跳表单：让用户在表单内看到原因、改完再存
+                    if (!ok) saveError = message?.ifBlank { "模型保存失败" } ?: "模型保存失败"
+                    onSaved(ok)
+                }
             }
             EditorPill(label = "重置", primary = false) { resetForm() }
             if (editing) {
@@ -617,12 +630,11 @@ private val CTX_IN_PRESETS = listOf(
 )
 
 private val CTX_OUT_PRESETS = listOf(
-    4_000 to "4K",
-    8_000 to "8K",
-    16_000 to "16K",
     32_000 to "32K",
     64_000 to "64K",
-    384_000 to "384K",
+    128_000 to "128K",
+    256_000 to "256K",
+    512_000 to "512K",
 )
 
 @Composable
