@@ -99,7 +99,7 @@ data class ChatUiState(
     val kernelConfig: KernelConfigSummary? = null,
     /** 子智能体策略（设置页）。 */
     val subagentPolicy: SubagentPolicy? = null,
-    /** 内置插件开关（id → 名称/启用），Ready 后拉取。 */
+    /** 内置插件 @ 补全（token=真实触发词/回落映射, 显示名, 启用），Ready 后拉取。 */
     val builtinPlugins: List<Triple<String, String, Boolean>> = emptyList(),
     /** 内置插件完整信息（用途/使用场景说明）；[builtinPlugins] 保留给 Composer 的 @ 补全。 */
     val builtinPluginInfos: List<BuiltinPluginInfo> = emptyList(),
@@ -2307,6 +2307,21 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         }
     }
 
+    // 内置插件 @ 补全的回落映射：现役内核的触发词匹配（pluginTriggered）只认
+    // 原生触发词，不认插件 id 形态——壳侧 @ 面板插 @vulnerability_research 时
+    // 内核毫无反应，「选了等于没选」。内核触发词数据化版本会下发 triggers 字段，
+    // 到时候优先走 API；映射只兜旧内核。逆向分析不用映射：它的原生触发词
+    // @reverse_analysis 与 id 本来就一致。
+    private val builtinMentionFallback = mapOf(
+        "vulnerability_research" to "vuln_hunt",
+    )
+
+    /** 内置插件插入输入框的 token：内核下发的真实触发词优先，否则查回落映射，最后退回 id。 */
+    private fun builtinMentionToken(p: BuiltinPluginInfo): String {
+        p.triggers.firstOrNull()?.let { return it.removePrefix("@") }
+        return builtinMentionFallback[p.id] ?: p.id.removePrefix("@")
+    }
+
     /** 设置页：拉内置插件 / MCP 插件 / 技能（Ready 后调，幂等）。 */
     fun loadKernelExtras() {
         val a = api ?: return
@@ -2315,9 +2330,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 is KernelApi.ApiResult.Ok -> _state.update {
                     it.copy(
                         builtinPluginInfos = r.value,
-                        // 旧 Triple 形态给 Composer 的 @ 补全（第一项是 id，即 @token）；
-                        // 第二项现在填内核下发的显示名，未配置时内核已回退成 id。
-                        builtinPlugins = r.value.map { p -> Triple(p.id, p.name, p.enabled) },
+                        // 旧 Triple 形态给 Composer 的 @ 补全：第一项是插入输入框的 token
+                        //（解析规则见 builtinMentionToken），第二项填内核下发的显示名。
+                        builtinPlugins = r.value.map { p -> Triple(builtinMentionToken(p), p.name, p.enabled) },
                     )
                 }
                 is KernelApi.ApiResult.Err -> Unit

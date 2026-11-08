@@ -326,6 +326,11 @@ data class BuiltinPluginInfo(
     val purpose: String = "",
     val whenToUse: String = "",
     val enabled: Boolean = false,
+    /**
+     * @ 触发词（内核触发词数据化之后才下发；无常驻触发词或旧内核为空）。
+     * 旧内核不下发此键或下发了 null——与三态布尔同理，缺失 ≠ 否定，一律按空处理。
+     */
+    val triggers: List<String> = emptyList(),
 )
 
 /**

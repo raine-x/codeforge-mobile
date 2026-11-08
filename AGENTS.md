@@ -363,7 +363,7 @@ P-039/P-047 所指的 `tools/openrender/` 路径已不在仓库，材料在 `D:\
 - [ ] 若改了分层或踩到新坑，`AGENTS.md` 第 2 / 第 9 节已同步
 - [ ] `改动历史.md` 的「验证」栏如实写了跑到哪一级、什么没验证
 - [ ] 没有跨层改（界面层没碰协议层，协议层没引界面层）
-- [ ] 没有 `git add -A`、没有未经用户要求执行 `git push`
+- [ ] 没有 `git add -A`、没有未经用户要求执行 `git commit`和 `git push`
 - [ ] 没有把 so 源码或构建材料重新引入仓库（见第 1 节边界）
 - [ ] 回复里说清了：改了什么、验证到什么程度、还剩什么没做
 
@@ -1089,6 +1089,12 @@ llvm-readelf -W --dyn-syms libopenrender.so | grep -oE "Java_[a-z_]*OpenRenderNa
 
 > 2026-11-07 起 `source/` 目录已整体移出仓库（内核源码包移至 `D:\code\CodeForgeAPP-private\`），
 > 本条保留作历史经验：多仓库/vendored 场景的仓库身份确认纪律仍然适用。
+>
+> **2026-11-08 更新（用户指定，修订上面的落点规则）**：用户恢复 `source/CodeForge-GO/`
+> 并指定**内核源码改动只能改这里**（`D:\code\CodeForgeAPP\source\CodeForge-GO\CodeForge-go`）。
+> 本条其余纪律不变：该副本 remote 指向内核 gitee/GitHub 远端，**禁止 commit/push 等一切
+> git 写操作**（提交由用户自己做）；改完的内核源码如何变成 `libcodeforge.so` 见 P-057
+> （现役产物的 pkg/tasks 与握手源码仍缺失，重编挂起）。
 
 ### P-049 · CommonMark 的 HTML 块在空行处结束，缩进行会被切碎，碎片拼不回原文
 
@@ -1349,6 +1355,40 @@ Compose/ViewModel 的生命周期完全不同轴；Notification/PendingIntent �
 - extra 缺失的布尔按**更安全的一侧**取默认（审批按「拒绝」：误拒绝可重试，
   误批准撤不回）。
 
+### P-057 · 重编 `.so` 前必须核对「源码谱系 ⊇ 现役产物」，否则重编即回退
+
+**现象**（2026-11-08 发现）：要为内置插件修复重编 `libcodeforge.so` 时发现，
+现役产物（2026-10-29 构建，17,432,870 字节）包含 **`pkg/tasks` 后台任务与端口握手**，
+而它们**不存在于任何存活的源码里**：内核仓库本地 master（3a9915f，10-08）、
+远端谱系（gitee/GitHub 均为 d1bb4ee，10-21，比本地新 7 个提交）都没有；
+10-25/10-29 的内核改动当年做在壳仓库 `source/CodeForge-GO` vendored 工作目录里
+（见改动历史 2026-10-29 条），**从未提交进任何仓库**，该目录 11-07 移出仓库；
+本该保存它的 `D:\code\CodeForgeAPP-private\so-source\codeforge-source-20261104.zip`
+实际装的是**壳仓库快照**（内含 `source/CodeForge-GO/` 空目录），README 标注与内容不符。
+直接用现存任何源码重编 = 丢失后台任务 + 内核握手（App 连不上内核）。
+
+**根因**：P-048 管住了「别在 vendored 副本里碰 git」，但没管住它的反面——
+内核改动**只存在于工作目录、不 commit**（工作目录不是版本控制）；
+「移出仓库」时打包了外壳快照却**没有解包验证内容**是不是目标物。
+
+**修法**（2026-11-08 收口）：用户指定改动唯一位置为恢复的 `source/CodeForge-GO/CodeForge-go`
+并确认其为现存最新源码后，按改动历史 2026-10-29/10-25 条目的设计记录**重建**了
+`pkg/tasks`（manager + 三工具 + `/api/tasks` REST/WS）与端口握手
+（`CODEFORGE_PORT` env → `PORT=<BoundPort>` stdout），连同内置插件两修复一起
+重编 `libcodeforge.so`（17,432,870 字节，与现役产物逐字节同长、五组特性符号
+字节级全中）换入 jniLibs。壳侧 bug（@ 面板 id 形态触发词）另走了纯壳修复：
+内置映射兜底插原生触发词，内核下发 `triggers` 后自动优先走 API
+（`ChatViewModel.builtinMentionToken`）。**真机运行时未验证**；内核副本全部改动未 commit。
+
+**推广**：
+- **重编任何预编译产物前，先证明手里的源码能编出等价物**：对现役 `.so` 做二进制
+  特性检索（`strings`/`grep` 找 `run_background`、`/api/tasks` 等特性符号），
+  源码里 grep 不到同名符号就不要编——「仓库里有个同名项目」不等于「它就是产物的来源」。
+- **多机器/多容器开发时，commit 是唯一的跨机器记忆**。产物二进制能对比大小，
+  但源码丢了就是丢了；每段改动完成即 commit（内核 AGENTS.md 本就允许）。
+- **「移出/打包/备份」类操作完成后立即解包抽查内容**，不能只看文件名与 README——
+  打包脚本拿错目录时，名字越是「看起来对」越危险。
+
 ### 版本锁定（不要随手升）
 
 - Compose `1.9.5` —— 再高要求 AGP 9.1 + compileSdk 37，整条链要一起动
@@ -1369,7 +1409,14 @@ Compose/ViewModel 的生命周期完全不同轴；Notification/PendingIntent �
   后台脚本任务（`pkg/tasks` + `run_background/list_background/kill_background` + `/api/tasks`）
   见改动历史 2026-10-29 条，旧库备份在 `jniLibs-backup-before-background-tasks-20261029/`；
   图片附件**不设像素上限**（单张 20MiB、最多 4 张、单条消息图片总量 20MiB），`maxIntegrityDecodePixels`
-  仅用于本地完整性解码的内存保护，超预算只校验头部、不拒绝上传
+  仅用于本地完整性解码的内存保护，超预算只校验头部、不拒绝上传。
+  ⚠️ 2026-11-08 重编说明（P-057）：现役产物曾含 `pkg/tasks` 与端口握手但其源码一度丢失；
+  两块已按改动历史记录在 `source/CodeForge-GO/CodeForge-go` **重建**并重编
+  （17,432,870 字节，与旧产物同长、符号全中）。**内核改动唯一位置是该副本**
+  （用户指定，见 P-048 注记），其内全部改动未 commit；重编命令
+  `CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o bin/codeforge-android-arm64 ./cmd/agent`，
+  重编后必须字节级验特性符号（run_background/api/tasks/CODEFORGE_PORT/PORT=）再换 jniLibs；
+  内核仓库本地 master 仍落后远端 7 个提交，两谱系如何归并待用户决策
 - `jniLibs/arm64-v8a/libopenrender.so` —— **预编译产物**，上游 `raine-x/OpenRender` @
   `6f11851722772b1a18388364b20a613a0aa2a020`（2026-10-28，0.1 preview），
   `--features jni,ratex`；**8.9 MB**（内嵌 KaTeX 字体 + Noto Sans SC 子集，16KB 页对齐；
@@ -1380,35 +1427,3 @@ Compose/ViewModel 的生命周期完全不同轴；Notification/PendingIntent �
 - **包名 `com.hxy.codeforge`**（2026-11-04 定，原 `app.codeforge`）—— Kotlin 包、namespace、
   applicationId、JNI 符号、proguard keep 规则五处同步，见 P-047
 - **签名密钥 `app/keystore/codeforge.keystore`** —— 固定密钥，丢了装不了更新，见 P-046
-
-### 已确认的设计取舍
-
-| 取舍 | 结论 | 一句话理由 |
-|---|---|---|
-| UI 框架 | Compose 而非 Flutter | 现有壳已是 Compose，`configChanges` 已声明，换 Flutter 等于推倒重来 |
-| 横竖屏判定 | `LocalConfiguration` 而非裸加速度计 | 旋转锁定 / 躺姿 / 分屏三种场景下裸传感器会误判（此条仍适用于分栏判定） |
-| 横屏策略 | 窗口锁 `portrait` + `DeviceRotation` 转内容 | 用户要求「不是简单转成横屏」：竖屏元素原样旋转，布局/动画零改动；代价见 P-009（IME 与弹层不随转） |
-| 语音识别 | 两引擎：云端（硅基流动，设置里独立配置）→ 系统 `SpeechRecognizer` | 云端只存 Key、接口与模型内置；系统服务在国内 ROM 常缺失；**没有离线兜底**（内置 Vosk 已于 2026-11-05 移除，见 §2.6 注） |
-| 对话兜底 | 只走内核；内置测试模型链路已移除 | 壳侧不再维护第二套对话栈，避免两套状态机分叉 |
-| 内核改造 | 端口握手 + Server 级运行注册表 + 后台任务（pkg/tasks）；其余零改动 | 现有 REST + WS 契约已完整，新增能力都走独立端点/帧 |
-| 三语言路线 | Python/Java 走进程内，只有 Go 需要 exec | 前两者是 ART 上的字节码，天然符合 W^X |
-| 多语言支持 | 在 PATH 里装工具链，不在内核里加逻辑 | `run_command` 只跑 shell，不关心编译什么 |
-| Markdown 引擎 | 内置 Rust `libopenrender.so`（增量 IR）而非 Kotlin 手写解析 + 公式 WebView | 流式复杂度从 O(N²) 降到 O(增量)，公式离线 PNG 化，去掉每公式一个 WebView；代价是 +4.85 MB `.so` 与上游 0.1 preview 风险 |
-| 图片附件上限 | 不设像素上限；单张 20MiB、最多 4 张、单条消息图片总量 20MiB | 用户要求取消像素限制并把单张上限提到 20MB；总量不放大避免单次请求体膨胀上百 MB |
-| 无文件夹项目的默认工作区 | `$CELL/workspace/<项目id>`，显示名写入 `workspace_names` | 工作区必须在会话创建前定好且事后不可改；项目 id 稳定、无碰撞，重命名只改显示名不动目录 |
-| 网页承载 | 内置 WebView（`ui/browser/`）而非扩展渲染引擎 | 引擎无 Html 块类型（P-041），且用户要「能点的页面 + 选元素」，扩展引擎做不到；裸 HTML 要在喂引擎**之前**认（P-049），元素挑选要支持触屏（P-050） |
-
----
-
-## 10. 禁止事项
-
-- ❌ 把 so 源码或构建材料重新引入本仓库、或把它们复制/外传到仓库与 `D:\code\CodeForgeAPP-private\` 之外（材料已移出，未经用户确认不得变动）
-- ❌ 未经用户明确要求执行 `git push`；用户要求时也只推本仓库 `origin`（`code-forge-m`）
-- ❌ 跨层调用（界面层直接 new `HttpCoreTransport`、`core/` import `ui/`）
-- ❌ 在界面层放业务状态（会话、消息、运行状态必须来自 `ChatUiState`）
-- ❌ 删除或清空 `.workbuddy-ai/`
-- ❌ 跳过三份记录直接交付
-- ❌ 把「构建成功」当成「功能可用」上报
-- ❌ 顺手重构无关代码、顺手改格式
-- ❌ 引入新依赖不说明理由
-- ❌ 未经确认删除文件（尤其 `D:` 盘上用户的其他东西）

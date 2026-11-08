@@ -590,7 +590,8 @@ fun Composer(
     )
     val mentionTransform = remember(palette.mention) { mentionHighlight(palette.mention) }
 
-    // @ 提及候选：技能（@slug）+ 内置插件（@id）+ 已加载的 MCP 插件（@名称）。
+    // @ 提及候选：技能（@slug）+ 内置插件（@触发词，ViewModel 已把 id 解析成
+    // 内核认识的真实触发 token）+ 已加载的 MCP 插件（@名称）。
     // 不再写死 plan/goal/vuln/reverse —— 那四个只是内置插件里最常见的几个，
     // 拿它当全量候选会让「装了的技能补不出来」看起来像补全坏了。
     val mentionCandidates = remember(skills, builtinPlugins, mcpPlugins) {
@@ -605,7 +606,7 @@ fun Composer(
                     add(
                         MentionCandidate(
                             token = token,
-                            // 内置插件的第二项是显示名（purpose 文案），@ 插入的是 id，两者不一定相同
+                            // 第二项是内核下发的显示名，token 是解析后的真实触发词，两者可以不同
                             title = name.ifBlank { token },
                             description = if (enabled) "内置插件" else "内置插件 · 已关闭",
                             kind = "插件",

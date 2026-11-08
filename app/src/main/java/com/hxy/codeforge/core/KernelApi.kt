@@ -900,6 +900,10 @@ class KernelApi(private val host: String, private val port: Int) {
                         purpose = o.optString("purpose"),
                         whenToUse = o.optString("when_to_use"),
                         enabled = o.optBoolean("enabled", false),
+                        // triggers 是数组，旧内核不下发（null）→ 空列表；缺失 ≠ 否定（同 P-031 的三态语义）
+                        triggers = o.optJSONArray("triggers")?.let { a ->
+                            (0 until a.length()).mapNotNull { k -> a.optString(k).takeIf { it.isNotBlank() } }
+                        } ?: emptyList(),
                     )
                 }
             }
