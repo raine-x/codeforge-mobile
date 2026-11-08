@@ -272,18 +272,10 @@ gcc --version 管道 head -1 的退出码取自管道末端，也就是 head，�
 
 版本是钉死的，不是随手升的，升级要整条链一起动。理由见 AGENTS.md 的版本锁定一节。
 
-### 重建原生库
+### 原生库
 
-```bash
-# Go 内核
-CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o <jniLibs>/libcodeforge.so ./cmd/agent
-
-# Rust 排版引擎
-powershell tools/openrender/build-android.ps1   # Windows
-bash tools/openrender/build-android.sh          # Linux
-```
-
-Rust 侧改了字体必须同步重编 so 文件，include_bytes 要求字体子集在 tools/openrender/fonts 目录里。
+Go 内核与排版引擎以**预编译产物**随仓库分发（`app/src/main/jniLibs/arm64-v8a/`），构建 APK
+不需要重编它们。两者的源码不在本仓库：重编或获取源码请联系 2653603072@qq.com（见「许可」）。
 
 ---
 
@@ -307,8 +299,7 @@ app/src/main/java/com/hxy/codeforge/
   render/    排版引擎桥接与 IR
   ui/        chat、sessions、settings、common、browser、theme
   voice/     云端语音
-app/src/main/jniLibs/arm64-v8a/   Go 内核与 Rust 引擎
-tools/openrender/                  引擎源码、字体与构建脚本
+app/src/main/jniLibs/arm64-v8a/   Go 内核与 Rust 引擎（预编译产物）
 docs/                              方案文档与对齐清单
 ```
 
@@ -327,38 +318,29 @@ docs/                              方案文档与对齐清单
 
 ## 许可
 
-本项目基于 GNU General Public License v3.0 发布，并附加一条「禁止商用」的限制条款。
+本项目采用 **MIT + 商业授权双许可**（Copyright (c) 2026 raine-x）。
 
-### 可以免费做的事
+### MIT 许可（默认）
 
-- 个人学习、研究、教学、非营利公益、评测与安全审计
-- 克隆仓库后自行部署、修改、使用，且不因此获得任何对价
-- 提交代码、文档、翻译、问题反馈或补丁
-- 依法为个人备份、灾备保存副本
-- 公开分发（含镜像仓库与软件包管理器），前提是随附完整 LICENSE 并保留版权声明
+按标准 MIT 许可证使用、复制、修改、合并、发布、分发、再许可与销售——包括商业用途，
+前提是保留版权声明与许可声明。随仓库分发的 `libcodeforge.so` 与 `libopenrender.so`
+二进制产物同样按 MIT 授权；两者的构建源码不在本仓库，获取方式见下。
 
-### 不能免费做的事
+### 商业授权（可选）
 
-未经著作权人事先书面许可，不得将本软件或其任何部分（含源码、APK、衍生作品）用于任何商业目的，
-包括销售、出租、分销收费、订阅收费、托管收费、作为 SaaS 提供、以本软件为核心构建收费产品、
-或以本软件为组件发行闭源商业产品。
+如需超出 MIT 条款的使用方式——免除署名与来源标注、独家授权、OEM 预装与定制、
+源码级交付、保修与技术支持等——联系 **2653603072@qq.com** 获取商业授权。
+商业授权与 MIT 并行提供，任选其一；第三方组件不在其覆盖范围内。
 
-违反这一条的使用不享有本许可证授予的任何权利，并承担由此产生的全部责任。
+### 第三方组件保留原许可
 
-商业授权须向仓库维护者提出书面申请，说明用途、范围与授权期限，经书面签发后生效。
+APK 内含的排版引擎（MIT）、Noto Sans SC 字体子集（SIL OFL 1.1）、proot（GPL-2.0 系）、
+libtalloc（LGPL 系）与 Alpine rootfs 等第三方组件，著作权归各自作者，按各自许可证发布。
+本项目的授权不改变、也不扩及这些组件，完整清单见 LICENSE 的「第三方组件与许可」一节。
 
-### 需要知道的两件事
+### 关于源代码
 
-**第一，这不是 FSF 口径下的自由软件。** GPL-3.0 本身允许商业使用，附加的禁止商用条款使其整体
-不符合自由软件定义。采用者应当知悉这一差异，这也是本项目与 CodeForge-Go 内核仓库一致的取舍。
-
-**第二，第三方组件不受这条限制影响。** APK 内含的排版引擎（MIT）、Noto Sans SC 字体子集
-（SIL OFL 1.1）、proot 与 Alpine rootfs、内置技能等，著作权归各自作者，按各自许可证发布。
-本项目的附加条款不改变、也不扩及这些组件，详见 LICENSE 的「第三方组件与许可」一节。
-
-### 以 APK 分发时
-
-须同时提供获取完整对应源代码的方式（GPL-3.0 第 6 条）。本仓库即为主要获取渠道，
-构建方法见上文「构建」一节。
+内核（libcodeforge.so）源代码曾以 GPL-3.0 + 附加条款随旧版本分发；自本版本起著作权人
+将其重许可为 MIT，且源码不再随本仓库分发。此前按旧许可获得的副本仍适用其当时的许可。
 
 完整条款与全文见 [LICENSE](LICENSE)。

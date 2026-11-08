@@ -38,7 +38,7 @@ import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
 
 /**
- * 内核设置区：生成参数 / 重试机制 / 上下文压缩 / 子智能体策略 / 权限 / 步数 / 通知 / 工作区。
+ * 内核设置区：重试机制 / 上下文压缩 / 子智能体策略 / 权限 / 步数 / 通知 / 工作区。
  *
  * 数据全部来自 [ChatViewModel.state] 的 kernelConfig / subagentPolicy / contextUsage
  * （内核 Ready 后 KernelApi 拉取）；写操作经 VM 走 REST，成功后摘要自动回灌。
@@ -81,78 +81,6 @@ fun KernelSettingsSection(vm: ChatViewModel) {
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
-    )
-
-    // ---------------- 生成参数 ----------------
-    SettingsLabel("生成参数")
-    var maxTokens by rememberSaveable(cfg.maxTokens) {
-        mutableStateOf(cfg.maxTokens.takeIf { it > 0 }?.toString() ?: "")
-    }
-    var temperature by rememberSaveable(cfg.temperature) {
-        mutableStateOf(if (cfg.temperature > 0) cfg.temperature.toString() else "")
-    }
-    // 预设档位：最大 tokens 直接点选，32K 到 512K（与模型库 ctx_out 同口径）
-    val maxTokensPresets = listOf(
-        32_000 to "32K",
-        64_000 to "64K",
-        128_000 to "128K",
-        256_000 to "256K",
-        512_000 to "512K",
-    )
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
-        modifier = Modifier.padding(vertical = 4.dp),
-    ) {
-        maxTokensPresets.forEach { (v, label) ->
-            val selected = maxTokens == v.toString()
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(if (selected) Clay else MaterialTheme.colorScheme.surfaceVariant)
-                    .noRippleClickable { maxTokens = v.toString() }
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-            ) {
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (selected) {
-                        MaterialTheme.colorScheme.onPrimary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                )
-            }
-        }
-    }
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = maxTokens,
-            onValueChange = { maxTokens = it.filter { c -> c.isDigit() }.take(6) },
-            label = { Text("最大 tokens") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.weight(1f),
-        )
-        OutlinedTextField(
-            value = temperature,
-            onValueChange = { temperature = it.filter { c -> c.isDigit() || c == '.' }.take(5) },
-            label = { Text("温度") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            modifier = Modifier.weight(1f),
-        )
-    }
-    SavePill("保存生成参数") {
-        vm.updateGenerationConfig(
-            maxTokens = maxTokens.toIntOrNull(),
-            temperature = temperature.toDoubleOrNull(),
-        )
-    }
-
-    HorizontalDivider(
-        color = MaterialTheme.colorScheme.outlineVariant,
-        modifier = Modifier.padding(vertical = 14.dp),
     )
 
     // ---------------- 重试机制 ----------------
@@ -229,13 +157,29 @@ fun KernelSettingsSection(vm: ChatViewModel) {
     // ---------------- 上下文压缩 ----------------
     SettingsLabel("上下文")
     if (usage != null) {
+        // 真实窗口（模型库 ctx_in）与内核压缩预算分开显示：
+        // 窗口 0 时内核退回默认预算（实测 120000），这正是「1M 模型 12 万就压缩」的原因
+        val windowText = if (usage.window > 0) {
+            "${usage.window} tokens 窗口，压缩线 ${usage.budget}"
+        } else {
+            "未声明模型窗口，内核按默认预算 ${usage.budget} 压缩"
+        }
         Text(
-            text = "当前：${usage.used} / ${usage.budget} tokens（${usage.percent.toInt()}%" +
-                if (usage.overBudget) "，超预算）" else "）",
+            text = "当前：${usage.used} tokens（占窗口 ${(usage.displayFraction * 100).toInt()}%）\n" +
+                windowText + if (usage.compressed) " · 已摘要压缩" else "",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
+            modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
         )
+        if (usage.window <= 0) {
+            Text(
+                text = "到「模型服务 → 模型库」给当前模型填输入上限（ctx_in），" +
+                    "压缩线才会按真实窗口走。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
     } else {
         Text(
             text = "占用随每轮对话更新；超过阈值内核会自动摘要压缩。",
@@ -333,10 +277,10 @@ fun KernelSettingsSection(vm: ChatViewModel) {
 
     // ---------------- 通知 & 工作区 ----------------
     SettingsLabel("通知与工作区")
-    var notifyOn by rememberSaveable { mutableStateOf(true) }
+    var notifyOn by rememberSaveable { mutableStateOf(AppSettings.notifyEnabled.value) }
     SwitchRow(
-        title = "任务完成通知",
-        subtitle = "由内核在长任务结束时发系统通知",
+        title = "任务完成/审批通知",
+        subtitle = "页面在后台时，长任务结束与审批请求发系统通知（审批可在通知栏直接批准/拒绝）",
         checked = notifyOn,
         onChange = { notifyOn = it; vm.setNotifyEnabled(it) },
     )

@@ -10,6 +10,16 @@ import com.hxy.codeforge.model.TodoItem
 import kotlinx.coroutines.flow.SharedFlow
 
 /**
+ * 压缩过程在消息流里的固定文案（协议层与 ViewModel 共用）。
+ *
+ * 内核只在**完成后**推 compress 帧，没有「开始」帧；开始态由壳侧补：
+ * 手动压缩时立即插一条，自动压缩按 context 帧的 over_budget 推断
+ * （与内核 Web 界面的 ctx 提示同一条判断）。
+ */
+const val NOTICE_COMPRESS_START = "正在压缩上下文…"
+const val NOTICE_COMPRESS_DONE = "上下文已压缩"
+
+/**
  * 内核推送的事件。
  *
  * 这是 [CoreTransport] 的出口抽象：Mock 与真实实现都产出同一组事件，

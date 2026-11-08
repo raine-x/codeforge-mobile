@@ -28,6 +28,8 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.isImeVisible
@@ -68,6 +70,9 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.withFrameNanos
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.isActive
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -86,7 +91,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -126,8 +135,11 @@ import kotlin.math.min
  *
  *  - 整体是一张 28dp 圆角卡片浮在底部，而不是被分割线压住的条；
  *  - 底行从左到右：「+」附件、权限盾牌（三档下拉）、模型胶囊、主按钮；
- *  - 主按钮三态：空输入 = 语音（点按开始中文听写，再点收口）、有输入 =
- *    陶土橘发送、运行中 = 方块停止。三态同位渐变切换，手指不用挪。
+ *  - 主按钮点按/长按双语义，覆盖语音 · 打断 · 转向 · 发送：
+ *    空输入空闲 = 语音（点按开始中文听写，再点收口）；有输入 = 陶土橘发送；
+ *    运行中且有输入 = 发送（steer 并入当前轮）；运行中且空输入 = 点按开始
+ *    语音、**长按 1 秒打断**（按钮外圈进度环实时反馈，满圈触发 + 触觉）。
+ *    四个职责同位不互斥，状态切换带缩放渐变。
  *  - 语音走系统识别服务（见 [ZhSpeechInput]）：零依赖零模型，识别的中间
  *    结果实时打进输入框，说完自动收口成可编辑文本。
  *  - 模型胶囊打开「选择模型」底部弹层（模型为界面演示，权限模式是真的）；
@@ -143,6 +155,8 @@ import kotlin.math.min
 @Composable
 fun Composer(
     running: Boolean,
+    // 内核已把转向指令排队（steer_queued）：占位符从「教手势」切换为「提醒排队中」
+    steerQueued: Boolean = false,
     permissionMode: PermissionMode,
     onPermissionChange: (PermissionMode) -> Unit,
     onSend: (String, List<String>) -> Unit,
@@ -201,6 +215,9 @@ fun Composer(
     // 编辑回填：内核侧 editables 取回的原消息正文与附件（null = 没有在编辑）
     editText: String? = null,
     editAttachments: List<String> = emptyList(),
+    // 回填请求的序号：触发 key 用它而不用 editText 的值 —— 同一内容两次
+    // （编辑重发同一消息、分享同一链接）也要触发；纯图片分享 text 为 null
+    editSeq: Long = 0,
     // 内置浏览器里挑出来、已「添加到对话」的页面元素：以 chip 摆在输入框上方。
     // 文本引用（元素1）由本组件插入 —— 它才持有输入框的真实内容。
     elementChips: List<com.hxy.codeforge.ui.browser.PickedElement> = emptyList(),
@@ -217,14 +234,19 @@ fun Composer(
     // 待发附件（暂存区绝对路径，见 stageAttachment）。选中即复制落盘，
     // 发送时随消息上行；删除只是从待发列表去掉（文件留在暂存区，可再次引用）
     var attachments by rememberSaveable { mutableStateOf(listOf<String>()) }
-    // 编辑回填：长按「编辑重发」时把原消息正文与附件拉回输入卡。
-    // 只跟 editText 走 —— editBack 变化但正文没变（重试同一轮）不该覆盖用户正在敲的字
-    LaunchedEffect(editText) {
+    // 编辑回填 / 入站分享预填：把正文与附件拉回输入卡。key 用 editSeq 不用
+    // editText 的值 —— 同一内容两次（编辑重发同一消息、分享同一链接）也要触发。
+    // 正文与附件各自判断：纯图片分享 editText 为 null，只回填附件、不动文字。
+    // editBack 变化但正文没变（重试同一轮）不该覆盖用户正在敲的字 —— 那条
+    // 路径 vm 侧不会递增 seq，天然不触发。
+    LaunchedEffect(editSeq) {
         if (editText != null) {
             input = editText
-            attachments = if (editAttachments.isNotEmpty()) editAttachments else attachments
             // 与正常打字同口径存一次草稿：切会话/退后台回来还能看到在编辑的内容
             onDraftChange(sessionId, editText)
+        }
+        if (editAttachments.isNotEmpty()) {
+            attachments = editAttachments
         }
     }
     val attachScope = androidx.compose.runtime.rememberCoroutineScope()
@@ -487,55 +509,14 @@ fun Composer(
     }
 
     /**
-     * SAF URI → 应用私有暂存区。返回**绝对路径**；超 20MiB 或读失败返回 null。
-     *
-     * 为什么不直接落到「工作区」：会话还没创建时工作区根本不存在，凭 sessionId
-     * 猜目录会落到内核看不见的地方；发送时由 KernelApi 把文件上传进内核**当前**
-     * 工作区，附件路径两边才一致（见 EnvKit.outboxDir 的注释）。
+     * 选择的 content URI → 应用私有暂存区。核心逻辑在
+     * [com.hxy.codeforge.core.EnvKit.stageUriToOutbox]（入站分享共用同一份口径），
+     * 这里只补本组件的 20MiB 提示。为什么落暂存区不落工作区，见 EnvKit 注释。
      */
-    suspend fun stageAttachment(uri: Uri): String? = withContext(Dispatchers.IO) {
-        runCatching {
-            val resolver = context.contentResolver
-            var name = resolver.query(uri, null, null, null, null)?.use { c ->
-                val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
-            } ?: "file"
-            name = name.replace(Regex("[/\\\u0000:]"), "_").take(80)
-            val size = resolver.query(uri, null, null, null, null)?.use { c ->
-                val idx = c.getColumnIndex(OpenableColumns.SIZE)
-                if (idx >= 0 && c.moveToFirst()) c.getLong(idx) else -1L
-            } ?: -1L
-            if (size > 20L * 1024 * 1024) {
-                withContext(Dispatchers.Main) { voiceNotice = "附件超过 20MiB 上限" }
-                return@withContext null
-            }
-            // 时间戳前缀防重名；落点是应用私有暂存区（与内核工作区解耦）
-            val out = java.io.File(
-                com.hxy.codeforge.core.EnvKit.outboxDir(context),
-                System.currentTimeMillis().toString() + "_" + name,
-            )
-            // 先写同目录临时文件再 rename：进程被杀/写一半时不会留下半截附件，
-            // 与内核 casWrite 的落盘口径一致（上传是用户输入，不进撤销栈）。
-            val tmp = java.io.File(out.parentFile, out.name + ".tmp")
-            try {
-                resolver.openInputStream(uri)?.use { input ->
-                    java.io.FileOutputStream(tmp).use { output -> input.copyTo(output) }
-                } ?: return@withContext null
-                if (tmp.length() > 20L * 1024 * 1024) {
-                    withContext(Dispatchers.Main) { voiceNotice = "附件超过 20MiB 上限" }
-                    return@withContext null
-                }
-                if (!tmp.renameTo(out)) {
-                    return@withContext null
-                }
-            } finally {
-                if (tmp.exists()) tmp.delete()
-            }
-            // wrx：x 位留着，暂存的脚本/二进制才能直接执行
-            out.setExecutable(true, false)
-            out.absolutePath
-        }.getOrNull()
-    }
+    suspend fun stageAttachment(uri: Uri): String? =
+        com.hxy.codeforge.core.EnvKit.stageUriToOutbox(context, uri) {
+            voiceNotice = "附件超过 20MiB 上限"
+        }
 
     fun onPicked(uri: Uri?) {
         if (uri == null) return
@@ -586,14 +567,18 @@ fun Composer(
         }
     }
 
-    val canSend = (input.isNotBlank() || attachments.isNotEmpty()) && !running && !listening &&
+    // 运行中不再排除：有内容时主按钮变发送（运行中发送 = steer 并入当前轮，
+    // 占位符「回复 CodeForge…」即此语义）—— 打断不再吞掉发送入口
+    val canSend = (input.isNotBlank() || attachments.isNotEmpty()) && !listening &&
         // 云端转写期间不许发：回来的文字还要接进输入框
         !transcribing
 
     // 外观（黑/白/透明 + 背景亮度反色 + 手动文字色）与上下文细线的进度
     val palette = rememberComposerColors()
     val ringProgress by animateFloatAsState(
-        targetValue = ((contextUsage?.percent ?: 0f) / 100f).coerceIn(0f, 1f),
+        // displayFraction：有模型真实窗口（ctx_in）时按窗口算，否则退回内核预算 ——
+        // 1M 的模型不该在 12 万时就画出 90% 的环
+        targetValue = contextUsage?.displayFraction ?: 0f,
         animationSpec = tween(600),
         label = "context-ring",
     )
@@ -665,6 +650,12 @@ fun Composer(
 
     // 编辑提示条与主按钮共用：发送即清空草稿，附件一起带走
     fun doSend() {
+        // 运行中发送 = steer，而 steer 帧没有附件字段 —— 带附件时拒绝发送，
+        // 附件留在输入框不丢（旧实现会静默把附件丢掉）。等本轮结束再发即可。
+        if (running && attachments.isNotEmpty()) {
+            voiceNotice = "运行中暂不支持带附件发送，请等本轮结束后再发"
+            return
+        }
         onSend(input, attachments)
         input = ""
         attachments = listOf()
@@ -822,7 +813,14 @@ fun Composer(
                                         text = when {
                                             transcribing -> "正在转写…"
                                             listening -> "正在聆听…"
-                                            running -> "回复 CodeForge…"
+                                            // 运行中空输入：主按钮此时是「点按说话 · 长按打断」，
+                                            // 手势是隐形的 —— 占位符是唯一能教会它的地方；
+                                            // 已排队的转向则提醒「在等并入」，别让用户以为没发出去
+                                            running -> if (steerQueued) {
+                                                "转向已排队 · 当前步骤结束后并入"
+                                            } else {
+                                                "点按说话 · 长按打断当前任务"
+                                            }
                                             else -> "与 CodeForge 对话…"
                                         },
                                         style = inputTextStyle,
@@ -874,7 +872,9 @@ fun Composer(
                     MainButton(
                         running = running,
                         canSend = canSend,
+                        hasContent = input.isNotBlank() || attachments.isNotEmpty(),
                         listening = listening,
+                        transcribing = transcribing,
                         voiceBg = palette.text,
                         voiceFg = palette.solid,
                         onSend = ::doSend,
@@ -993,15 +993,26 @@ fun Composer(
 // ---------------------------------------------------------------- 主按钮
 
 /**
- * 四态主按钮：聆听中（陶土橘声纹）/ 停止 / 发送 / 待听写（深色声纹）。
- * 聆听态优先级最高 —— 中间结果不断进输入框，按钮不能抢跑去变发送键，
- * 否则想收口时按不到。状态切换带缩放渐变。
+ * 主按钮：点按/长按双语义，覆盖语音 · 打断 · 转向 · 发送。
+ *
+ * 状态判定顺序即优先级：
+ *  - listening：收音中，点击 = 收口 —— 中间结果不断进输入框，按钮不能抢跑去变发送键；
+ *  - running 且输入为空：**tap = 开始语音，长按 1 秒 = 打断**（外圈进度环实时反馈，
+ *    满圈触发并带长按触觉）—— 运行中最常用的两个动作同位并存；
+ *  - 有内容且不在转写：发送。运行中发送 = steer 并入当前轮（占位符「回复 CodeForge…」
+ *    即此语义），空闲 = 新问题；图标同为上箭头；
+ *  - transcribing：云端转写空档，点击忽略（回来的文字还要接进输入框）；
+ *  - 其余（空闲+空）：待听写。
+ *
+ * 状态切换带缩放渐变。长按进度环画在按钮外缘（Clay 色，-90° 起顺时针）。
  */
 @Composable
 private fun MainButton(
     running: Boolean,
     canSend: Boolean,
+    hasContent: Boolean,
     listening: Boolean,
+    transcribing: Boolean,
     onSend: () -> Unit,
     onStop: () -> Unit,
     onVoice: () -> Unit,
@@ -1011,8 +1022,9 @@ private fun MainButton(
 ) {
     val state = when {
         listening -> "listening"
-        running -> "stop"
+        running && !hasContent -> "stopVoice"
         canSend -> "send"
+        transcribing -> "transcribing"
         else -> "voice"
     }
 
@@ -1024,53 +1036,141 @@ private fun MainButton(
         },
         label = "main-button",
     ) { target ->
-        val (bg, onClick) = when (target) {
-            "listening" -> Clay to onVoice
-            "stop" -> MaterialTheme.colorScheme.surfaceVariant to onStop
-            "send" -> Clay to onSend
-            else -> voiceBg to onVoice
-        }
-        val fg = when (target) {
-            "voice" -> voiceFg
-            else -> Color.White
-        }
-        // 绘制块（Canvas lambda）里不能调 composable，颜色在这里先取好
-        val stopColor = MaterialTheme.colorScheme.onSurface
+        if (target == "stopVoice") {
+            StopVoiceButton(onTapVoice = onVoice, onStop = onStop, voiceBg = voiceBg, voiceFg = voiceFg)
+        } else {
+            val noop: () -> Unit = {}
+            val (bg, onClick) = when (target) {
+                "listening" -> Clay to onVoice
+                "stop" -> MaterialTheme.colorScheme.surfaceVariant to onStop
+                "send" -> Clay to onSend
+                "transcribing" -> voiceBg to noop
+                else -> voiceBg to onVoice
+            }
+            val fg = when (target) {
+                "voice", "transcribing" -> voiceFg
+                else -> Color.White
+            }
+            val desc = when (target) {
+                "listening" -> "收口，结束听写"
+                "stop" -> "停止当前任务"
+                "send" -> "发送"
+                "transcribing" -> "正在转写"
+                else -> "语音输入"
+            }
+            // 绘制块（Canvas lambda）里不能调 composable，颜色在这里先取好
+            val stopColor = MaterialTheme.colorScheme.onSurface
 
-        Box(
-            modifier = Modifier
-                .size(40.dp)
-                .background(bg, CircleShape)
-                .noRippleClickable { onClick() },
-            contentAlignment = Alignment.Center,
-        ) {
-            when (target) {
-                "stop" -> Canvas(modifier = Modifier.size(15.dp)) {
-                    drawRoundRect(
-                        color = stopColor,
-                        topLeft = Offset.Zero,
-                        size = size,
-                        cornerRadius = CornerRadius(size.width * 0.2f),
-                    )
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(bg, CircleShape)
+                    .semantics { contentDescription = desc }
+                    .noRippleClickable { onClick() },
+                contentAlignment = Alignment.Center,
+            ) {
+                when (target) {
+                    "stop" -> Canvas(modifier = Modifier.size(15.dp)) {
+                        drawRoundRect(
+                            color = stopColor,
+                            topLeft = Offset.Zero,
+                            size = size,
+                            cornerRadius = CornerRadius(size.width * 0.2f),
+                        )
+                    }
+
+                    "send" -> Canvas(modifier = Modifier.size(18.dp)) {
+                        val w = size.width
+                        val h = size.height
+                        drawLine(
+                            color = fg,
+                            start = Offset(w * 0.5f, h * 0.08f),
+                            end = Offset(w * 0.5f, h * 0.9f),
+                            strokeWidth = w * 0.14f,
+                            cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                        )
+                        drawLine(color = fg, start = Offset(w * 0.14f, h * 0.46f), end = Offset(w * 0.5f, h * 0.08f), strokeWidth = w * 0.14f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                        drawLine(color = fg, start = Offset(w * 0.86f, h * 0.46f), end = Offset(w * 0.5f, h * 0.08f), strokeWidth = w * 0.14f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                    }
+
+                    else -> VoiceWaveform(color = fg, active = target == "listening")
                 }
-
-                "send" -> Canvas(modifier = Modifier.size(18.dp)) {
-                    val w = size.width
-                    val h = size.height
-                    drawLine(
-                        color = fg,
-                        start = Offset(w * 0.5f, h * 0.08f),
-                        end = Offset(w * 0.5f, h * 0.9f),
-                        strokeWidth = w * 0.14f,
-                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
-                    )
-                    drawLine(color = fg, start = Offset(w * 0.14f, h * 0.46f), end = Offset(w * 0.5f, h * 0.08f), strokeWidth = w * 0.14f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                    drawLine(color = fg, start = Offset(w * 0.86f, h * 0.46f), end = Offset(w * 0.5f, h * 0.08f), strokeWidth = w * 0.14f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                }
-
-                else -> VoiceWaveform(color = fg, active = target == "listening")
             }
         }
+    }
+}
+
+/**
+ * 运行中且输入为空的主按钮：tap = 开始语音，长按 1 秒 = 打断。
+ *
+ * 长按进度画在按钮外缘一圈（Clay 色弧，从顶部顺时针），既提示「正在积累打断」，
+ * 也不会像变色那样让人误以为按钮换了功能。松手早于 1 秒 = 一次点按（开始语音）；
+ * 满圈触发打断并给长按触觉反馈 —— 打断是破坏性动作，触觉确认不能省。
+ */
+@Composable
+private fun StopVoiceButton(
+    onTapVoice: () -> Unit,
+    onStop: () -> Unit,
+    voiceBg: Color,
+    voiceFg: Color,
+) {
+    val haptic = LocalHapticFeedback.current
+    var progress by remember { mutableStateOf(0f) }
+    var fired by remember { mutableStateOf(false) }
+
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .background(voiceBg, CircleShape)
+            .semantics { contentDescription = "语音输入；长按一秒打断当前任务" }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        fired = false
+                        // 进度循环放子协程：release 时 cancel，提前松手不会误触发打断。
+                        // onPress 的 receiver（PressGestureScope）不是 CoroutineScope，
+                        // launch 必须包进 coroutineScope，与 tryAwaitRelease 并行。
+                        coroutineScope {
+                            val loop = launch {
+                                val start = System.nanoTime()
+                                while (isActive) {
+                                    withFrameNanos { now ->
+                                        progress = ((now - start) / 1_000_000_000f).coerceIn(0f, 1f)
+                                    }
+                                    if (progress >= 1f) break
+                                }
+                                if (progress >= 1f && !fired) {
+                                    fired = true
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    onStop()
+                                }
+                            }
+                            tryAwaitRelease()
+                            loop.cancel()
+                            progress = 0f
+                        }
+                        // 没按满一圈 = 一次点按 → 开始语音
+                        if (!fired) onTapVoice()
+                    },
+                )
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        if (progress > 0f) {
+            Canvas(modifier = Modifier.size(40.dp)) {
+                drawArc(
+                    color = Clay,
+                    startAngle = -90f,
+                    sweepAngle = 360f * progress,
+                    useCenter = false,
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                        width = 3.dp.toPx(),
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    ),
+                )
+            }
+        }
+        VoiceWaveform(color = voiceFg, active = false)
     }
 }
 
@@ -1910,7 +2010,7 @@ private fun Modifier.contextRing(usage: ContextUsage?, progress: Float): Modifie
             val radius = (28.dp.toPx() - inset).coerceAtLeast(0f)
             val topLeftPx = Offset(inset, inset)
             val sizePx = Size(cardW, cardH)
-            val color = if (usage.percent >= 90f) Color(0xFFD25757) else Clay
+            val color = if (usage.overBudget || progress >= 0.9f) Color(0xFFD25757) else Clay
             drawRoundRect(
                 color = color.copy(alpha = 0.14f),
                 topLeft = topLeftPx,

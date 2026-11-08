@@ -291,7 +291,7 @@ fun ModelEditorSection(
         OutlinedTextField(
             value = ctxIn,
             onValueChange = { ctxIn = it.filter { c -> c.isDigit() }.take(8) },
-            label = { Text("自定义输入上限（0 = 未声明）") },
+            label = { Text("自定义输入上限（0 = 未声明，内核按默认预算压缩）") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),

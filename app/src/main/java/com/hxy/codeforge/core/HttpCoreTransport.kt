@@ -482,13 +482,16 @@ class HttpCoreTransport(
             }
 
             "compress" -> {
-                val c = o.optJSONObject("compress")
-                val before = c?.optLong("before", 0) ?: 0
-                val after = c?.optLong("after", 0) ?: 0
-                val reason = c?.optString("reason").orEmpty()
-                val degraded = c?.optBoolean("degraded", false) ?: false
+                // 面板字段既可能嵌在 compress 对象里，也可能平铺在帧顶层；
+                // 缺字段时按平铺回落（内核两拨构造点键名各定各的，见 P-008）
+                val c = o.optJSONObject("compress") ?: o
+                val before = c.optLong("before", 0)
+                val after = c.optLong("after", 0)
+                val reason = c.optString("reason").orEmpty()
+                val degraded = c.optBoolean("degraded", false)
                 val text = buildString {
-                    append("上下文已压缩：")
+                    append(NOTICE_COMPRESS_DONE)
+                    append(" · ")
                     append(if (before > 0) "$before → $after tokens" else "已摘要早期对话")
                     if (degraded) append("（压缩失败，改为截断最旧消息）")
                     if (reason.isNotBlank()) append(" · $reason")
@@ -560,6 +563,10 @@ class HttpCoreTransport(
                         percent = o.optDouble("percent", 0.0).toFloat(),
                         model = o.optString("model"),
                         overBudget = o.optBoolean("over_budget", false),
+                        // window = 模型库的 ctx_in（0 = 未声明；内核此时按
+                        // 默认预算 120000 压缩，设置页要据此提示）
+                        window = o.optLong("window", 0),
+                        compressed = o.optBoolean("compressed", false),
                     ),
                 ),
             )

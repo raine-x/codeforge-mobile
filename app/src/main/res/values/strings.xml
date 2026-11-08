@@ -3,4 +3,5 @@
     <string name="app_name">CodeForge</string>
     <string name="notif_channel_name">内核运行状态</string>
     <string name="notif_title">CodeForge 内核运行中</string>
+    <string name="notif_approval_channel">审批请求</string>
 </resources>

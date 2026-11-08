@@ -1,5 +1,6 @@
 package com.hxy.codeforge.ui
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.hxy.codeforge.AppVisibility
@@ -11,6 +12,9 @@ import com.hxy.codeforge.core.EnvKit
 import com.hxy.codeforge.core.HttpCoreTransport
 import com.hxy.codeforge.core.KernelApi
 import com.hxy.codeforge.core.KernelState
+import com.hxy.codeforge.core.LiveTransport
+import com.hxy.codeforge.core.NOTICE_COMPRESS_DONE
+import com.hxy.codeforge.core.NOTICE_COMPRESS_START
 import com.hxy.codeforge.model.BuiltinPluginInfo
 import com.hxy.codeforge.model.KernelConfigSummary
 import com.hxy.codeforge.model.LibraryModel
@@ -42,6 +46,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -59,6 +65,8 @@ data class ChatUiState(
     val title: String = "CodeForge",
     val messages: List<ChatMessage> = emptyList(),
     val running: Boolean = false,
+    /** 内核已把转向指令排队（steer_queued）：输入框占位符据此提示，并入/轮次结束即清。 */
+    val steerQueued: Boolean = false,
     val approvals: List<ApprovalCard> = emptyList(),
     val permissionMode: PermissionMode = PermissionMode.Ask,
     val banner: Banner? = null,
@@ -82,9 +90,11 @@ data class ChatUiState(
     val thinkingSteps: List<String> = emptyList(),
     /** 已归档会话（侧栏折叠组，展开时拉取）。 */
     val archivedSessions: List<SessionItem> = emptyList(),
-    /** 长按「编辑重发」请求：正文回填输入卡（Composer 消费后清空）。 */
+    /** 编辑重发 / 入站分享预填：正文回填输入卡（editBack 空时发送=普通发送）。 */
     val editText: String? = null,
     val editAttachments: List<String> = emptyList(),
+    /** 回填请求序号：Composer 以此为触发 key，同一内容两次也要触发。 */
+    val editSeq: Long = 0,
     /** 内核 REST 配置摘要（Ready 后拉取，设置页展示；null=内核不可用）。 */
     val kernelConfig: KernelConfigSummary? = null,
     /** 子智能体策略（设置页）。 */
@@ -159,59 +169,6 @@ data class Banner(
 )
 
 /**
- * 注入给模型的应用能力说明。
- *
- * ## 为什么要注入
- *
- * 内核的 system prompt 来自 `cfg.SystemPromptFile` 或默认模板，
- * **没有「客户端追加一段说明」的入口**（`/api/config` 只有模型、温度、重试、步数）。
- * 想让模型知道「这个客户端能渲染网页」，唯一不用改内核的通路就是把说明混进上行文本。
- *
- * ## 为什么用户看不到
- *
- * 上行文本与气泡文本是分开的（`PendingSend(text, attachments, bubbleText)`），
- * 但**内核会把上行文本原样存进历史**，下一轮 `history` 帧回放时整段替换消息列表
- * （`CoreEvent.History` → `messages = event.messages`）——
- * 于是注入内容会从内核那边漏回气泡。
- * 修法见 [stripInjectedText]：回放时按标记切掉。
- *
- * ## 为什么每次都带
- *
- * 内核没有「只在某类请求里生效」的机制；按关键词触发虽然省 token，
- * 但「帮我画个界面」「做个能点的方案」这类说法太杂，漏判的代价比
- * 多几十个 token 大得多。所以常带，靠措辞把「什么时候用」讲清楚。
- */
-private const val HTML_CAPABILITY_PROMPT = """【CodeForge 客户端渲染能力】
-本客户端支持在对话中内嵌可交互网页：AI 可直接输出自包含的 HTML 文档，客户端将其渲染为
-可实时操作的页面（按钮、展开收起、表单、动画均可用）；用户亦可从页面中选取元素，
-将其引入后续对话继续讨论。
-
-适用范围：凡涉及**前端呈现与用户交互**的内容 —— 试题与练习、交互式图表与可视化、
-演示与原型、界面与面板设计、对比演示、流程图、看板、配置向导 —— 均可使用此能力。
-纯文字说明、代码片段、结论性回答则无需使用。
-
-输出方式（二者效果一致，由你自行选择）：
-· 直接在正文中输出完整 HTML 文档 —— 自 <!DOCTYPE html> 起、至 </html> 止，不包裹 Markdown 围栏；
-· 或将完整 HTML 文档置于独立的 ```html 代码围栏内。
-
-技术约束：
-1. 单文件自包含：样式与脚本内联，不引用外部样式表、脚本、CDN 资源或网络字体；
-2. 必须声明 <meta name="viewport" content="width=device-width, initial-scale=1">，
-   布局采用相对尺寸与 flex/grid，确保手机竖屏与平板横屏下均自适应；
-3. 交互控件使用原生 <button> / <details> / <input> 等元素，不以 <div> 模拟按钮；
-4. 页面须完全自足，不依赖外部数据源，离线状态下亦可正常显示与操作；
-5. 仅在确有交互需求时使用，避免将常规回答转换为网页。"""
-
-/**
- * 注入段落的定位标记。
- *
- * 必须与 [buildWireText] 写进去的文本**逐字一致** ——
- * 回放时靠它们把注入内容从用户气泡里切掉（[stripInjectedText]）。
- */
-private const val INJECT_CAPABILITY_MARKER = "【CodeForge 客户端渲染能力】"
-private const val INJECT_ELEMENT_MARKER = "（下面是从应用内置浏览器里挑出的页面元素"
-
-/**
  * 把用户消息里的注入内容切掉，只留用户自己写的那部分。
  *
  * ## 为什么需要
@@ -224,6 +181,8 @@ private const val INJECT_ELEMENT_MARKER = "（下面是从应用内置浏览器�
  *
  * 上行文本是「用户文本 + 固定后缀」的结构，切掉后缀即精确还原用户原话，
  * 不依赖任何「用户有没有手打这段标记」的猜测。
+ *
+ * 注入段的正文与两个定位标记见 `CapabilityPrompt.kt`。
  */
 /**
  * 见 [stripInjectedText]：回放时把注入内容从用户气泡里切掉。
@@ -265,7 +224,11 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     var api: KernelApi? = null
         private set
 
-    private val _state = MutableStateFlow(ChatUiState())
+    // 冷启动恢复：继承上次打开的会话，进程重建后仍回到「刚才的会话」。
+    // currentSessionId 只在内存里的话，后台被回收重启就退回空白新对话。
+    private val _state = MutableStateFlow(ChatUiState(currentSessionId = AppSettings.lastSessionId.value))
+    // 冷启动兜底自动加载只做一次（内核重启重连走 Link 分支，见下）
+    private var didColdStartLoad = false
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private val seq = AtomicInteger(0)
@@ -301,6 +264,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     /** 插入请求的序号（[ElementInsert.seq]）。 */
     private var insertSeq = 0L
 
+    /** 回填请求的序号（[ChatUiState.editSeq]）：编辑重发与入站分享共用。 */
+    private var editSeqCounter = 0L
+
     /**
      * 把一个从网页里挑中的元素加进当前对话。
      *
@@ -332,7 +298,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
      * ## 为什么要有
      *
      * 内核协议里没有「系统提示词」这个字段（config 只有模型、温度、步数这些），
-     * 所以唯一能让模型知道「这 App 能渲染 HTML 页面」的办法，就是把说明
+     * 所以唯一能让模型知道「这 App 支持哪些呈现格式」的办法，就是把说明
      * 混进上行文本。**混进的是上行文本，不是气泡文本** —— 用户看到的仍然是
      * 自己写的那句话。
      *
@@ -352,7 +318,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 }
             )
         }
-        sb.append('\n').append('\n').append(HTML_CAPABILITY_PROMPT)
+        sb.append('\n').append('\n').append(CLIENT_CAPABILITY_PROMPT)
         return sb.toString()
     }
 
@@ -370,6 +336,23 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     /** new_session 已发出、尚未收到 session 帧；发送队列等它落定。 */
     private var newSessionGate: CompletableDeferred<String>? = null
 
+    /**
+     * 「正在压缩上下文」提示是否已插进消息流。
+     *
+     * 内核没有压缩开始帧：手动压缩时由壳侧立即置位；自动压缩按 context 帧的
+     * over_budget && !compressed 推断（与内核 Web 界面同一条判断）。
+     * 收到 compress 帧（完成）后清掉，下一轮越线再提示一次。
+     */
+    private var compressStartShown = false
+
+    /** 最近一次收到内核 compress 帧的时间：手动压缩用它判断要不要本地补完成提示。 */
+    private var lastCompressFrameAt = 0L
+
+    // approvalId → 会话 id：审批通知的跳转目标。ApprovalCard 不带 sessionId，
+    // 只在 ApprovalRequested 事件现场记录一次；切后台补发通知时从这里取
+    // （全部访问都在 viewModelScope 的主线程协程里，无需并发保护）。
+    private val approvalSessions = mutableMapOf<String, String>()
+
     init {
         viewModelScope.launch {
             CoreService.state.collect { onKernelState(it) }
@@ -377,9 +360,28 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         viewModelScope.launch {
             AppVisibility.hidden.collect { h ->
                 transport?.sendVisibility(h)
-                // 从 APP 外回来：内核可能已在后台推进了别的会话（busy/新消息），
-                // 拉一次会话列表把「运行中」与最新顺序追平。
-                if (!h && transport != null) transport?.listSessions()
+                if (h) {
+                    // 前台收到审批没决定就切走：通知只在「事件到达时后台」发，
+                    // 覆盖不到这个方向 —— 切后台这一刻把还挂着的审批通知补上
+                    _state.value.approvals.forEach { card ->
+                        maybeNotifyApproval(card, approvalSessions[card.id].orEmpty())
+                    }
+                }
+                // 从 APP 外回来：拉一次会话列表把「运行中」与最新顺序追平，
+                // 并重载当前会话历史 —— 后台做完的新内容只在 History 快照里，
+                // 不重载的话界面永远停在进后台前那一份。
+                if (!h && transport != null) {
+                    transport?.listSessions()
+                    val sid = _state.value.currentSessionId
+                    // 运行中不重载：History 会把 streaming 态清掉（见 wouldWipe 的教训）
+                    if (sid.isNotBlank() && !_state.value.running) transport?.loadSession(sid)
+                }
+            }
+        }
+        // currentSessionId 变化即落盘：进程重建后冷启动自动恢复
+        viewModelScope.launch {
+            _state.map { it.currentSessionId }.distinctUntilChanged().collect { sid ->
+                AppSettings.setLastSessionId(sid)
             }
         }
         // 再等 10 秒仍停在 Starting：前台服务没起来、或握手卡死。
@@ -503,6 +505,8 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     /** 绑定传输层：开始收事件并建立连接。内核重启换端口时也会走到这里。 */
     private fun bind(t: CoreTransport) {
         transport = t
+        // 登记进进程级 holder：通知栏审批快操作经它发决定（不依赖本 ViewModel 是否存活）
+        LiveTransport.current = t
         // 重连/换绑后传输层的 currentSession 是空的：把界面正在看的会话同步过去，
         // 否则第一条消息会带空 id，内核按「新会话」处理（问题 2 的典型触发路径）。
         _state.value.currentSessionId.takeIf { it.isNotBlank() }?.let { t.setCurrentSession(it) }
@@ -570,9 +574,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     /**
-     * 后台会话事件：只更新列表 busy 标记。系统通知由内核负责 ——
-     * visibility（B5-2）修好后内核知道页面不可见，长任务完成会自己发通知，
-     * 壳侧不重复发，避免双条。
+     * 后台会话事件：只更新列表 busy 标记；完成通知由壳侧在 hidden 时发（Idle 分支）。
+     *
+     * 内核是 Go 二进制，调不到 Android 通知栏 —— 「由内核负责」是条死路
+     * （没有任何通道能把内核的完成意图送进系统通知栏）。
      */
     private fun handleBackgroundEvent(e: CoreEvent) {
         when (e) {
@@ -582,13 +587,61 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 )
             }
 
-            is CoreEvent.Idle -> _state.update { s ->
-                s.applySessions(
-                    s.sessions.map { if (it.id == e.sessionId) it.copy(busy = false) else it },
-                )
+            is CoreEvent.Idle -> {
+                // 刚才还在跑才算一轮完成 —— 否则重连/快照里的多余 idle 会刷屏
+                val wasBusy = _state.value.sessions.firstOrNull { it.id == e.sessionId }?.busy == true
+                val title = _state.value.sessions.firstOrNull { it.id == e.sessionId }?.title.orEmpty()
+                _state.update { s ->
+                    s.applySessions(
+                        s.sessions.map { if (it.id == e.sessionId) it.copy(busy = false) else it },
+                    )
+                }
+                if (wasBusy) notifyDone("任务完成", "会话「${title.ifBlank { "新建会话" }}」已完成", e.sessionId)
             }
 
             else -> Unit // 正文/工具/思考等输出：后台的丢弃，不进当前消息流
+        }
+    }
+
+    /**
+     * 完成通知（壳侧发）：页面隐藏 + 开关打开才发，点通知跳回对应会话。
+     *
+     * 前台在看的就是当前会话，再发通知是打扰；开关在设置 → 通知与工作区。
+     */
+    private fun notifyDone(title: String, body: String, sessionId: String) {
+        if (!AppVisibility.hidden.value || !AppSettings.notifyEnabled.value) return
+        CoreService.postDoneNotification(getApplication(), title, body, sessionId)
+    }
+
+    /**
+     * 审批通知（壳侧发）：与 [notifyDone] 同款判定 —— 页面隐藏 + 开关打开。
+     *
+     * 前台时卡片就在屏幕上，通知是打扰；要捞的是「人不在 App 前」的空等 ——
+     * 审批会挂到 15 分钟超时，比错过一条通知严重得多。「前台收到没决定就切走」
+     * 的补发在 AppVisibility.collect 分支（切后台瞬间逐卡补）。
+     */
+    private fun maybeNotifyApproval(card: ApprovalCard, sessionId: String) {
+        if (!AppVisibility.hidden.value || !AppSettings.notifyEnabled.value) return
+        CoreService.postApprovalNotification(getApplication(), card, sessionId)
+    }
+
+    /**
+     * 往消息流里插一条系统通知行（重试除外的那类折叠）。
+     *
+     * 压缩开始/完成这类「过程旁白」不该走气泡，统一用 [MsgRole.Notice]，
+     * 由 MessageBubble 的 NoticeBubble 居中着色渲染。
+     */
+    private fun appendNotice(text: String, kind: NoticeKind) {
+        _state.update { s ->
+            s.copy(
+                messages = s.messages + ChatMessage(
+                    id = "n-${seq.incrementAndGet()}",
+                    role = MsgRole.Notice,
+                    text = text,
+                    kind = kind,
+                    time = System.currentTimeMillis(),
+                ),
+            )
         }
     }
 
@@ -611,6 +664,15 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 if (_state.value.sessions.isEmpty()) transport?.listSessions()
                 // 项目名/最近会话顺序以 REST 为准补一次（ready 只带会话，不带 workspace_names 的完整表）
                 refreshWorkspaces()
+                // 冷启动兜底：没有恢复到会话（首次启动）时打开最近一条，
+                // 别让用户落地到空白新对话。只做一次 —— 之后这是用户自己的选择；
+                // 恢复到的会话由 Link 分支的 loadSession 负责（见 onEvent.Link）。
+                if (!didColdStartLoad) {
+                    didColdStartLoad = true
+                    if (_state.value.currentSessionId.isBlank()) {
+                        _state.value.sessions.firstOrNull()?.let { transport?.loadSession(it.id) }
+                    }
+                }
             }
 
             is CoreEvent.Link -> {
@@ -638,6 +700,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                             ),
                         )
                     }
+                    // 通知与卡片同命运：服务端 pending 已随断线失效，按钮再按也发不进去
+                    approvalSessions.clear()
+                    CoreService.cancelAllApprovalNotifications(getApplication())
                 }
             }
 
@@ -724,6 +789,8 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             is CoreEvent.History -> {
                 // 切会话（含重连后的快照重建）视作新的回合边界：@plan 标记不能跨会话残留
                 planPending = false
+                // 压缩提示同理：新会话的越线判断要重新算一次
+                compressStartShown = false
                 // 历史帧是会话确立的另一条权威路径：传输层必须与界面同 id
                 transport?.setCurrentSession(event.sessionId)
                 // 空历史帧防抖：新会话首条消息后内核会推空 history（claim 流程），
@@ -769,9 +836,12 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 // 只认本轮（planPending 由 send 置位），普通回合不弹。
                 val showPlan = planPending
                 planPending = false
+                // 刚才在跑才通知：前台用户自己在看，不需要；hidden 时这条就是完成信号
+                val wasRunning = _state.value.running
+                val doneTitle = _state.value.title.ifBlank { "新建会话" }
                 _state.update { st ->
                     val msgs = st.messages.map { m ->
-                        if (m.streaming) m.copy(streaming = false) else m
+                        sweepMessage(if (m.streaming) m.copy(streaming = false) else m)
                     }
                     val panel = if (showPlan) {
                         msgs.lastOrNull { it.role == MsgRole.Assistant && it.text.isNotBlank() }
@@ -781,10 +851,13 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     }
                     st.copy(
                         running = false,
+                        // 轮次结束：已排队的转向指令此时已被内核处理，提示状态复位
+                        steerQueued = false,
                         messages = msgs,
                         actionPanel = panel,
                     ).applySessions(st.sessions.map { if (it.id == event.sessionId) it.copy(busy = false) else it })
                 }
+                if (wasRunning) notifyDone("任务完成", "会话「$doneTitle」已完成", event.sessionId)
             }
 
             is CoreEvent.Checkpoints -> _state.update {
@@ -831,16 +904,26 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
 
             is CoreEvent.ToolEnd -> finishTool(event)
 
-            is CoreEvent.ApprovalRequested -> _state.update { s ->
-                s.copy(approvals = s.approvals.filterNot { it.id == event.card.id } + event.card)
+            is CoreEvent.ApprovalRequested -> {
+                approvalSessions[event.card.id] = event.sessionId
+                _state.update { s ->
+                    s.copy(approvals = s.approvals.filterNot { it.id == event.card.id } + event.card)
+                }
+                maybeNotifyApproval(event.card, event.sessionId)
             }
 
-            is CoreEvent.ApprovalResolved -> _state.update { s ->
-                s.copy(approvals = s.approvals.filterNot { it.id == event.approvalId })
+            is CoreEvent.ApprovalResolved -> {
+                CoreService.cancelApprovalNotification(getApplication(), event.approvalId)
+                approvalSessions.remove(event.approvalId)
+                _state.update { s ->
+                    s.copy(approvals = s.approvals.filterNot { it.id == event.approvalId })
+                }
             }
 
             is CoreEvent.ApprovalTimedOut -> {
                 // 超时必须与「用户拒绝」区分：拒绝是用户意图，超时是无人处理。
+                CoreService.cancelApprovalNotification(getApplication(), event.approvalId)
+                approvalSessions.remove(event.approvalId)
                 _state.update { s ->
                     s.copy(
                         approvals = s.approvals.filterNot { it.id == event.approvalId },
@@ -861,24 +944,36 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 // 自动重试的提示静默：内核每次退避重试都发一条，5 次就是 5 行，
                 // 消息流会被「正在重试（2/5）」刷屏。最终失败时 CoreEvent.Failure
                 // 会给结论和重试入口，过程没必要逐条留痕。
-                if (event.kind != NoticeKind.Retry) {
-                    _state.update { s ->
-                        s.copy(
-                            messages = s.messages + ChatMessage(
-                                id = "n-${seq.incrementAndGet()}",
-                                role = MsgRole.Notice,
-                                text = event.text,
-                                kind = event.kind,
-                                time = System.currentTimeMillis(),
-                            ),
-                        )
+                if (event.kind == NoticeKind.Compress) {
+                    // 压缩完成帧：清「正在压缩」标记并记下时间（手动路径靠它判重）
+                    compressStartShown = false
+                    lastCompressFrameAt = System.currentTimeMillis()
+                    appendNotice(event.text, event.kind)
+                } else if (event.kind != NoticeKind.Retry) {
+                    // 转向队列状态：内核排队（steer_queued）与并入（steer）都会发 Steer
+                    // 通知，输入框占位符据此区分「已排队」与「仍可转向」两种提示
+                    if (event.kind == NoticeKind.Steer) {
+                        val queued = event.text.contains("排队")
+                        _state.update { it.copy(steerQueued = queued) }
                     }
+                    appendNotice(event.text, event.kind)
                 }
             }
 
             is CoreEvent.Todos -> _state.update { it.copy(todos = event.items) }
 
-            is CoreEvent.ContextUpdate -> _state.update { it.copy(contextUsage = event.usage) }
+            is CoreEvent.ContextUpdate -> {
+                val u = event.usage
+                // 自动压缩的开始信号：内核没有开始帧，越线且尚未压缩就是「正在压缩」
+                // （与内核 Web 界面的 ctx 提示同一条判断）
+                if (u.overBudget && !u.compressed && !compressStartShown) {
+                    compressStartShown = true
+                    appendNotice(NOTICE_COMPRESS_START, NoticeKind.Compress)
+                }
+                // 压缩态出现 = 这轮压缩已经结束，标记可以清掉（完成文案由 compress 帧给）
+                if (u.compressed) compressStartShown = false
+                _state.update { it.copy(contextUsage = u) }
+            }
 
             is CoreEvent.SubagentUpdate -> _state.update { s ->
                 val list = s.subagents.toMutableList()
@@ -888,7 +983,15 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             }
 
             // 后台任务状态变化：只刷新列表（帧里没有输出，避免大日志挤占 WS）
-            is CoreEvent.TaskChanged -> refreshTasks()
+            is CoreEvent.TaskChanged -> {
+                // 刚从运行中进入终态才通知（status != running）；重复的终态帧不刷屏
+                val oldStatus = _state.value.tasks.firstOrNull { it.id == event.id }?.status
+                refreshTasks()
+                if (event.status != "running" && (oldStatus == null || oldStatus == "running")) {
+                    val outcome = if (event.exitCode == 0) "已完成" else "已退出（码 ${event.exitCode}）"
+                    notifyDone("后台任务", "任务 ${event.id.take(8)}…$outcome", _state.value.currentSessionId)
+                }
+            }
 
             is CoreEvent.Failure -> {
                 // 限流 / 网络类失败要留一个「重试」入口：内核在 llm 层已经自动退避重试过
@@ -903,7 +1006,11 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 _state.update {
                     it.copy(
                         running = false,
+                        // 失败收尾同样要清流式标记与挂着的运行中工具行
                         banner = Banner(event.message, isError = true, retryable = retryable),
+                        messages = it.messages.map { m ->
+                            sweepMessage(if (m.streaming) m.copy(streaming = false) else m)
+                        },
                     )
                 }
             }
@@ -1077,6 +1184,28 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             s.copy(messages = msgs)
         }
     }
+
+    /**
+     * 单条消息内的收尾清扫：还在「运行中」的工具调用改为 [ToolState.Interrupted]。
+     *
+     * ToolEnd 在断线/取消/异常收尾时可能被整个错过，那时工具行会永远停在
+     * 橙点扫光——历史上没有任何路径能把 Running 改掉。tools 与 segments 是
+     * 同一份数据的两份拷贝，必须一起改（同 finishTool）；迟到的 tool_result
+     * 仍会按 id 命中覆盖，真实结果不会丢。
+     */
+    private fun sweepMessage(m: ChatMessage): ChatMessage =
+        if (m.tools.none { it.state == ToolState.Running }) m else m.copy(
+            tools = m.tools.map {
+                if (it.state == ToolState.Running) it.copy(state = ToolState.Interrupted) else it
+            },
+            segments = m.segments.map { seg ->
+                if (seg is MessageSegment.Tool && seg.call.state == ToolState.Running) {
+                    MessageSegment.Tool(seg.call.copy(state = ToolState.Interrupted))
+                } else {
+                    seg
+                }
+            },
+        )
 
     // ---------- 用户动作 ----------
 
@@ -1341,10 +1470,24 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         transport?.steer(buildWireText(text, _state.value.attachedElements))
     }
 
-    /** 重新生成最后一轮：不重发用户原文，交给内核 regenerate 语义。 */
+    /** 重新生成最后一轮：回退最后一条用户提问之后的所有消息，交给内核 regenerate 语义。 */
     fun regenerate() {
         if (_state.value.running) return
-        _state.update { it.copy(banner = null, running = true) }
+        planPending = false
+        _state.update { s ->
+            val lastUserIdx = s.messages.indexOfLast { it.role == MsgRole.User }
+            val truncatedMessages = if (lastUserIdx >= 0) {
+                s.messages.take(lastUserIdx + 1)
+            } else {
+                s.messages
+            }
+            s.copy(
+                banner = null,
+                running = true,
+                messages = truncatedMessages,
+                approvals = emptyList(),
+            )
+        }
         transport?.regenerate()
     }
 
@@ -1353,13 +1496,20 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         _state.update { s ->
             s.copy(
                 running = false,
-                messages = s.messages.map { if (it.streaming) it.copy(streaming = false) else it },
+                // 手动打断后转向队列作废，占位符提示恢复中性
+                steerQueued = false,
+                messages = s.messages.map { m ->
+                    sweepMessage(if (m.streaming) m.copy(streaming = false) else m)
+                },
             )
         }
     }
 
     fun decideApproval(id: String, allow: Boolean) {
         transport?.decideApproval(id, allow)
+        // 本地即撤（不等 hitl_resolved）：通知栏那条不能再按第二次
+        CoreService.cancelApprovalNotification(getApplication(), id)
+        approvalSessions.remove(id)
         _state.update { s -> s.copy(approvals = s.approvals.filterNot { it.id == id }) }
     }
 
@@ -1799,12 +1949,52 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         val anchor = _state.value.editableAnchors
             .lastOrNull { it.text.trim() == message.text.trim() }?.back
         _state.update {
-            it.copy(editText = message.text, editAttachments = message.attachments, editBack = anchor)
+            it.copy(
+                editText = message.text,
+                editAttachments = message.attachments,
+                editBack = anchor,
+                editSeq = ++editSeqCounter,
+            )
         }
     }
 
     fun clearEdit() {
         _state.update { it.copy(editText = null, editAttachments = emptyList(), editBack = null) }
+    }
+
+    /**
+     * 外部内容到达（系统分享 ACTION_SEND/SEND_MULTIPLE、选中文本 PROCESS_TEXT）：
+     * 预填进输入卡。**不建会话不自动发送** —— 冷启动时 transport 未就绪，
+     * createSession 会直接失败；会话交给发送时的 awaitSession 自动闸门，
+     * 草稿预填在任何时点都成立。
+     *
+     * 文本走 editText 回填通路（editBack 留空 = 不进编辑态，发送是普通发送）；
+     * 图片按 EnvKit.stageUriToOutbox 同款口径复制进暂存区，再走 editAttachments。
+     * 全部失败且有文本时仍回填文本 —— 文本是主、附件是辅。
+     */
+    fun onExternalContent(text: CharSequence?, uris: List<Uri>) {
+        val body = text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+        if (body == null && uris.isEmpty()) return
+        viewModelScope.launch {
+            val staged = uris.mapNotNull { uri ->
+                EnvKit.stageUriToOutbox(getApplication(), uri) {
+                    _state.update { s -> s.copy(banner = Banner("附件超过 20MiB 上限", isError = true)) }
+                }
+            }
+            val skipped = uris.size - staged.size
+            if (skipped > 0) {
+                _state.update { s ->
+                    s.copy(banner = Banner("已跳过 $skipped 个超限或无法读取的附件", isError = true))
+                }
+            }
+            _state.update {
+                it.copy(
+                    editText = body,
+                    editAttachments = staged,
+                    editSeq = ++editSeqCounter,
+                )
+            }
+        }
     }
 
     /** 原样重发：原文+附件按一条新用户消息再走一遍（运行中自动并入 steer）。 */
@@ -1881,6 +2071,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     // 供应商行必须与「当前生效模型」同一口径（问题 8）：
                     // apply 成功后重拉 config，让 kernelConfig.provider 也跟上。
                     refreshKernelSummaries()
+                    // 换模型会换上下文窗口（ctx_in）与压缩预算：不拉一次 context 帧，
+                    // 输入卡外圈的占比还按旧窗口画（1M 模型仍显示接近压缩线）
+                    transport?.pullContext()
                     toast("已切换到 $id")
                 }
                 is KernelApi.ApiResult.Err -> _state.update { it.copy(banner = Banner(r.message, true)) }
@@ -2073,19 +2266,6 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                         }
                 }
                 is KernelApi.ApiResult.Err -> Unit
-            }
-        }
-    }
-
-    fun updateGenerationConfig(maxTokens: Int?, temperature: Double?) {
-        val a = api ?: run { bannerNoKernel(); return }
-        viewModelScope.launch {
-            when (val r = a.updateConfig(maxTokens = maxTokens, temperature = temperature)) {
-                is KernelApi.ApiResult.Ok -> {
-                    refreshKernelSummaries()
-                    toast("生成参数已保存")
-                }
-                is KernelApi.ApiResult.Err -> _state.update { it.copy(banner = Banner(r.message, true)) }
             }
         }
     }
@@ -2422,8 +2602,11 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     val current = _state.value.kernelConfig?.model
                     if (current != null && current == id) {
                         when (val ap = a.applyModel(id)) {
-                            is KernelApi.ApiResult.Ok ->
+                            is KernelApi.ApiResult.Ok -> {
+                                // 刚改的 ctx_in 要立刻反映到占比环与压缩预算
+                                transport?.pullContext()
                                 toast("模型已保存，已应用到当前会话")
+                            }
                             is KernelApi.ApiResult.Err ->
                                 toast("模型已保存，但应用失败：${ap.message}", isError = true)
                         }
@@ -2558,22 +2741,47 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     fun setNotifyEnabled(enabled: Boolean) {
+        // 壳侧开关是发送方（见 notifyDone）；内核那条只做同步记录，不再发通知
+        AppSettings.setNotifyEnabled(enabled)
         api?.let { a -> viewModelScope.launch { a.setNotifyEnabled(enabled) } }
     }
 
-    /** 手动压缩当前会话上下文；结果同时经 WS compress 帧进消息流，这里补一条横幅反馈。 */
+    /**
+     * 手动压缩当前会话上下文。
+     *
+     * 内核压缩要调用一次模型生成摘要，几秒到几十秒不等 —— 期间必须给反馈，
+     * 否则用户以为点了没反应。开始提示在**发请求前**插入（内核没有开始帧），
+     * 完成提示优先用内核 compress 帧；3 秒内没等到帧才本地补一条。
+     */
     fun compressContext() {
         val a = api ?: run { bannerNoKernel(); return }
         val sid = _state.value.currentSessionId
+        compressStartShown = true
+        lastCompressFrameAt = 0L
+        appendNotice(NOTICE_COMPRESS_START, NoticeKind.Compress)
+        val requestAt = System.currentTimeMillis()
         viewModelScope.launch {
             when (val r = a.compressContext(sid.ifBlank { null })) {
                 is KernelApi.ApiResult.Ok -> {
-                    _state.update { it.copy(banner = Banner(r.value, isError = false)) }
-                    // B5-7：压缩后主动拉一次占用（内核压缩路径不总是回推 context 帧）
+                    // 压缩后主动拉一次占用（内核压缩路径不总是回推 context 帧）
                     transport?.pullContext()
+                    // 完成提示优先用内核 compress 帧；3 秒内没等到才本地补，
+                    // 避免与帧重复（帧先到还是响应先到，两种顺序都会出现）
+                    launch {
+                        delay(3_000)
+                        if (lastCompressFrameAt < requestAt) {
+                            // API 的文案是「已压缩：before → after tokens（摘要 +n）」
+                            val detail = r.value.removePrefix("已压缩：").trim()
+                            val msg = if (detail.isNotBlank()) "$NOTICE_COMPRESS_DONE · $detail" else NOTICE_COMPRESS_DONE
+                            appendNotice(msg, NoticeKind.Compress)
+                            compressStartShown = false
+                        }
+                    }
                 }
-                is KernelApi.ApiResult.Err ->
-                    _state.update { it.copy(banner = Banner(r.message, isError = true)) }
+                is KernelApi.ApiResult.Err -> {
+                    compressStartShown = false
+                    appendNotice("压缩失败：${r.message}", NoticeKind.Warn)
+                }
             }
         }
     }
@@ -2914,6 +3122,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     override fun onCleared() {
+        // ViewModel 死了 WS 跟着断：审批通知的按钮从此按不动，先全部撤掉
+        CoreService.cancelAllApprovalNotifications(getApplication())
+        LiveTransport.current = null
         transport?.disconnect()
         super.onCleared()
     }

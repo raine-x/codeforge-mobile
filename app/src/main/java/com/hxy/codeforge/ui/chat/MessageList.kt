@@ -209,6 +209,7 @@ fun MessageList(
                         is FeedRow.Msg -> row.message.role
                         is FeedRow.Approve -> "approval"
                         is FeedRow.Explore -> "explore"
+                        is FeedRow.ProcessGroup -> "process-group"
                     }
                 },
             ) { row ->
@@ -257,6 +258,11 @@ fun MessageList(
                         tools = row.tools,
                         onFetchOutput = onFetchOutput,
                         stateKey = row.key,
+                    )
+
+                    is FeedRow.ProcessGroup -> ProcessGroupRowContent(
+                        messages = row.messages,
+                        onFetchOutput = onFetchOutput,
                     )
                 }
             }
@@ -335,8 +341,12 @@ fun MessageList(
 // ---------------------------------------------------------------- 行模型
 
 /**
- * 列表行。把「连续只读工具独占一条助手消息」的片段合并成 [Explore]，
- * 其余消息原样成 [Msg]，审批卡挂在最后。
+ * 列表行。两类合并：
+ *  - [Explore]：连续「纯只读工具独占一条助手消息」收一行「已探索 N 项」（单行已够读，保留）；
+ *  - [ProcessGroup]：连续「纯过程」助手消息（只有思考/工具、没有正文）整组合并成
+ *    一行「思考与执行 · N 项」—— 历史重放会把一轮拆成多条消息（工具一条、思考一条、
+ *    正文一条），单条消息内的前缀折叠（MessageBubble.SegmentedContent）够不着它们，
+ *    必须在行层级合并。其余消息原样成 [Msg]，审批卡挂在最后。
  */
 private sealed interface FeedRow {
     val key: String
@@ -349,63 +359,79 @@ private sealed interface FeedRow {
         override val key: String get() = "explore-$firstId"
     }
 
+    data class ProcessGroup(val messages: List<ChatMessage>) : FeedRow {
+        override val key: String get() = "pgrp-" + messages.first().id
+    }
+
     data class Approve(val card: ApprovalCard) : FeedRow {
         override val key: String get() = "ap-${card.id}"
     }
 }
 
-/**
- * 摊平消息列表。
- *
- * 只有「纯只读工具消息」参与合并：
- *  - 没有正文、没有思考（有正文就说明这一轮已经把结论说出来了，分组必须断开）；
- *  - 工具全为只读且**没有在跑**（运行中的要露出实时状态，折叠就看丢了）；
- *  - 至少两条（单条工具直接显示独立卡片，比「已探索 1 项」更好读）。
- */
+/** 纯过程消息：助手、非流式、没有正文与附件，且带思考或工具（流式中的留给消息内折叠）。 */
+private fun isProcessOnly(msg: ChatMessage): Boolean {
+    if (msg.role != MsgRole.Assistant || msg.streaming ||
+        msg.text.isNotBlank() || msg.attachments.isNotEmpty()
+    ) {
+        return false
+    }
+    if (msg.segments.isNotEmpty()) {
+        return msg.segments.any { it is MessageSegment.Thinking || it is MessageSegment.Tool }
+    }
+    return !msg.thinking.isNullOrBlank() || msg.tools.isNotEmpty()
+}
+
+private fun toolsOf(msg: ChatMessage): List<ToolCall> =
+    if (msg.segments.isNotEmpty()) {
+        msg.segments.filterIsInstance<MessageSegment.Tool>().map { it.call }
+    } else {
+        msg.tools
+    }
+
+private fun hasThinkingOf(msg: ChatMessage): Boolean =
+    if (msg.segments.isNotEmpty()) {
+        msg.segments.any { it is MessageSegment.Thinking }
+    } else {
+        !msg.thinking.isNullOrBlank()
+    }
+
 private fun buildFeedRows(
     messages: List<ChatMessage>,
     approvals: List<ApprovalCard>,
 ): List<FeedRow> {
     val rows = ArrayList<FeedRow>(messages.size + approvals.size)
-    val pendingMsgs = ArrayList<Pair<ChatMessage, Int>>()
-    val pendingTools = ArrayList<ToolCall>()
+    val run = ArrayList<Pair<ChatMessage, Int>>()
 
-    fun flushExplore() {
-        if (pendingMsgs.isEmpty()) return
-        if (pendingMsgs.size >= 2) {
-            rows.add(FeedRow.Explore(pendingTools.toList(), pendingTools.first().id))
-        } else {
-            // 只有一条：独立卡片比「已探索 1 项」更好读，折回去
-            val (msg, idx) = pendingMsgs.first()
-            rows.add(FeedRow.Msg(msg, idx))
+    fun flushRun() {
+        if (run.isEmpty()) return
+        // 连续「只读工具独占消息」（≥2 条）保留旧行为：一行「已探索 N 项」
+        // —— 它本身已是单行折叠，再包一层过程组等于双重点击。
+        val toolsOnlyReadOnly = run.size >= 2 && run.all { (m, _) ->
+            !hasThinkingOf(m) && toolsOf(m).isNotEmpty() &&
+                toolsOf(m).all { isReadOnlyTool(it.name) && it.state != ToolState.Running }
         }
-        pendingMsgs.clear()
-        pendingTools.clear()
+        if (toolsOnlyReadOnly) {
+            val combined = run.flatMap { toolsOf(it.first) }
+            rows.add(FeedRow.Explore(combined, combined.first().id))
+        } else if (run.size == 1) {
+            // 单条纯过程消息：独立渲染（段内 ≥2 段时 MessageBubble 自己会折叠）
+            val (m, idx) = run.first()
+            rows.add(FeedRow.Msg(m, idx))
+        } else {
+            rows.add(FeedRow.ProcessGroup(run.map { it.first }))
+        }
+        run.clear()
     }
 
     for ((index, msg) in messages.withIndex()) {
-        val segmentTools = msg.segments.filterIsInstance<MessageSegment.Tool>().map { it.call }
-        val tools = if (msg.segments.isNotEmpty()) segmentTools else msg.tools
-        val segmentsAreToolsOnly =
-            msg.segments.isEmpty() || msg.segments.all { it is MessageSegment.Tool }
-        val mergeable = msg.role == MsgRole.Assistant &&
-            !msg.streaming &&
-            msg.text.isBlank() &&
-            msg.thinking.isNullOrBlank() &&
-            segmentsAreToolsOnly &&
-            tools.isNotEmpty() &&
-            tools.all { isReadOnlyTool(it.name) } &&
-            tools.none { it.state == ToolState.Running }
-
-        if (mergeable) {
-            pendingMsgs.add(msg to index)
-            pendingTools.addAll(tools)
+        if (isProcessOnly(msg)) {
+            run.add(msg to index)
         } else {
-            flushExplore()
+            flushRun()
             rows.add(FeedRow.Msg(msg, index))
         }
     }
-    flushExplore()
+    flushRun()
 
     approvals.forEach { rows.add(FeedRow.Approve(it)) }
     return rows

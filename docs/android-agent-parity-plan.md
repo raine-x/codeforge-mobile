@@ -2,7 +2,7 @@
 
 > 状态：**待确认，未开始实现**
 > 日期：2026-10-28
-> 范围：`app/`（Android 壳）与 `source/CodeForge-GO/CodeForge-go/`（Go 内核，独立仓库）
+> 范围：`app/`（Android 壳）与 Go 内核（独立仓库，源码不在本仓库，见 AGENTS.md 第 1 节边界）
 > 原则：先确认边界，再按阶段闭环；不在 Kotlin 与 Go 各维护一份业务真相。
 
 ---

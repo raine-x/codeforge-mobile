@@ -182,7 +182,7 @@ private fun SettingsHome(onOpen: (String) -> Unit) {
         Triple("archive", "已归档会话", "恢复或永久删除"),
         Triple("env", "运行环境", "Linux 兼容环境、语言软件包"),
         Triple("transfer", "文件传输", "导入到工作区、导出到手机 Download"),
-        Triple("kernel", "内核设置", "生成参数、重试、权限、智能体"),
+        Triple("kernel", "内核设置", "重试、权限、智能体"),
         Triple("voice", "语音输入", "系统语音服务、云端转写"),
         Triple("diag", "诊断", "崩溃与环境日志、导出"),
     )

@@ -71,9 +71,12 @@ import com.hxy.codeforge.render.RenderSpan
 import com.hxy.codeforge.render.RenderTable
 import com.hxy.codeforge.ui.browser.BrowserTarget
 import com.hxy.codeforge.ui.browser.HtmlBlockView
+import com.hxy.codeforge.ui.browser.HtmlLoadingBlock
 import com.hxy.codeforge.ui.browser.LocalBrowserController
+import com.hxy.codeforge.ui.browser.looksLikeHtmlDocumentLoose
 import com.hxy.codeforge.ui.browser.mergeHtmlBlocks
 import com.hxy.codeforge.ui.browser.looksLikeWholeHtmlDocument
+import com.hxy.codeforge.ui.browser.splitProseAroundHtml
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.common.noRippleClickable
@@ -114,9 +117,34 @@ fun OpenRenderContent(
     // 正文被从中间打断，缩进也被吃掉 4 格。碎片化之后拼不回原文。
     //
     // 判定必须在**喂引擎之前**做（见 looksLikeWholeHtmlDocument 的说明）。
-    // 流式期间不做：文档还没写完，认不准，且提前挂 WebView 会反复重建。
+    // 模型常输出「解说 + 文档 + 解说」：切出内层文档挂 WebView，解说走正文。
     if (!streaming && looksLikeWholeHtmlDocument(source)) {
-        HtmlBlockView(html = source, title = "网页", modifier = modifier)
+        val split = splitProseAroundHtml(source)
+        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (split.before.isNotBlank()) {
+                OpenRenderContent(source = split.before, streaming = false, bodyStyle = bodyStyle)
+            }
+            HtmlBlockView(html = split.html ?: source, title = "网页")
+            if (split.after.isNotBlank()) {
+                OpenRenderContent(source = split.after, streaming = false, bodyStyle = bodyStyle)
+            }
+        }
+        return
+    }
+
+    // 流式未闭合：认出在生成网页就先顶一个「正在生成」大框，源码不展示。
+    // 高度固定，竖屏上不随增量跳动；写完后整块替换为 HtmlBlockView。
+    if (streaming && looksLikeHtmlDocumentLoose(source)) {
+        val split = splitProseAroundHtml(source)
+        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (split.before.isNotBlank()) {
+                OpenRenderContent(source = split.before, streaming = true, bodyStyle = bodyStyle)
+            }
+            HtmlLoadingBlock(title = "网页")
+            if (split.after.isNotBlank()) {
+                OpenRenderContent(source = split.after, streaming = true, bodyStyle = bodyStyle)
+            }
+        }
         return
     }
 
@@ -205,7 +233,7 @@ private fun ParagraphBlock(
     bodyStyle: TextStyle,
     caret: Boolean,
 ) {
-    // 独占一段的媒体按块级渲染：图片可点开全屏、音频有真实播放器、裸 SVG 走矢量绘制
+    // 独占一段的媒体按块级渲染：图片可点开全屏、音频有真实播放器、裸 SVG 走矢量绘制、音视频跳转卡片
     val single = block.spans.singleOrNull()
     if (single != null) {
         when {
@@ -224,15 +252,34 @@ private fun ParagraphBlock(
                 return
             }
 
-            single.type == "text" && single.text.trimStart().startsWith("<svg") -> {
-                if (single.text.contains("</svg>")) {
-                    MessageSvgBlock(single.text)
-                } else {
-                    StreamingTailBlock(single.text)
+            single.type == "text" -> {
+                val jump = parseMediaJumpTag(single.text)
+                if (jump != null) {
+                    MediaJumpCard(type = jump.first, url = jump.second)
+                    return
                 }
-                return
+                if (single.text.trimStart().startsWith("<svg")) {
+                    if (single.text.contains("</svg>")) {
+                        MessageSvgBlock(single.text)
+                    } else {
+                        StreamingTailBlock(single.text)
+                    }
+                    return
+                }
             }
         }
+    }
+
+    val fullText = block.spans.joinToString("") { it.text }
+    val fullJump = parseMediaJumpTag(fullText)
+    if (fullJump != null) {
+        MediaJumpCard(type = fullJump.first, url = fullJump.second)
+        return
+    }
+
+    if (MEDIA_JUMP_TAG_REGEX.containsMatchIn(fullText)) {
+        SegmentedParagraphBlock(fullText = fullText, bodyStyle = bodyStyle, caret = caret)
+        return
     }
 
     InlineSpans(
@@ -240,6 +287,50 @@ private fun ParagraphBlock(
         style = bodyStyle,
         caret = caret,
     )
+}
+
+/**
+ * 段落中包含音视频跳转标签时的切分渲染：正文与卡片交替排列。
+ */
+@Composable
+private fun SegmentedParagraphBlock(
+    fullText: String,
+    bodyStyle: TextStyle,
+    caret: Boolean,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        var lastIndex = 0
+        MEDIA_JUMP_TAG_REGEX.findAll(fullText).forEach { match ->
+            val prefix = fullText.substring(lastIndex, match.range.first).trim()
+            if (prefix.isNotBlank()) {
+                Text(
+                    text = prefix,
+                    style = bodyStyle,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            val type = match.groupValues[1]
+            val url = match.groupValues.getOrNull(2)?.trim().orEmpty()
+            MediaJumpCard(type = type, url = url)
+            lastIndex = match.range.last + 1
+        }
+        val suffix = fullText.substring(lastIndex).trim()
+        if (suffix.isNotBlank()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = suffix,
+                    style = bodyStyle,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                if (caret) {
+                    Text(text = "▍", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -266,8 +357,9 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
         "html", "htm" -> {
             // AI 出的整页文档（题目页、解析展开、可点开的图表）：
             // 直接挂成可交互 WebView，按钮能点、答案能展开，不用来回切 App。
+            // 流式未闭合先顶「正在生成」大框，源码不展示，避免竖屏刷屏与重建。
             if (openTail) {
-                StreamingTailBlock(block.text)
+                HtmlLoadingBlock(title = "网页")
             } else if (block.text.isNotBlank()) {
                 HtmlBlockView(html = block.text, title = "网页")
             } else {
@@ -1098,9 +1190,3 @@ private fun RenderSpan.urlOrSrc(): String = src.ifBlank { url }
 private fun firstNonBlankLine(s: String): String? =
     s.lines().firstOrNull { it.isNotBlank() }?.trim()
 
-/** 视频扩展名判定（忽略 query/fragment）；引擎没有 video 块，宿主据此升级媒体件。 */
-private fun isVideoPath(url: String): Boolean {
-    val clean = url.substringBefore('?').substringBefore('#').lowercase()
-    return clean.endsWith(".mp4") || clean.endsWith(".webm") || clean.endsWith(".mkv") ||
-        clean.endsWith(".mov") || clean.endsWith(".m4v") || clean.endsWith(".3gp")
-}

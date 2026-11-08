@@ -79,6 +79,8 @@ fun ToolCard(
         ToolState.Running -> Clay
         ToolState.Ok -> Color(0xFF3E9B4F)
         ToolState.Failed -> MaterialTheme.colorScheme.error
+        // 收尾兜底态：内核没回结果，中性灰既不假报成功也不假报失败
+        ToolState.Interrupted -> MaterialTheme.colorScheme.onSurfaceVariant
     }
 
     // 一行式（同「思考过程」）：不画卡片框、不加边框，只留图标 + 文案 + 折叠箭头。
@@ -95,7 +97,9 @@ fun ToolCard(
             // 文案走 toolLabel：中文短语 + 目标（「执行 python3 --version」）。
             // 不再单独显示工具 ID —— read_file 是系统内部标识，对用户没有意义。
             // 执行中整行扫光，跑完变静态文字：一眼能看出「这条正在跑」。
-            val label = toolLabel(tool.name, tool.input)
+            // 中断的调用后缀明示 —— 灰点和绿点单靠颜色区分不够直白。
+            val label = toolLabel(tool.name, tool.input) +
+                if (tool.state == ToolState.Interrupted) "（已中断）" else ""
             if (tool.state == ToolState.Running) {
                 ShimmerText(
                     text = label,

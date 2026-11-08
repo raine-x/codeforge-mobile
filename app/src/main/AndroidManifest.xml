@@ -30,9 +30,12 @@
         android:theme="@style/Theme.CodeForge"
         android:usesCleartextTraffic="true">
 
+        <!-- launchMode 必须与 onNewIntent 的注释一致：应用在前台点通知也要走
+             onNewIntent 而不是叠一个新实例（standard 会新开，deep-link 逻辑失效） -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
             android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
@@ -40,6 +43,22 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!-- 入站分享：浏览器/微信/相册「分享到 CodeForge」→ 预填输入卡。
+                 特意不收 ACTION_VIEW http —— 那会让本应用出现在所有链接的
+                 「打开方式」里，用户误设默认后链接全被劫持 -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <!-- 长按选中文本 → 「CodeForge」：与分享同一处理通路 -->
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
 
@@ -51,6 +70,11 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Runs the local AI coding-agent core (localhost HTTP/WebSocket server) for this app" />
         </service>
+
+        <!-- 审批通知的批准/拒绝快操作：经 LiveTransport 走已连的 WS 发决定 -->
+        <receiver
+            android:name=".core.ApprovalReceiver"
+            android:exported="false" />
 
         <!-- 相机附件：TakePicture 经 FileProvider 出片 URI。
              未声明 CAMERA 权限 —— 走系统相机应用代拍时不需要（声明了反而必须先授权） -->

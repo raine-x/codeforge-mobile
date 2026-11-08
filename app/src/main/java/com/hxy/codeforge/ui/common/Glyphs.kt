@@ -422,22 +422,39 @@ fun GlyphIcon(
             }
 
             Glyph.Gear -> {
-                // 齿轮：中心圆 + 8 根齿。不画标准渐开线齿形 —— 24 坐标系里
-                // 简化为「圆 + 短辐条」，小尺寸下观感与 Claude 设置图标一致。
-                drawCircle(color, radius = 4.6f * s, center = Offset(12 * s, 12 * s), style = stroke)
-                drawCircle(color, radius = 1.6f * s, center = Offset(12 * s, 12 * s), style = stroke)
-                repeat(8) { i ->
-                    val a = Math.PI * 2 * i / 8 + Math.PI / 8
-                    val dx = kotlin.math.cos(a).toFloat()
-                    val dy = kotlin.math.sin(a).toFloat()
-                    drawLine(
-                        color,
-                        Offset(12 * s + dx * 6.2f * s, 12 * s + dy * 6.2f * s),
-                        Offset(12 * s + dx * 9.6f * s, 12 * s + dy * 9.6f * s),
-                        stroke.width,
-                        StrokeCap.Round,
-                    )
+                // 真齿轮剪影：单一封闭轮廓（齿顶/侧沿/齿根参数化采样成 240 段
+                // 闭合多段线，圆角连接）+ 中心孔。前两版分别读作病毒（圆+悬空
+                // 辐条）与轮胎（双圆+辐条）—— 齿必须是**轮廓的一部分**，这不是
+                // 「圆加装饰」能凑出来的形状。
+                val r1 = 5.8f * s   // 齿根
+                val r2 = 9.3f * s   // 齿顶
+                val teeth = 8
+                val pitch = 2 * Math.PI / teeth
+                val half = pitch * 0.11        // 齿顶半宽
+                val flank = pitch * 0.15       // 侧沿斜面
+                val gear = Path()
+                val steps = 240
+                for (i in 0 until steps) {
+                    val a = i * 2 * Math.PI / steps - Math.PI / 2   // 正上方起笔，顶部是齿
+                    val phase = ((a % pitch) + pitch) % pitch        // 距齿中心的角度
+                    val k: Double = when {                           // 1=齿顶 0=齿根
+                        phase <= half -> 1.0
+                        phase <= half + flank -> 1.0 - (phase - half) / flank
+                        phase < pitch - half - flank -> 0.0
+                        phase < pitch - half -> (phase - (pitch - half - flank)) / flank
+                        else -> 1.0
+                    }
+                    val r = r1 + (r2 - r1) * k.toFloat()
+                    val x = 12 * s + kotlin.math.cos(a).toFloat() * r
+                    val y = 12 * s + kotlin.math.sin(a).toFloat() * r
+                    if (i == 0) gear.moveTo(x, y) else gear.lineTo(x, y)
                 }
+                gear.close()
+                drawPath(
+                    gear, color,
+                    style = Stroke(width = stroke.width, cap = StrokeCap.Round, join = StrokeJoin.Round),
+                )
+                drawCircle(color, radius = 2.7f * s, center = Offset(12 * s, 12 * s), style = stroke)
             }
 
             Glyph.Close -> {

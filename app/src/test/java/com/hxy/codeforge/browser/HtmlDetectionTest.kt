@@ -295,4 +295,45 @@ class HtmlDetectionTest {
         )
         assertFalse(el.toWireBlock().contains("用户备注"))
     }
+
+    // ------------------------------------------------- 解说 + 文档 + 解说
+
+    @Test
+    fun recognisesDocumentWrappedInProse() {
+        val wrapped = "下面是一道题，点按钮看解析。\n\n$fullPage\n\n做完告诉我。"
+        assertTrue(looksLikeWholeHtmlDocument(wrapped))
+    }
+
+    @Test
+    fun splitsProseAroundDocument() {
+        val wrapped = "前置解说如下。\n\n$fullPage\n\n后置解说收尾。"
+        val split = splitProseAroundHtml(wrapped)
+        assertEquals("前置解说如下。", split.before)
+        assertEquals(fullPage, split.html)
+        assertEquals("后置解说收尾。", split.after)
+    }
+
+    @Test
+    fun splitsUnclosedDocumentToEnd() {
+        val partial = "先看题。\n<!DOCTYPE html>\n<html><body><p>写到一半"
+        val split = splitProseAroundHtml(partial)
+        assertEquals("先看题。", split.before)
+        assertEquals("<!DOCTYPE html>\n<html><body><p>写到一半", split.html)
+        assertEquals("", split.after)
+    }
+
+    @Test
+    fun looseRecognisesUnclosedButWholeRejects() {
+        val partial = "<!DOCTYPE html>\n<html><body><p>写到一半"
+        assertTrue(looksLikeHtmlDocumentLoose(partial))
+        assertFalse(looksLikeWholeHtmlDocument(partial))
+    }
+
+    @Test
+    fun splitWithoutDocumentReturnsOriginalAsBefore() {
+        val split = splitProseAroundHtml("普通文字，没有网页。")
+        assertEquals("普通文字，没有网页。", split.before)
+        assertFalse(split.html != null)
+        assertEquals("", split.after)
+    }
 }

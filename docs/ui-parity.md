@@ -1,7 +1,7 @@
 # Android 壳 ↔ 网页前端 功能对照
 
 > 审计时间：2026-10-27
-> 基准：`source/CodeForge-GO/CodeForge-go/web/dist/`（index.html 733 行 + ui.js 7944 行 + app.css 3634 行 + drag.js 81 行，零依赖手写单文件应用）
+> 基准：CodeForge-Go 网页端 `web/dist/`（index.html 733 行 + ui.js 7944 行 + app.css 3634 行 + drag.js 81 行，零依赖手写单文件应用；内核源码不在本仓库，见 AGENTS.md 第 1 节边界）
 > 对象：`app/src/main/java/com/hxy/codeforge/`（Kotlin + Compose）
 >
 > 核实方式：逐项 grep Android 侧关键词 + 读实现，未核实的标「待确认」。

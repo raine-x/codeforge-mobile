@@ -30,9 +30,9 @@ import com.hxy.codeforge.render.RenderBlock
  * 认错的代价是双向的：把正文里贴的一小段标签当整页渲染会吞掉周围文字；
  * 把整页当正文显示则是一屏尖括号。所以：
  *
- *  - 必须以 `<` 开头（行内 HTML 混在文字里的一律不认）；
- *  - 必须是完整文档（有 doctype 或 `<html>`，且有 `</html>` / `</body>` 闭合）；
- *  - 必须够长、以 `>` 收尾。
+ *  - 必须有文档头（`<!DOCTYPE html` 或 `<html>`，可出现在解说之后）；
+ *  - 必须是完整文档（有 `</html>` / `</body>` 闭合）；
+ *  - 抽出的文档要够长。
  *
  * ## 围栏形态不在这里
  *
@@ -42,14 +42,87 @@ import com.hxy.codeforge.render.RenderBlock
 internal fun looksLikeWholeHtmlDocument(raw: String): Boolean {
     val t = raw.trim()
     // 围栏形态先排除：整段被 ``` 包着的是代码，不是文档。
-    if (t.startsWith("```")) return false
-    if (t.length < 40 || !t.startsWith("<") || !t.endsWith(">")) return false
-    val lower = t.lowercase()
+    if (t.startsWith("```") || t.startsWith("~~~")) return false
+    // 模型实际输出常是「解说 + 文档 + 解说」：前后两边有中文说明。
+    // 严格要求整条消息以 `<` 开头、以 `>` 收尾会直接判定失败，退回引擎碎片化。
+    val doc = extractHtmlDocument(t) ?: return false
+    if (doc.length < 40) return false
+    val lower = doc.lowercase()
     // 完整文档的闭合标记：只看开头没有意义 ——
     // 文档前半段（doctype + <head>）还没写完，不能当整页。
     val closed = lower.contains("</html>") || lower.contains("</body>")
     if (!closed) return false
-    return lower.contains("<!doctype html") || lower.contains("<html")
+    return lower.startsWith("<!doctype html") || lower.contains("<html")
+}
+
+/**
+ * 从「解说 + 文档 + 解说」中抽取内层 HTML 文档。
+ *
+ * 找不到文档头（`<!DOCTYPE html` 或 `<html`）返回 null；
+ * 找不到闭合时，取到文本末尾当作文档尾，由调用方按「未闭合」拒绝，
+ * 避免半截文档提前转成网页。
+ */
+internal fun extractHtmlDocument(raw: String): String? {
+    val lower = raw.lowercase()
+    val doctype = lower.indexOf("<!doctype html")
+    val htmlTag = lower.indexOf("<html")
+    val start = listOfNotNull(
+        doctype.takeIf { it >= 0 },
+        htmlTag.takeIf { it >= 0 },
+    ).minOrNull() ?: return null
+    val htmlEndIdx = lower.lastIndexOf("</html>")
+    val bodyEndIdx = lower.lastIndexOf("</body>")
+    val end = when {
+        htmlEndIdx >= 0 -> htmlEndIdx + "</html>".length
+        bodyEndIdx >= 0 -> bodyEndIdx + "</body>".length
+        else -> raw.length
+    }
+    if (end <= start) return null
+    return raw.substring(start, end)
+}
+
+/**
+ * 是否「看起来像一整份 HTML 文档」（放宽版，每条消息都认）。
+ *
+ * 与 [looksLikeWholeHtmlDocument] 的区别：本函数允许「解说 + 文档 + 解说」，
+ * 直接抽取内层文档。流式未闭合时也认得出来，适合提前占位显示「正在生成」。
+ */
+internal fun looksLikeHtmlDocumentLoose(raw: String): Boolean {
+    val t = raw.trim()
+    if (t.startsWith("```") || t.startsWith("~~~")) return false
+    return extractHtmlDocument(t) != null
+}
+
+/** [splitProseAroundHtml] 的切分结果：解说文 / 内层文档 / 文档后解说。 */
+data class HtmlSplit(val before: String, val html: String?, val after: String)
+
+/**
+ * 把「解说 + 文档 + 解说」切成三段，渲染时只把文档段挂 WebView，解说走正文。
+ *
+ * 找不到文档头时 `html` 为 null，`before` 即原文。
+ * 未闭合（流式中）时文档段取到文本末尾，`after` 为空。
+ */
+internal fun splitProseAroundHtml(raw: String): HtmlSplit {
+    val lower = raw.lowercase()
+    val doctype = lower.indexOf("<!doctype html")
+    val htmlTag = lower.indexOf("<html")
+    val start = listOfNotNull(
+        doctype.takeIf { it >= 0 },
+        htmlTag.takeIf { it >= 0 },
+    ).minOrNull() ?: return HtmlSplit(raw, null, "")
+    val htmlEndIdx = lower.lastIndexOf("</html>")
+    val bodyEndIdx = lower.lastIndexOf("</body>")
+    val end = when {
+        htmlEndIdx >= 0 -> htmlEndIdx + "</html>".length
+        bodyEndIdx >= 0 -> bodyEndIdx + "</body>".length
+        else -> raw.length
+    }
+    if (end <= start) return HtmlSplit(raw, null, "")
+    return HtmlSplit(
+        before = raw.substring(0, start).trim(),
+        html = raw.substring(start, end),
+        after = raw.substring(end).trim(),
+    )
 }
 
 /**

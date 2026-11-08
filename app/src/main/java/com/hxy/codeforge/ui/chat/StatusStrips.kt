@@ -80,13 +80,14 @@ fun ContextMeter(usage: ContextUsage?, modifier: Modifier = Modifier) {
         modifier = modifier,
     ) {
         val u = usage ?: return@AnimatedVisibility
-        // percent 可能 >100（超预算），条形填充必须夹到 1，数字保留原值
+        // 有模型真实窗口（ctx_in）时按窗口算占比；否则退回内核预算。
+        // percent 可能 >100（超预算），条形填充必须夹到 1，数字保留原值。
         val fill by animateFloatAsState(
-            targetValue = (u.percent / 100f).coerceIn(0f, 1f),
+            targetValue = u.displayFraction,
             animationSpec = tween(420),
             label = "ctx-fill",
         )
-        val warn = u.overBudget || u.percent >= 90f
+        val warn = u.overBudget || u.displayFraction >= 0.9f
         val barColor = when {
             u.overBudget -> MaterialTheme.colorScheme.error
             warn -> MaterialTheme.colorScheme.secondary
@@ -122,7 +123,7 @@ fun ContextMeter(usage: ContextUsage?, modifier: Modifier = Modifier) {
                 )
             }
             Text(
-                text = "$usedText / ${u.percent.toInt()}%",
+                text = "$usedText / ${(u.displayFraction * 100).toInt()}%",
                 style = MaterialTheme.typography.labelSmall,
                 color = if (warn) barColor else MaterialTheme.colorScheme.onSurfaceVariant,
             )

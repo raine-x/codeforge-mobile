@@ -1,8 +1,6 @@
 package com.hxy.codeforge.ui.browser
 
 import android.webkit.WebView
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,7 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,7 +21,6 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextOverflow
@@ -58,16 +55,9 @@ fun HtmlBlockView(
     var heightPx by remember(html) { mutableIntStateOf(0) }
     val onHeight by rememberUpdatedState { h: Int -> heightPx = h }
 
-    val shape = RoundedCornerShape(12.dp)
-    val border = 1.dp
-
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .border(border, MaterialTheme.colorScheme.outlineVariant, shape),
-    ) {
+    // 不给外层套灰框：页面自带背景和圆角就是完整视觉，再包一层会变成
+    // 「框里框」（截图里灰底 + 奶油卡 + 圆角三层套娃），和聊天语境不搭。
+    Column(modifier = modifier.fillMaxWidth()) {
         // 工具条：标题 + 两个打开方式
         Row(
             modifier = Modifier
@@ -113,10 +103,11 @@ fun HtmlBlockView(
         AndroidView(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(with(density) { contentHeight.toDp() })
-                .padding(horizontal = 2.dp),
+                .height(with(density) { contentHeight.toDp() }),
             factory = { ctx ->
                 WebView(ctx).apply {
+                    // 背景透明：页面自带背景直接透出来，不闪白、不叠一层白底
+                    setBackgroundColor(android.graphics.Color.TRANSPARENT)
                     BrowserWeb.configure(
                         webView = this,
                         interactive = true,
@@ -142,6 +133,67 @@ fun HtmlBlockView(
                 runCatching { wv.destroy() }
             },
         )
+    }
+}
+
+/**
+ * 流式占位：网页源码还没写完时先顶一个大框，写完再挂 [HtmlBlockView] 填充。
+ *
+ * 工具条与高度都与 [HtmlBlockView] 保持一致（[DEFAULT_H]），
+ * 竖屏上切换时不跳动。高度固定、不随增量变化，所以流式期间 WebView 不重建、
+ * 页面不抖。流式源码本身不展示（避免一屏尖括号刷屏）。
+ */
+@Composable
+fun HtmlLoadingBlock(
+    modifier: Modifier = Modifier,
+    title: String = "网页",
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            GlyphIcon(Glyph.CodeBrackets, 13.dp, Clay)
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .padding(start = 6.dp)
+                    .weight(1f),
+            )
+        }
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(DEFAULT_H),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(28.dp),
+                    color = Clay,
+                    strokeWidth = 2.5.dp,
+                )
+                Text(
+                    text = "正在生成",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "网页内容生成中，完成后自动显示",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 

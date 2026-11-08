@@ -89,8 +89,6 @@ class KernelApi(private val host: String, private val port: Int) {
 
     /** POST /api/config：部分更新（null 字段不下发）。model/provider 用于弹层选择模型与供应商。 */
     suspend fun updateConfig(
-        maxTokens: Int? = null,
-        temperature: Double? = null,
         retryMaxAttempts: Int? = null,
         retryMode: String? = null,
         retryIntervalSec: Int? = null,
@@ -98,8 +96,6 @@ class KernelApi(private val host: String, private val port: Int) {
         provider: String? = null,
         maxSteps: Int? = null,
     ): ApiResult<Unit> = post("/api/config", JSONObject().apply {
-        maxTokens?.let { put("max_tokens", it) }
-        temperature?.let { put("temperature", it) }
         retryMaxAttempts?.let { put("retry_max_attempts", it) }
         retryMode?.let { put("retry_mode", it) }
         retryIntervalSec?.let { put("retry_interval_sec", it) }

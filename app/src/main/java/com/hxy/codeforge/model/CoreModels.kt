@@ -9,8 +9,14 @@ enum class MsgRole { User, Assistant, Notice }
 /** 通知行种类：对应内核 retry / compress / rewind / steer / info / warn 事件。 */
 enum class NoticeKind { Info, Retry, Compress, Rewind, Steer, Warn }
 
-/** 工具调用状态。 */
-enum class ToolState { Running, Ok, Failed }
+/**
+ * 工具调用状态。
+ *
+ * [Interrupted] 是壳侧的收尾兜底态：一轮结束（Idle/手动停止/失败）时还没等到
+ * tool_result 的调用 —— 内核没回结果，既不该假标成功也不该标失败；
+ * 迟到的结果仍会按 id 命中覆盖成真实状态。
+ */
+enum class ToolState { Running, Ok, Failed, Interrupted }
 
 /**
  * 一次工具调用。
@@ -140,7 +146,28 @@ data class ContextUsage(
     val percent: Float,
     val model: String = "",
     val overBudget: Boolean = false,
-)
+    /**
+     * 模型声明的输入上下文窗口（tokens）。
+     *
+     * 0 = 模型库里没填输入上限 —— 内核此时退回默认预算（实测 120000），
+     * 于是「1M 的模型」也会在 12 万左右触发压缩。设置页要据此提示用户。
+     */
+    val window: Long = 0,
+    /** 本会话是否已经做过摘要压缩（内核 compressed 标志）。 */
+    val compressed: Boolean = false,
+) {
+    /**
+     * 展示用占比：有真实窗口就按窗口算，否则退回内核预算。
+     *
+     * 内核的 percent 是「对预算」算的（预算 ≈ (窗口 - 输出保留) × 0.8），
+     * 用户看的是「占模型窗口多少」，两者在压缩线附近会差 20%。
+     */
+    val displayFraction: Float
+        get() = when {
+            window > 0 && used > 0 -> (used.toFloat() / window).coerceIn(0f, 1f)
+            else -> (percent / 100f).coerceIn(0f, 1f)
+        }
+}
 
 /** GET /api/config 的设置页摘要（只取壳要展示/可写的字段）。 */
 data class KernelConfigSummary(

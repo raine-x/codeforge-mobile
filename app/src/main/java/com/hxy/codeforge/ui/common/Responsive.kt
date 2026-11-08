@@ -38,6 +38,10 @@ fun currentWindowMode(): WindowMode {
     LocalOrientation.current?.let { o ->
         return when {
             o.widthDp >= 840 -> WindowMode.Expanded
+            // 横持旋转（内容已转 90°）保证双栏：旋转后内容宽 = 物理窗口高，
+            // 小屏手机可能不足 600dp（如 552dp）——按旧判定会「转了但不切双栏」。
+            // 480dp 是兜底分支的同款底线，再窄双栏确实放不下。
+            o.isLandscape && o.widthDp >= 480 -> WindowMode.Medium
             o.widthDp >= 600 -> WindowMode.Medium
             else -> WindowMode.Compact
         }

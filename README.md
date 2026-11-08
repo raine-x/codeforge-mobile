@@ -152,9 +152,12 @@ UI and kernel are connected in-process, directly.
 
 ## 许可 / License
 
-GPL-3.0\
-个人学习、研究、教学与非营利使用免费；任何商业用途须另行取得书面授权。
-Personal learning, research, teaching and non-profit use are free; any commercial use requires a separate written license.
+MIT + 商业授权双许可（Copyright (c) 2026 raine-x）\
+默认按 MIT 许可使用、修改与分发（含商用）；如需免除署名、OEM 预装、源码交付或技术支持等
+超出 MIT 条款的方式，联系 2653603072@qq.com 获取商业授权。
+Dual-licensed: MIT by default; for uses beyond its terms (no-attribution, OEM, source
+delivery, support), contact 2653603072@qq.com for a commercial license.
 
-完整条款（含第三方组件清单）见 [LICENSE](LICENSE)。
-Full terms (including the third-party component list) are in [LICENSE](LICENSE).
+完整条款（含第三方组件清单，proot 等第三方组件保留原许可）见 [LICENSE](LICENSE)。
+Full terms (including the third-party component list — proot etc. keep their original
+licenses) are in [LICENSE](LICENSE).

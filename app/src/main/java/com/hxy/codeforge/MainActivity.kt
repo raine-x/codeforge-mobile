@@ -3,6 +3,7 @@ package com.hxy.codeforge
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -122,10 +123,36 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent?.action == ACTION_NEW_CHAT) vm.createSession()
+        // 完成通知点按：带回那个会话（存在才跳，空 = 只打开应用）
+        intent?.getStringExtra(EXTRA_SESSION_ID)?.takeIf { it.isNotBlank() }?.let { vm.switchSession(it) }
+        // 入站分享 / 选中文本：预填输入卡（不建会话不自动发送，见 ChatViewModel.onExternalContent）
+        when (intent?.action) {
+            Intent.ACTION_SEND -> vm.onExternalContent(
+                intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
+                listOfNotNull(
+                    androidx.core.content.IntentCompat.getParcelableExtra(
+                        intent, Intent.EXTRA_STREAM, Uri::class.java,
+                    ),
+                ),
+            )
+            Intent.ACTION_SEND_MULTIPLE -> vm.onExternalContent(
+                intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
+                androidx.core.content.IntentCompat.getParcelableArrayListExtra(
+                    intent, Intent.EXTRA_STREAM, Uri::class.java,
+                ).orEmpty(),
+            )
+            Intent.ACTION_PROCESS_TEXT -> vm.onExternalContent(
+                intent.getCharSequenceExtra(Intent.EXTRA_PROCESS_TEXT),
+                emptyList(),
+            )
+        }
     }
 
     companion object {
         /** 通知栏「新建对话」快捷动作（CoreService 的 notification 挂着这个 PendingIntent）。 */
         const val ACTION_NEW_CHAT = "com.hxy.codeforge.MAIN_NEW_CHAT"
+
+        /** 完成通知点按携带的会话 id（CoreService.postDoneNotification 写入）。 */
+        const val EXTRA_SESSION_ID = "com.hxy.codeforge.SESSION_ID"
     }
 }

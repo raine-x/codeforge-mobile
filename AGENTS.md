@@ -14,22 +14,22 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 ├── README.md                          门面：只讲性能、特点、特性（炫技向）
 ├── README_ZH.md                       中文详版：使用方法、技术实现、原理
 ├── README_EN.md                       英文详版：同上
-├── LICENSE                            GPL-3.0 + 禁止商用附加条款 + 第三方组件清单
+├── LICENSE                            MIT + 商业授权双许可 + 第三方组件清单（联系 2653603072@qq.com）
 ├── AGENTS.md                          记录一：工作准则（本文件）
 ├── 工作进程.md                        记录二：待办与已办
 ├── 改动历史.md                        记录三：变更流水
 ├── docs/android-native-plan.md        参考：方案与架构（不属于三份记录）
 ├── app/src/main/java/com/hxy/codeforge/   Kotlin + Compose，无 XML 布局
-└── source/CodeForge-GO/               Go 内核**参考副本**（独立 git 仓库，只读参考）
+└── app/src/main/jniLibs/arm64-v8a/    libcodeforge.so + libopenrender.so（预编译产物）
 ```
 
 **边界**：
-- 原内核仓库在 `C:\Users\26536\Desktop\Code\CodeForge-GO`（内含 `CodeForge-go` 子仓库）。
-- 本仓库的 `source/CodeForge-GO/` 只是那份代码的副本，它自己也带 `.git` 和同名远端。
-- **禁止在 `source/CodeForge-GO` 下执行 `git add/commit/push`**：会直接改动内核远端（P-048）。
-  内核改动一律在原仓库完成、在原仓库提交推送，再把 `libcodeforge.so` 产物拷回本仓库。
-- 要改内核必须明确说明并单独确认——它有独立的 git 仓库和 `AGENTS.md`。
-- **包名 `com.hxy.codeforge`**（2026-11-04 定，原 `app.codeforge`）——Kotlin 包、namespace、
+- **.so 源码不在本仓库**：libcodeforge.so与
+  libopenrender.so（引擎 + JNI 桥补丁）只以预编译产物进仓库；源码与构建材料在仓库外的
+  `D:\code\CodeForgeAPP-private\`，内核原仓库在 `C:\Users\26536\Desktop\Code\CodeForge-GO`。
+  **未经确认不得把源码重新引入本仓库**不得更改上面这两个源码仓库。
+- **包名 `com.hxy.codeforge`**
+Kotlin 包、namespace、
   applicationId、JNI 符号、proguard keep 规则五处必须同步，见 P-047。
 
 ---
@@ -135,10 +135,9 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 |---|---|---|
 | `render/OpenRenderNative.kt` | `libopenrender.so` 的 JNI 封装（含 RaTeX 开关与 `cacheDir` 透传）；加载失败进程级判死，界面退纯文本 | 102 |
 | `render/RenderIr.kt` | IR 数据类、delta 应用器、`\(\)`/`\[\]` 公式定界符归一、按消息前缀 diff 喂引擎 | 362 |
-| `tools/openrender/app_jni.rs` | JNI 桥补丁 + `install_unicode_font`（内嵌 Noto Sans SC 子集，设 `RATEX_UNICODE_FONT`，见 P-039）；函数名 `Java_com_hxy_codeforge_render_OpenRenderNative_*` | 230 |
-| `tools/openrender/build-android.ps1` | 可复现构建脚本（Windows，固定上游 commit，拷字体进 crate 目录供 `include_bytes!`） | 82 |
-| `tools/openrender/build-android.sh` | 同上（Linux 版，供无 PowerShell 的构建机使用） | 71 |
-| `tools/openrender/fonts/` | Noto Sans SC 子集（OFL-1.1）+ LICENSE；改字体必须同步重编 `.so` | 3,233,576 B |
+
+引擎源码（JNI 桥补丁、构建脚本、字体子集）**已移出仓库**（2026-11-07，见第 1 节边界）——
+P-039/P-047 所指的 `tools/openrender/` 路径已不在仓库，材料在 `D:\code\CodeForgeAPP-private\`。
 
 语音层说明：`voice/` 不属于协议层（不碰内核帧），是跨界面能力，被 `ui/chat/Composer.kt`
 （输入）与 `ui/settings/SettingsSheet.kt`（状态展示）共同消费；不引 Compose 之外的 Android UI。
@@ -168,13 +167,13 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 | 改输入框行为（多行、发送键） | `ui/chat/Composer.kt` |
 | 改贴底跟随 / 回到最新 | `ui/chat/MessageList.kt` |
 | 改配色、字体、深色模式 | `ui/theme/Theme.kt` |
-| 改 Markdown 解析范围（CommonMark/GFM/公式） | 上游引擎源码（`tools/openrender/build-android.ps1` 固定 commit）→ 重编 `.so`；壳侧解析在 `render/RenderIr.kt` |
+| 改 Markdown 解析范围（CommonMark/GFM/公式） | 引擎源码不在仓库 → 重编 `.so` 联系 LICENSE 邮箱；壳侧解析在 `render/RenderIr.kt` |
 | 改正文排版（标题/列表/引用/表格/代码块/公式外观） | `ui/chat/OpenRenderMessage.kt` |
 | 改公式定界符兼容（`$`/`$$`/`\(\)`/`\[\]`） | `render/RenderIr.kt` 的 `normalizeMathDelimiters`（注意跳过代码围栏与 `$$` 内的 `\\[2pt]`） |
-| 改公式里的中文渲染（Android 无 Unicode 回退字体，见 P-039） | `tools/openrender/app_jni.rs` 的 `install_unicode_font` + `tools/openrender/fonts/` 的字体子集；改了要重编 `.so` |
+| 改公式里的中文渲染（Android 无 Unicode 回退字体，见 P-039） | 引擎侧 `install_unicode_font` 已随源码移出仓库 → 重编 `.so` 联系 LICENSE 邮箱 |
 | 改表格列宽 | `ui/chat/OpenRenderMessage.kt` 的 `columnWidths`（按实际渲染宽度分配，别退回字符数加权） |
 | 改 AI 出题/可交互网页（HTML 块、内置浏览器、元素挑选） | `ui/browser/`（`PageBridge.kt` JS 桥、`BrowserOverlay.kt` 全屏浏览器、`HtmlBlockView.kt` 内嵌块）+ `ui/chat/OpenRenderMessage.kt` 的 `mergeHtmlBlocks`；引擎**没有** Html 块类型，见 P-041 |
-| 改注入给模型的能力说明（提示词） | `ui/ChatViewModel.kt` 的 `HTML_CAPABILITY_PROMPT`（只能混进上行文本，见 P-042） |
+| 改注入给模型的能力说明（提示词） | `ui/CapabilityPrompt.kt` 的 `CLIENT_CAPABILITY_PROMPT`（只能混进上行文本，见 P-042；**改提示词必须同步改这里的通道清单并跑 `CapabilityPromptTest`**，见 P-054） |
 | 改横屏左侧栏折叠 | `ui/AppRoot.kt` 的双栏布局（`sidebarCollapsed` + `animateDpAsState` 宽度过渡）+ `TopBar` 的 `onToggleSidebar`（三横线在主界面顶栏） |
 | 改模型库 / 探测 / 测试连接 | `core/KernelApi.kt` 的 `discoverModels` / `testModel` —— **字段名必须与内核 `modelTestReq` 一致**，见 P-043 |
 | 改供应商显示 | `ui/chat/ModelPickerSheet.kt` 的 `buildProviderEntries` + `ui/chat/Composer.kt` 的 provider 派生；**身份用 id**，见 P-044 |
@@ -201,13 +200,6 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 | 加新页面（设置、模型管理） | `ui/` 下新建包，在 `ui/AppRoot.kt` 挂入口 |
 | 加新的状态字段 | `ui/ChatViewModel.kt` 的 `ChatUiState` + `onEvent` 的对应分支 |
 
-### 2.5 尚未存在的层（规划中，不要提前实现）
-
-| 层 | 计划位置 | 说明 |
-|---|---|---|
-| 工具链层 | 未定 | Python（Chaquopy）/ Java（ECJ+D8）/ Go（proot）。按 `docs/android-native-plan.md` 第 5 节推进，**动手前必须先跑 E1/E2 实验** |
-| 设置层扩展 | `ui/settings/`（已起步） | 已有旋转/语音设置；P1 继续对应 `/api/models/*`、`/api/providers/*` 等 11 个端点 |
-
 ### 2.6 启动流水线与「环境准备中」
 
 首启步骤全部注册在 `CodeForgeApp.kt` 的 `onCreate`，顺序固定，新增步骤必须同步更新本节：
@@ -229,10 +221,6 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 规则：任何「首启要做、之后跳过」的环境准备都走这条流水线——状态用
 `core/EnvKit.kt` 的 Status 模式（Idle/Preparing/Ready/Failed），
 **不要各自发明**；解压类步骤的目标目录一律 `filesDir` 下独立子目录 + 就绪标记。
-
-> 内置离线语音模型（Vosk）已于 2026-11-05 移除（APK 瘦身 47 MB），首启不再有
-> 语音模型解压这一步；语音改走「云端 → 系统 `SpeechRecognizer`」两档。
-> 见 `改动历史.md` 2026-11-05 条目与 `NoOfflineVoiceTest` 守护测试。
 
 ---
 
@@ -323,7 +311,6 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 
 - **最小改动**。不顺手重构无关代码，不顺手改格式。想重构就单独提。
 - **保持既有风格**。注释用中文、解释「为什么」而不是「做什么」、不用 emoji。
-- **不删 `.workbuddy-ai/`**。那是项目数据目录，不是缓存。
 - **新增依赖要说明**。在 `改动历史.md` 里写清为什么加、版本、体积影响。
 
 ### 5.3 注释怎么写
@@ -365,28 +352,7 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 
 ## 7. 提交规范
 
-**首行一句概括，正文分条列改动点。**
-
-- 每一条**只保留第一句话**，不展开第二句或补充说明
-- 不要写成「做了什么/怎么做的」的长段落
-
-```
-修复贴底跟随在流式输出时中断
-
-- isScrollInProgress 把程序化滚动也算成用户拖动
-- 改用 interactionSource.collectIsDraggedAsState 判定
-- scrollToItem 不等于滚到底，末尾补 tail item
-```
-
-**其它**：
-- 不要 `git add -A`。用户常同时持有未提交的在途改动。
-- **本仓库的推送目标只有一个**：`origin` = `https://gitee.com/cola_estarhy/code-forge-m.git`。
-  未经用户明确要求不要 push；用户要求 push 时也只推这个仓库。
-- **禁止在 `source/CodeForge-GO` 下执行任何 git 写操作**（add/commit/push/reset）：
-  那是内核参考副本，自带 `.git` 与内核远端，误操作会直接污染内核仓库（P-048）。
-- 不要 `--no-verify` 跳过钩子。
-
----
+**禁止主动提交和推送**
 
 ## 8. 任务结束前自检
 
@@ -398,15 +364,13 @@ CodeForgeAPP/                       ← 本仓库，管 Android 壳
 - [ ] `改动历史.md` 的「验证」栏如实写了跑到哪一级、什么没验证
 - [ ] 没有跨层改（界面层没碰协议层，协议层没引界面层）
 - [ ] 没有 `git add -A`、没有未经用户要求执行 `git push`
-- [ ] 没有在 `source/CodeForge-GO` 下执行任何 git 写操作
+- [ ] 没有把 so 源码或构建材料重新引入仓库（见第 1 节边界）
 - [ ] 回复里说清了：改了什么、验证到什么程度、还剩什么没做
 
 ---
 
 ## 9. 已经踩过的坑
-
-改代码前扫一眼，这些是已经付过代价的。
-
+以下仅在遇到问题时可以重点查看
 ### P-001 · 贴底跟随不能用 `isScrollInProgress`
 
 `ui/chat/MessageList.kt`
@@ -459,7 +423,8 @@ targetSdk 35+ 的 app，`dataSync` 类型前台服务每天累计只能跑 6 小
 现在已是 git 仓库（`origin` = gitee `code-forge-m`），有远端与提交历史。
 
 **保留的教训**：在仓库里执行 git 命令前先 `git remote -v` 确认目标；
-`source/` 这类参考目录里的仓库是**另一个仓库**，见 P-048。
+`source/` 这类参考目录里的仓库是**另一个仓库**，见 P-048（2026-11-07 起该目录已移出仓库，
+教训仍适用于一切 vendored/多仓库场景）。
 
 ### P-007 · KDoc 注释里出现 `*/` 会提前终止块注释
 
@@ -941,6 +906,11 @@ touch "$D/gradle-8.14.6-bin.zip.ok"
 注入内容会漏回用户气泡。修法见 `ChatViewModel.stripInjectedText` —— 按标记切掉后缀，
 而不是重算（上行文本是「用户文本 + 固定后缀」的结构，切掉后缀即精确还原原话）。
 
+**⚠️ 标记不能改**：定位标记 `【CodeForge 客户端渲染能力】`（`ui/CapabilityPrompt.kt` 的
+`INJECT_CAPABILITY_MARKER`）一个字都不能动 ——
+内核历史里存的是带**旧标记**的整段上行文本，改了标记，旧会话回放就切不掉注入段，
+整段提示词会漏回用户气泡。提示词正文可以随便改，标记不行。
+
 ### P-043 · 内核 `modelTestReq` 的字段名必须逐字对齐，Go 会静默忽略未知字段
 
 **现象**：
@@ -1117,6 +1087,9 @@ llvm-readelf -W --dyn-syms libopenrender.so | grep -oE "Java_[a-z_]*OpenRenderNa
 **推广**：vendored/reference 目录、submodule、多仓库工作树里，git 命令的作用域永远是「当前目录」；
 凡是可能写远端/历史的命令，先确认仓库身份再执行。
 
+> 2026-11-07 起 `source/` 目录已整体移出仓库（内核源码包移至 `D:\code\CodeForgeAPP-private\`），
+> 本条保留作历史经验：多仓库/vendored 场景的仓库身份确认纪律仍然适用。
+
 ### P-049 · CommonMark 的 HTML 块在空行处结束，缩进行会被切碎，碎片拼不回原文
 
 **现象（雷电真机，2026-11-04）**：模型输出整页 HTML（缩进 + 空行），界面显示成一堆
@@ -1270,6 +1243,112 @@ enabled: true
 `take(4)`（那里是刻意只显示前 4 个 + “+N”），全文件扫会误报。
 本仓用 `MentionListScrollTest` 守住这三点。
 
+### P-054 · 能力说明写窄了，模型就只会那一种手段
+
+**现象（2026-11-06）**：用户反馈「找到个视频，它可以用标签显示，却用了网页来显示」。
+
+**根因**：注入给模型的能力说明（`ui/CapabilityPrompt.kt`）只讲了「内嵌可交互网页」，
+还附了一份适用范围清单（试题、图表、演示、看板……一律可用网页）。
+**能力面被写窄 = 模型只知道一种「能玩起来」的呈现方式** ——
+宿主明明有原生播放器、图片通道、音视频跳转卡片，模型一概不用，
+全都包成 HTML 页面（网页里嵌 `<video>`、图片、表格）。
+
+**修法**：
+1. **把能力面写全**：正文 / 公式 / 图片 / 视频 / 音频 / 音视频跳转 / SVG / 网页，逐条写清语法；
+2. **给肯定式路由**（「讲一件事→正文」「放视频→视频或跳转标签格式」「要在页面上动手→才写网页」），
+   不用禁令 —— 否定式清单会把模型锚定到那个失败形态（Claude Code 的 prompt-audit 经验）；
+3. **把网页的专属约束条件化**（「仅写网页时适用」），否则那些约束本身就是「要富展示就写 HTML」的暗示；
+4. 删掉「适用范围」清单 —— 那是偏向的根源。
+
+**顺带暴露的真 bug**（`ui/chat/MessageBlocks.kt` 的 `MEDIA_JUMP_TAG_REGEX`）：
+模型很爱把标签写成 Markdown 链接 `[ ▶视频 描述文字 ](url)`。
+正则的地址组 `[^\s()（）\]】]+` 会吃掉「描述文字」当地址，方括号后面真正的链接反被丢弃 ——
+渲染出一张点开提示「未指定跳转链接」的卡片。
+修法：正则末尾加 `(?!\()`，这种形态**不被认成标签**，整段按普通 Markdown 链接渲染，
+点开仍是浏览器打开视频，行为正确。
+
+**推广**：
+- 宿主每新增一种呈现通道，**必须同步写进能力说明**，否则模型不知道它能用 ——
+  提示词是纯文本，没有编译期约束，写漏了不会有任何报错。
+- **提示词与实现是两处独立的文本**：提示词里给的示例必须能被**真实解析函数**认出来。
+  本仓用 `CapabilityPromptTest` 把这条钉死（示例串直接喂 `parseMediaJumpTag` 断言）。
+- 提示词的定位标记 `【CodeForge 客户端渲染能力】` **一个字都不能改** ——
+  内核把上行文本原样存进历史，回放时靠标记切掉注入段（P-042）；
+  改了标记，旧会话回放会把整段提示词漏回用户气泡。
+
+### P-055 · 裸 VideoView 交给 AndroidView 会被视频内在尺寸反测，MediaController 是独立窗口
+
+**现象（2026-11-07）**：视频块四症状——① 尺寸失控：640×360 视频把外层 `height(240.dp)`
+整个无视，后续内容被顶出消息区；② 系统 `MediaController` 的控制条浮在消息区/输入卡
+之上（实测越界约 125px）；③ 加载失败只有一块纯黑屏；④ 播完停在末帧，点控制条无法重播。
+
+**根因**（三条叠加，都在 `MessageVideoBlock` 旧实现）：
+1. `AndroidView(factory = { view })` 返回的 View 按 **WRAP_CONTENT** 测量，
+   `VideoView.onMeasure` 按视频内在分辨率定尺寸，Compose 的尺寸约束对它不生效；
+   且 `VideoView` 内是 `SurfaceView`，画面渲染在独立 surface 上，Compose 的
+   `Modifier.clip` 管不到它的溢出。
+2. `MediaController` 会向 `WindowManager` 注册**独立 Dialog 窗口**，不参与
+   Compose 层级裁剪，怎么裁容器都压不住它。
+3. 全函数没挂 `setOnErrorListener` / `setOnCompletionListener`。
+
+**修法**（`ui/chat/MessageBlocks.kt` 的 `MessageVideoBlock`）：
+- VideoView 装进显式 `MATCH_PARENT + Gravity.CENTER` 的 FrameLayout——尺寸由外层
+  定，VideoView 自己按宽高比收缩出黑边（不拉伸变形）；容器 `clipChildren` 兜底裁 SurfaceView；
+- 控制条改 **Compose 自绘**（`AudioPlayGlyph` + `Slider` + `formatMs`，与音频块同款），
+  `setMediaController` 删除；
+- 挂 onError（失败整块换 `MediaErrorRow`，不留黑屏）与 onCompletion
+  （`finished` 置位，下次播放 `seekTo(0)` 重播）。
+
+**推广**：
+- **`AndroidView.factory` 只在首次挂载时执行一次**，闭包捕获的 Compose 状态委托在
+  key 变化（如 `remember(url)`）后全部过期，监听器写在 factory 里会往旧状态对象写。
+  监听器必须放 **update**（每次重组重挂、永远拿到最新委托），View 引用经 holder 转发；
+  播放状态一律问 View 自己（`vv.isPlaying`），不信 Compose 快照。
+- **`DisposableEffect` 的 key 不要放换源参数（url）**：effects 的 disposal 跑在
+  composition 应用（update 的 `setVideoURI`）**之后**，`onDispose { stopPlayback() }`
+  会把刚设的新源一起杀掉。停播用 `DisposableEffect(Unit)` + `AndroidView.onRelease` 兜底。
+- 给 `VideoView`/媒体类 View 上强约束时，**必须显式设 LayoutParams**——
+  factory 返回的裸 View 是 WRAP_CONTENT，任何 Compose 尺寸修饰符都压不住它的自测尺寸。
+- 同理可推广到一切「AndroidView + 有内在尺寸的 View」组合（WebView 正常是因为它
+  尊重父约束，VideoView 这类按内容自测尺寸的控件要先约束后挂载）。
+
+### P-056 · 通知 action 的响应路径不能依赖 ViewModel；cancel(id) 撤不掉带 tag 的通知
+
+**现象**：做「审批走通知栏」时暴露的一串坑：
+1. `MainActivity.onNewIntent` 的注释一直声称「singleTop 复用实例」，但 manifest
+   **根本没设 launchMode**（默认 standard）——应用在前台点通知会叠一个新 Activity
+   实例，deep-link 逻辑（`handleIntent`）压根不执行，注释自欺。
+2. 通知 action 要把审批决定发回内核，而 WS 在 Activity 级 ChatViewModel 手里——
+   任务被划掉时 `viewModelScope` 取消、transport disconnect，按钮变成死按钮。
+3. `NotificationManager.cancel(id)` **不带 tag 撤不掉带 tag 的通知**（tag+id 才是
+   主键）——批量撤销用 `cancel(1002)` 一条都撤不掉。
+4. `PendingIntent` 同 requestCode + `FLAG_UPDATE_CURRENT` 会**互相覆盖**：
+   完成通知用 3、审批正文用 4、批准/拒绝用 5/6——共用一个会把别家的 intent 改掉。
+
+**根因**：通知栏 action 的执行环境是「进程活着，但 UI 栈可死可活」，与
+Compose/ViewModel 的生命周期完全不同轴；Notification/PendingIntent 的主键规则
+（tag+id、requestCode）也都是隐性契约。
+
+**修法**（`core/LiveTransport.kt` + `core/ApprovalReceiver.kt` + `CoreService` companion）：
+- 进程级 holder `LiveTransport.current`：`bind()` 登记、`onCleared()` 置 null；
+  receiver 查它拿**已连接的那条 WS**（审批决定不能另开连接，内核 pending 挂在连接上）。
+- 生命周期闭环：`onCleared()` 撤光审批通知——划掉任务后通知栏没有按不动的死按钮；
+  点正文进 App 靠内核重放 pending 审批恢复卡片。
+- 批量撤销走 `mgr.activeNotifications.filter { it.id == APPROVAL_NOTIF_ID }` 逐条
+  `cancel(it.tag, it.id)`。
+- manifest 补 `android:launchMode="singleTop"`，与既有 `onNewIntent` 逻辑对齐。
+
+**推广**：
+- **凡「通知/广播触发、不经 UI」的路径，一律假设 ViewModel 可能已死**——需要的
+  协作者（transport、api）必须挂进程级 holder，且 holder 置空与通知撤销要在
+  `onCleared` 成对做完，不留中间态。
+- `BroadcastReceiver` 里**不能启 Activity**（Android 10+ 后台启动限制）——
+  「带用户回 App」只能靠通知的 contentIntent。
+- 新增任何 PendingIntent 前先盘点全仓 requestCode：3（完成通知）、4/5/6（审批）、
+  0/1（前台通知）、2（停止）已占用，新类别必须错开。
+- extra 缺失的布尔按**更安全的一侧**取默认（审批按「拒绝」：误拒绝可重试，
+  误批准撤不回）。
+
 ### 版本锁定（不要随手升）
 
 - Compose `1.9.5` —— 再高要求 AGP 9.1 + compileSdk 37，整条链要一起动
@@ -1284,21 +1363,20 @@ enabled: true
   与 `rootfs-alpine.tgz`（Alpine 3.24.3 minirootfs aarch64）；升级/换发行版走 `.envkit/` 重建管道
 - targetSdk **28**（2026-10-25 定，侧载定位）—— 升回去前必须复核决策表；lint 已豁免 ExpiredTargetSdkVersion
 - ABI 仅 `arm64-v8a` —— Go 内核只交叉编译 arm64，x86 模拟器装不上
-- `jniLibs/arm64-v8a/libcodeforge.so` —— 产物，源在 `source/CodeForge-GO`；重编：
-  `CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o <此处> ./cmd/agent`；
-  内核侧端口握手补丁见改动历史 2026-10-25「Go 内核打包接入」条；
+- `jniLibs/arm64-v8a/libcodeforge.so` —— **预编译产物，源码不在本仓库**（2026-11-07 起移出，
+  材料在仓库外 `D:\code\CodeForgeAPP-private\`，内核原仓库在 `C:\Users\26536\Desktop\Code\CodeForge-GO`；
+  重编/交付联系 LICENSE 邮箱）。内核侧端口握手补丁见改动历史 2026-10-25「Go 内核打包接入」条；
   后台脚本任务（`pkg/tasks` + `run_background/list_background/kill_background` + `/api/tasks`）
   见改动历史 2026-10-29 条，旧库备份在 `jniLibs-backup-before-background-tasks-20261029/`；
   图片附件**不设像素上限**（单张 20MiB、最多 4 张、单条消息图片总量 20MiB），`maxIntegrityDecodePixels`
   仅用于本地完整性解码的内存保护，超预算只校验头部、不拒绝上传
-- `jniLibs/arm64-v8a/libopenrender.so` —— 产物，上游 `raine-x/OpenRender` @
+- `jniLibs/arm64-v8a/libopenrender.so` —— **预编译产物**，上游 `raine-x/OpenRender` @
   `6f11851722772b1a18388364b20a613a0aa2a020`（2026-10-28，0.1 preview），
   `--features jni,ratex`；**8.9 MB**（内嵌 KaTeX 字体 + Noto Sans SC 子集，16KB 页对齐；
-  重编时为省内存关 LTO，比 LTO 版大约 600 KB，见 P-047）；
-  重编走 `tools/openrender/build-android.ps1`（Windows）或 `build-android.sh`（Linux），
-  JNI 桥补丁在 `tools/openrender/app_jni.rs`。
-  字体子集在 `tools/openrender/fonts/`（`include_bytes!` 要求与 `app_jni.rs` 同目录，
-  改字体必须同步 `.so`）。升上游前必须重跑 Rust workspace 测试 + 核对 IR 键名（P-027）
+  重编时为省内存关 LTO，比 LTO 版大约 600 KB，见 P-047）。源码/构建脚本/字体子集已随
+  so 源码移出仓库（材料在 `D:\code\CodeForgeAPP-private\so-source\openrender-tools\`，
+  重编时把 fonts/ 拷回上游 crate 目录供 `include_bytes!`），升上游前必须重跑
+  Rust workspace 测试 + 核对 IR 键名（P-027）
 - **包名 `com.hxy.codeforge`**（2026-11-04 定，原 `app.codeforge`）—— Kotlin 包、namespace、
   applicationId、JNI 符号、proguard keep 规则五处同步，见 P-047
 - **签名密钥 `app/keystore/codeforge.keystore`** —— 固定密钥，丢了装不了更新，见 P-046
@@ -1324,8 +1402,7 @@ enabled: true
 
 ## 10. 禁止事项
 
-- ❌ 改 `source/CodeForge-GO/` 而不事先说明（那是另一个仓库）
-- ❌ 在 `source/CodeForge-GO/` 下执行任何 git 写操作（add/commit/push/reset）；内核改动只去原仓库 `C:\Users\26536\Desktop\Code\CodeForge-GO`
+- ❌ 把 so 源码或构建材料重新引入本仓库、或把它们复制/外传到仓库与 `D:\code\CodeForgeAPP-private\` 之外（材料已移出，未经用户确认不得变动）
 - ❌ 未经用户明确要求执行 `git push`；用户要求时也只推本仓库 `origin`（`code-forge-m`）
 - ❌ 跨层调用（界面层直接 new `HttpCoreTransport`、`core/` import `ui/`）
 - ❌ 在界面层放业务状态（会话、消息、运行状态必须来自 `ChatUiState`）

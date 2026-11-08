@@ -272,18 +272,9 @@ A probe must be the target command own single execution.
 
 Versions are pinned on purpose, and upgrading them means moving the whole chain at once. The reasoning lives in the version locking section of AGENTS.md.
 
-### Rebuilding the native libraries
+### Native libraries
 
-```bash
-# Go kernel
-CGO_ENABLED=0 GOOS=android GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o <jniLibs>/libcodeforge.so ./cmd/agent
-
-# Rust typesetting engine
-powershell tools/openrender/build-android.ps1   # Windows
-bash tools/openrender/build-android.sh          # Linux
-```
-
-If you change the font on the Rust side, the shared object must be rebuilt too, because include_bytes requires the font subset to be inside tools/openrender/fonts.
+The Go kernel and the typesetting engine ship as **prebuilt artifacts** (`app/src/main/jniLibs/arm64-v8a/`); building the APK does not require rebuilding them. Their sources are not in this repository — to rebuild or obtain the sources, contact 2653603072@qq.com (see License).
 
 ---
 
@@ -307,8 +298,7 @@ app/src/main/java/com/hxy/codeforge/
   render/    typesetting engine bridge and IR
   ui/        chat, sessions, settings, common, browser, theme
   voice/     cloud speech
-app/src/main/jniLibs/arm64-v8a/   Go kernel and Rust engine
-tools/openrender/                  engine sources, fonts and build scripts
+app/src/main/jniLibs/arm64-v8a/   Go kernel and Rust engine (prebuilt artifacts)
 docs/                              design docs and parity checklists
 ```
 
@@ -327,32 +317,22 @@ docs/                              design docs and parity checklists
 
 ## License
 
-This project is released under the GNU General Public License v3.0 with one additional restriction: commercial use is not permitted without a separate written license.
+This project is **dual-licensed under the MIT License and a commercial license** (Copyright (c) 2026 raine-x).
 
-### Free to do
+### MIT license (default)
 
-- Personal study, research, teaching, non-profit public benefit, review and security auditing
-- Clone the repository, deploy, modify and use it without receiving any consideration
-- Submit code, docs, translations, issue reports or patches
-- Keep copies for personal backup and disaster recovery
-- Public redistribution, including through mirrors and package managers, provided the full LICENSE and copyright notices travel with it
+Use, copy, modify, merge, publish, distribute, sublicense and sell under the standard MIT License — including commercial use — provided the copyright and license notices are retained. The `libcodeforge.so` and `libopenrender.so` binaries shipped with this repository are licensed under MIT as well; their build sources are not part of this repository (see below).
 
-### Not free to do
+### Commercial license (optional)
 
-Without prior written permission from the copyright holder, the software or any part of it (source, APK, derivative works) may not be used for any commercial purpose. That covers selling, renting, charging for distribution, subscriptions, hosting fees, offering it as a SaaS or other paid on-demand service, building a paid product around it, or shipping it as a component of a closed-source commercial product.
+For uses beyond the MIT terms — no-attribution or white-label use, exclusive licensing, OEM bundling and customization, source-level delivery, warranty and support — contact **2653603072@qq.com** for a commercial license. It is offered in parallel with MIT; pick either. Third-party components are not covered by it.
 
-Use that violates this clause receives no rights under this license and bears all resulting liability.
+### Third-party components keep their original licenses
 
-A commercial license must be requested in writing from the maintainers, stating purpose, scope and term, and takes effect only when signed by the copyright holder.
+The APK bundles a typesetting engine (MIT), a Noto Sans SC font subset (SIL OFL 1.1), proot (GPL-2.0 family), libtalloc (LGPL family) and an Alpine rootfs. Each remains under its own license, owned by its own authors. The licenses of this project do not change or extend to them. See the third-party section of LICENSE for the full list.
 
-### Two things to know
+### About the sources
 
-**First, this is not free software in the FSF sense.** GPL-3.0 itself permits commercial use, and adding the non-commercial clause makes the work as a whole fail the free-software definition. Adopters should know this. It is the same trade-off the CodeForge-Go kernel repository makes.
-
-**Second, the third-party components are unaffected.** The APK bundles a typesetting engine (MIT), a Noto Sans SC font subset (SIL OFL 1.1), proot and an Alpine rootfs, and bundled skills. Each remains under its own license, owned by its own authors. The additional terms here do not change or extend to them. See the third-party section of LICENSE for the full list.
-
-### Distributing as an APK
-
-You must also make the complete corresponding source available, as GPL-3.0 section 6 requires. This repository is the primary channel; build instructions are in the Build section above.
+The kernel (libcodeforge.so) source used to be distributed with older versions of this repository under GPL-3.0 with additional terms; as of this version the copyright holder has relicensed it under MIT and no longer distributes the source here. Copies obtained under the old license remain governed by it.
 
 The full terms and the complete license text are in [LICENSE](LICENSE).

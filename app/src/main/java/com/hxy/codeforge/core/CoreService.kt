@@ -12,6 +12,7 @@ import androidx.core.app.ServiceCompat
 import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import com.hxy.codeforge.R
+import com.hxy.codeforge.model.ApprovalCard
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -324,9 +325,15 @@ class CoreService : LifecycleService() {
 
     companion object {
         private const val CHANNEL_ID = "codeforge.core"
+        private const val DONE_CHANNEL_ID = "codeforge.done"
+        private const val APPROVAL_CHANNEL_ID = "codeforge.approval"
         private const val NOTIF_ID = 1001
+        private const val APPROVAL_NOTIF_ID = 1002
         const val ACTION_STOP = "com.hxy.codeforge.core.STOP"
         const val ACTION_RESTART = "com.hxy.codeforge.core.RESTART"
+        const val ACTION_APPROVAL_DECIDE = "com.hxy.codeforge.core.APPROVAL_DECIDE"
+        const val EXTRA_APPROVAL_ID = "com.hxy.codeforge.core.APPROVAL_ID"
+        const val EXTRA_APPROVAL_ALLOWED = "com.hxy.codeforge.core.APPROVAL_ALLOWED"
 
         /** 设置页保存 LLM 配置后调用：杀掉内核进程，监督循环按新 local.yaml 拉起。 */
         fun restart(context: android.content.Context) {
@@ -342,6 +349,156 @@ class CoreService : LifecycleService() {
         val state: StateFlow<KernelState> = _state.asStateFlow()
 
         private val bootstrapped = AtomicBoolean(false)
+
+        /**
+         * 任务/会话完成通知（壳侧发送）。
+         *
+         * 内核是 Go 二进制，调不到 Android 的 NotificationManager —— 完成通知
+         * 的系统投递只能在壳侧做（原先注释说「由内核负责」是错的：没有任何
+         * 通道能把内核的意图送进通知栏，所以用户永远等不到）。
+         *
+         * 用独立渠道（IMPORTANCE_DEFAULT，带声音/横幅）而非前台服务的 LOW
+         * 渠道：常驻通知静音，任务完成要让用户感知。点通知开应用并跳到
+         * [sessionId] 那个会话（空 = 只开应用）。
+         *
+         * 权限未授予时系统静默丢弃（target 28 不抛异常），runCatching 只是保底。
+         */
+        fun postDoneNotification(
+            context: android.content.Context,
+            title: String,
+            body: String,
+            sessionId: String,
+        ) {
+            runCatching {
+                val mgr = context.getSystemService(android.app.NotificationManager::class.java) ?: return
+                if (mgr.getNotificationChannel(DONE_CHANNEL_ID) == null) {
+                    mgr.createNotificationChannel(
+                        android.app.NotificationChannel(
+                            DONE_CHANNEL_ID,
+                            "任务完成",
+                            android.app.NotificationManager.IMPORTANCE_DEFAULT,
+                        ),
+                    )
+                }
+                val open = android.app.PendingIntent.getActivity(
+                    context, 3,
+                    android.content.Intent(context, com.hxy.codeforge.MainActivity::class.java)
+                        .putExtra(com.hxy.codeforge.MainActivity.EXTRA_SESSION_ID, sessionId),
+                    android.app.PendingIntent.FLAG_IMMUTABLE or
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                val builder = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    android.app.Notification.Builder(context, DONE_CHANNEL_ID)
+                } else {
+                    @Suppress("DEPRECATION")
+                    android.app.Notification.Builder(context)
+                }
+                val notif = builder
+                    .setContentTitle(title)
+                    .setContentText(body)
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentIntent(open)
+                    .setAutoCancel(true)
+                    .build()
+                mgr.notify(System.currentTimeMillis().toInt(), notif)
+            }
+        }
+
+        /**
+         * 审批请求通知（HITL，壳侧发送）：应用在后台时把审批顶到通知栏，
+         * 批准/拒绝不用进 App。前台不发 —— 卡片就在屏幕上，通知是打扰
+         * （判定在 ChatViewModel.maybeNotifyApproval）。
+         *
+         * 渠道用 IMPORTANCE_HIGH：审批挂着内核就停在那等（15 分钟超时），
+         * 锁屏/走路的人必须被 heads-up 打到，DEFAULT 的静默横幅等于没发。
+         * 通知 tag 用 approval_id —— 子智能体并行委派会同时挂多张卡，逐条可撤。
+         *
+         * action 发广播给 [ApprovalReceiver] 而不是返回 Activity：后台不能启
+         * Activity，决定走已连的 WS（LiveTransport），Activity 不需要在场。
+         * setAutoCancel(false)：点正文进 App 看了没决定又退出的话，审批确实
+         * 还挂着，通知必须还在 —— 取消只走代码路径（决定/解决/超时/断线/销毁）。
+         */
+        fun postApprovalNotification(
+            context: android.content.Context,
+            card: ApprovalCard,
+            sessionId: String,
+        ) {
+            runCatching {
+                val mgr = context.getSystemService(NotificationManager::class.java) ?: return
+                if (mgr.getNotificationChannel(APPROVAL_CHANNEL_ID) == null) {
+                    mgr.createNotificationChannel(
+                        NotificationChannel(
+                            APPROVAL_CHANNEL_ID,
+                            context.getString(R.string.notif_approval_channel),
+                            NotificationManager.IMPORTANCE_HIGH,
+                        ),
+                    )
+                }
+                val decide = { allow: Boolean, requestCode: Int ->
+                    android.app.PendingIntent.getBroadcast(
+                        context, requestCode,
+                        Intent(context, ApprovalReceiver::class.java)
+                            .setAction(ACTION_APPROVAL_DECIDE)
+                            .putExtra(EXTRA_APPROVAL_ID, card.id)
+                            .putExtra(EXTRA_APPROVAL_ALLOWED, allow),
+                        android.app.PendingIntent.FLAG_IMMUTABLE or
+                            android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                    )
+                }
+                val open = android.app.PendingIntent.getActivity(
+                    context, 4,
+                    Intent(context, com.hxy.codeforge.MainActivity::class.java)
+                        .putExtra(com.hxy.codeforge.MainActivity.EXTRA_SESSION_ID, sessionId),
+                    android.app.PendingIntent.FLAG_IMMUTABLE or
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                val text = card.action.ifBlank { card.tool } +
+                    (card.subagentId?.let { " · 子任务 $it" } ?: "")
+                // 展开后给 reason + detail 全文，diff 太大塞通知会截断成乱块，不放
+                val big = listOf(text, card.reason, card.detail)
+                    .filter { it.isNotBlank() }
+                    .joinToString("\n")
+                val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Notification.Builder(context, APPROVAL_CHANNEL_ID)
+                } else {
+                    @Suppress("DEPRECATION")
+                    Notification.Builder(context)
+                        .setPriority(Notification.PRIORITY_HIGH)
+                }
+                val notif = builder
+                    .setContentTitle("需要你的批准")
+                    .setContentText(text)
+                    .setStyle(Notification.BigTextStyle().bigText(big))
+                    .setSmallIcon(android.R.drawable.stat_sys_warning)
+                    .setContentIntent(open)
+                    .addAction(android.R.drawable.checkbox_on_background, "批准", decide(true, 5))
+                    .addAction(android.R.drawable.ic_menu_close_clear_cancel, "拒绝", decide(false, 6))
+                    .setAutoCancel(false)
+                    .build()
+                // requestCode 5/6/4 与前台通知（0/1）、停止（2）、完成通知（3）错开：
+                // 同 requestCode 的 PendingIntent 会被 UPDATE_CURRENT 互相覆盖
+                mgr.notify(card.id, APPROVAL_NOTIF_ID, notif)
+            }
+        }
+
+        /** 撤掉某一条审批通知（tag=approval_id，与 postApprovalNotification 成对）。 */
+        fun cancelApprovalNotification(context: android.content.Context, approvalId: String) {
+            runCatching {
+                context.getSystemService(NotificationManager::class.java)
+                    ?.cancel(approvalId, APPROVAL_NOTIF_ID)
+            }
+        }
+
+        /** 撤掉全部审批通知：断线（服务端 pending 失效）/ ViewModel 销毁时调用。 */
+        fun cancelAllApprovalNotifications(context: android.content.Context) {
+            runCatching {
+                val mgr = context.getSystemService(NotificationManager::class.java) ?: return
+                // cancel(id) 不带 tag 撤不掉带 tag 的通知：逐条按各自 tag 撤
+                mgr.activeNotifications
+                    .filter { it.id == APPROVAL_NOTIF_ID }
+                    .forEach { mgr.cancel(it.tag, it.id) }
+            }
+        }
     }
 
 }

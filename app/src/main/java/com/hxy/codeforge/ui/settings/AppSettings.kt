@@ -47,6 +47,8 @@ object AppSettings {
     private const val KEY_STT_CLOUD_BASE_URL = "stt_cloud_base_url"
     private const val KEY_STT_CLOUD_MODEL = "stt_cloud_model"
     private const val KEY_STT_CLOUD_CLEAN = "stt_cloud_clean"
+    private const val KEY_LAST_SESSION_ID = "last_session_id"
+    private const val KEY_NOTIFY_ENABLED = "notify_enabled"
 
     /** 外观值域：模糊 0–40 dp，亮度 20–100（%），越界一律夹取。 */
     const val BACKGROUND_BLUR_MAX = 40
@@ -140,6 +142,22 @@ object AppSettings {
     /** 是否剥离 SenseVoice 插进正文的情感/事件标记（🎼😡 等）：默认开。 */
     val sttCloudClean = mutableStateOf(true)
 
+    /**
+     * 上次打开的会话 id（冷启动恢复用）。
+     *
+     * 只在内存里的 currentSessionId 随进程走：后台被系统回收后重启，
+     * 界面会退回空白新对话 —— 用户回来看到的不是「刚才的会话」。
+     * 落盘后冷启动自动 loadSession 回去。
+     */
+    val lastSessionId = mutableStateOf("")
+
+    /**
+     * 任务完成通知总开关（壳侧发送）。
+     *
+     * 默认开；关掉后后台完成只回灌会话列表，不发系统通知。
+     */
+    val notifyEnabled = mutableStateOf(true)
+
     fun init(context: Context) {
         if (prefs != null) return
         // B5-5：敏感项（API Key 等）加密存储 —— Keystore 支撑的官方方案。
@@ -208,6 +226,8 @@ object AppSettings {
         sttCloudModel.value = p.getString(KEY_STT_CLOUD_MODEL, null)
             ?.takeIf { it.isNotBlank() } ?: STT_CLOUD_DEFAULT_MODEL
         sttCloudClean.value = p.getBoolean(KEY_STT_CLOUD_CLEAN, true)
+        lastSessionId.value = p.getString(KEY_LAST_SESSION_ID, null) ?: ""
+        notifyEnabled.value = p.getBoolean(KEY_NOTIFY_ENABLED, true)
     }
 
     /** 标记首次供应商预置已完成；之后任何空列表都不再自动补 DeepSeek。 */
@@ -322,6 +342,19 @@ object AppSettings {
     fun setSttCloudClean(enabled: Boolean) {
         sttCloudClean.value = enabled
         prefs?.edit()?.putBoolean(KEY_STT_CLOUD_CLEAN, enabled)?.apply()
+    }
+
+    /** 记录上次打开的会话 id（冷启动恢复用，见 [lastSessionId]）。 */
+    fun setLastSessionId(id: String) {
+        if (lastSessionId.value == id) return
+        lastSessionId.value = id
+        prefs?.edit()?.putString(KEY_LAST_SESSION_ID, id)?.apply()
+    }
+
+    /** 任务完成通知开关（壳侧发送，见 [notifyEnabled]）。 */
+    fun setNotifyEnabled(enabled: Boolean) {
+        notifyEnabled.value = enabled
+        prefs?.edit()?.putBoolean(KEY_NOTIFY_ENABLED, enabled)?.apply()
     }
 
 }

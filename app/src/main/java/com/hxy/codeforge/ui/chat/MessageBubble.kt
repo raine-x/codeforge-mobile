@@ -11,6 +11,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -34,6 +35,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -49,7 +51,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hxy.codeforge.model.ChatMessage
@@ -109,6 +113,11 @@ fun MessageBubble(
 @Composable
 private fun NoticeBubble(message: ChatMessage, modifier: Modifier) {
     val kind = message.kind ?: NoticeKind.Info
+    if (kind == NoticeKind.Compress) {
+        CompressNoticeBar(message, modifier)
+        return
+    }
+
     val accent = when (kind) {
         NoticeKind.Retry -> MaterialTheme.colorScheme.onSurfaceVariant
         NoticeKind.Compress -> Clay
@@ -162,6 +171,103 @@ private fun NoticeBubble(message: ChatMessage, modifier: Modifier) {
             style = MaterialTheme.typography.labelSmall,
             color = accent,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+    }
+}
+
+/**
+ * 上下文压缩提示条：左右渐隐细线 + 中间圆角微型胶囊。
+ *
+ * 替换粗糙的破折号文本，视觉上呈现轻量高级的系统分界，
+ * 兼容历史消息中可能残留的破折号格式。
+ */
+@Composable
+private fun CompressNoticeBar(message: ChatMessage, modifier: Modifier = Modifier) {
+    val raw = message.text.replace(Regex("^-+|-+$"), "").trim()
+    val isStarting = raw.contains("正在压缩")
+    val (title, detail) = if (isStarting) {
+        "正在压缩上下文…" to ""
+    } else {
+        val cleaned = raw.replace(Regex("^.*上下文已压缩[\\s·]*"), "").trim()
+        "上下文已压缩" to cleaned
+    }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp, horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(0.8.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            Color.Transparent,
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                        ),
+                    ),
+                ),
+        )
+
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            border = BorderStroke(1.dp, Clay.copy(alpha = 0.22f)),
+            modifier = Modifier.padding(horizontal = 8.dp),
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                if (isStarting) {
+                    ArcSpinner(
+                        color = Clay,
+                        size = 11.dp,
+                        modifier = Modifier.padding(end = 5.dp),
+                    )
+                } else {
+                    GlyphIcon(
+                        glyph = Glyph.Collapse,
+                        size = 12.dp,
+                        color = Clay,
+                        modifier = Modifier.padding(end = 5.dp),
+                    )
+                }
+
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Medium,
+                    color = Clay,
+                )
+
+                if (detail.isNotBlank()) {
+                    Text(
+                        text = " · $detail",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f),
+                    )
+                }
+            }
+        }
+
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(0.8.dp)
+                .background(
+                    Brush.horizontalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+                            Color.Transparent,
+                        ),
+                    ),
+                ),
         )
     }
 }
@@ -323,6 +429,9 @@ private fun AssistantBlock(
  * 连续的只读工具（read_file / list_dir / search_files / web 读取）在这里收成
  * 「已探索 N 项」一块；写类工具与正文、思考一样各占自己的位置 —— 分组只在
  * 相邻只读工具之间发生，绝不跨过一段正文或思考（否则「什么时候看的」就丢了）。
+ *
+ * 正文段之前的思考/工具前缀（[ProcessGroup]）：正文开始或流结束时整组收成
+ * 一行，把屏幕还给回答 —— 用户看到的第一段正文就是画面的主角。
  */
 @Composable
 private fun ColumnScope.SegmentedContent(
@@ -330,8 +439,60 @@ private fun ColumnScope.SegmentedContent(
     onFetchOutput: ((String) -> Unit)?,
 ) {
     val segments = message.segments
-    var i = 0
-    while (i < segments.size) {
+    val firstText = segments.indexOfFirst { it is MessageSegment.Text }
+    val prefixEnd = if (firstText == -1) segments.size else firstText
+    val prefix = segments.take(prefixEnd)
+    // 纯连续只读工具前缀今天已由 ExploreGroup 收成一行，再包一层就是双重折叠
+    val prefixAllReadOnly = prefix.isNotEmpty() &&
+        prefix.all { it is MessageSegment.Tool && isReadOnlyTool(it.call.name) }
+    // 单思考/单工具保持原样 —— 各自本来就只有一行
+    val wrap = prefix.size >= 2 && !prefixAllReadOnly
+
+    if (wrap) {
+        val hasThinking = prefix.any { it is MessageSegment.Thinking }
+        val hasTool = prefix.any { it is MessageSegment.Tool }
+        val label = when {
+            hasThinking && hasTool -> "思考与执行 · ${prefix.size} 项"
+            hasTool -> "执行过程 · ${prefix.size} 项"
+            else -> "思考过程 · ${prefix.size} 项"
+        }
+        val running = prefix.count { it is MessageSegment.Tool && it.call.state == ToolState.Running }
+        ProcessGroup(
+            message = message,
+            label = label,
+            running = running,
+            autoCollapsed = firstText != -1 || !message.streaming,
+            stateKey = message.id + "-process",
+        ) {
+            RenderSegmentRange(segments, 0, prefixEnd, message, onFetchOutput)
+        }
+        RenderSegmentRange(segments, prefixEnd, segments.size, message, onFetchOutput)
+    } else {
+        RenderSegmentRange(segments, 0, segments.size, message, onFetchOutput)
+    }
+
+    // 流刚开始、还没有任何正文/思考片段时给等待点；已经有工具卡就不必再画
+    val hasNarrative = segments.any { it is MessageSegment.Text || it is MessageSegment.Thinking }
+    val hasTool = segments.any { it is MessageSegment.Tool }
+    if (message.streaming && !hasNarrative && !hasTool) WaitingIndicator()
+}
+
+/**
+ * 渲染 [segments] 的 `[from, to)` 区间（沿用原有的只读工具聚组逻辑）。
+ *
+ * 区间里的下标始终是**整条消息段列表**的原下标 —— ThinkingBlock 的 stateKey
+ * （"thinking-$i"）依赖它，分组折叠不能让同一段思考换 key 丢掉展开状态。
+ */
+@Composable
+private fun RenderSegmentRange(
+    segments: List<MessageSegment>,
+    from: Int,
+    to: Int,
+    message: ChatMessage,
+    onFetchOutput: ((String) -> Unit)?,
+) {
+    var i = from
+    while (i < to) {
         when (val seg = segments[i]) {
             is MessageSegment.Thinking -> {
                 if (seg.text.isNotBlank()) {
@@ -356,7 +517,7 @@ private fun ColumnScope.SegmentedContent(
                 if (isReadOnlyTool(seg.call.name)) {
                     val group = ArrayList<ToolCall>()
                     val start = i
-                    while (i < segments.size) {
+                    while (i < to) {
                         val next = segments[i]
                         if (next is MessageSegment.Tool && isReadOnlyTool(next.call.name)) {
                             group.add(next.call)
@@ -381,11 +542,6 @@ private fun ColumnScope.SegmentedContent(
             }
         }
     }
-
-    // 流刚开始、还没有任何正文/思考片段时给等待点；已经有工具卡就不必再画
-    val hasNarrative = segments.any { it is MessageSegment.Text || it is MessageSegment.Thinking }
-    val hasTool = segments.any { it is MessageSegment.Tool }
-    if (message.streaming && !hasNarrative && !hasTool) WaitingIndicator()
 }
 
 /** 旧字段回退：thinking + tools + text 三段式（历史消息没有 segments）。 */
@@ -394,15 +550,66 @@ private fun ColumnScope.LegacyContent(
     message: ChatMessage,
     onFetchOutput: ((String) -> Unit)?,
 ) {
-    message.thinking?.takeIf { it.isNotBlank() }?.let {
-        ThinkingBlock(
-            text = it,
+    val hasThinking = !message.thinking.isNullOrBlank()
+    val hasTools = message.tools.isNotEmpty()
+    val hasText = message.text.isNotBlank()
+    // 历史重放没有段序：前缀 = 思考在前、工具随后（与旧渲染顺序一致）
+    val prefixCount = (if (hasThinking) 1 else 0) + message.tools.size
+    // 纯连续只读工具（无思考）已由 ExploreGroup 收成一行，不再包组
+    val allReadOnly = !hasThinking && hasTools && message.tools.all { isReadOnlyTool(it.name) }
+    val wrap = hasText && prefixCount >= 2 && !allReadOnly
+
+    if (wrap) {
+        val label = when {
+            hasThinking && hasTools -> "思考与执行 · $prefixCount 项"
+            hasTools -> "执行过程 · $prefixCount 项"
+            else -> "思考过程 · $prefixCount 项"
+        }
+        ProcessGroup(
             message = message,
-            live = message.streaming && message.text.isBlank(),
-            stateKey = "legacy-thinking",
-        )
+            label = label,
+            running = message.tools.count { it.state == ToolState.Running },
+            // 历史重放是静态快照，有正文就该收起
+            autoCollapsed = true,
+            stateKey = message.id + "-legacy-process",
+        ) {
+            if (hasThinking) {
+                ThinkingBlock(
+                    text = message.thinking.orEmpty(),
+                    message = message,
+                    live = false,
+                    stateKey = "legacy-thinking",
+                )
+            }
+            RenderLegacyTools(message, onFetchOutput)
+        }
+    } else {
+        if (hasThinking) {
+            ThinkingBlock(
+                text = message.thinking.orEmpty(),
+                message = message,
+                live = message.streaming && message.text.isBlank(),
+                stateKey = "legacy-thinking",
+            )
+        }
+        RenderLegacyTools(message, onFetchOutput)
     }
 
+    if (hasText) {
+        BodyText(message, message.text, caret = message.streaming)
+    }
+
+    if (message.streaming && message.text.isBlank() && message.thinking.isNullOrBlank()) {
+        WaitingIndicator()
+    }
+}
+
+/** 旧字段里的工具循环（含只读聚组），从 SegmentedContent 的对应段抽出来共用。 */
+@Composable
+private fun RenderLegacyTools(
+    message: ChatMessage,
+    onFetchOutput: ((String) -> Unit)?,
+) {
     var i = 0
     val tools = message.tools
     while (i < tools.size) {
@@ -427,14 +634,6 @@ private fun ColumnScope.LegacyContent(
             ToolCard(tool = tool, onFetchOutput = replayOf(tool, onFetchOutput))
             i++
         }
-    }
-
-    if (message.text.isNotBlank()) {
-        BodyText(message, message.text, caret = message.streaming)
-    }
-
-    if (message.streaming && message.text.isBlank() && message.thinking.isNullOrBlank()) {
-        WaitingIndicator()
     }
 }
 
@@ -558,6 +757,157 @@ private fun ThinkingBlock(
                         .heightIn(max = 118.dp)
                         .verticalScroll(scrollState),
                 )
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- 过程组折叠
+
+/**
+ * 「思考 + 工具」过程前缀的整组折叠行。
+ *
+ * 正文开始输出（或整条流结束）时，前面的一串思考行/工具行收成一行
+ * 「思考与执行 · N 项」，把屏幕还给回答；点开恢复为逐行渲染（与分组前
+ * 完全相同的内部组件与状态键）。自动收起的规则与 ThinkingBlock 一致：
+ * 用户点过（pinned）就不再自动动 —— 流式期间展开看进度，之后由用户自己收。
+ *
+ * [autoCollapsed] 由调用方算：正文已出现或流已结束 = true；false = 展开跟进度。
+ * [running] 是组内还在执行的工具数 —— 收起状态下用动画图标提示「里面还在跑」。
+ * 分组只动「是否折叠」，不动数据：折叠期间工具结果照样更新，展开即见最新。
+ */
+@Composable
+private fun ProcessGroup(
+    message: ChatMessage,
+    label: String,
+    running: Int,
+    autoCollapsed: Boolean,
+    stateKey: String,
+    content: @Composable () -> Unit,
+) {
+    var pinned by rememberSaveable(message.id, stateKey) { mutableStateOf(false) }
+    var expanded by rememberSaveable(message.id, stateKey) { mutableStateOf(!autoCollapsed) }
+    LaunchedEffect(autoCollapsed) {
+        if (!pinned) expanded = !autoCollapsed
+    }
+
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 90f else 0f,
+        animationSpec = tween(180),
+        label = "process-chevron",
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(10.dp))
+                .clickable {
+                    pinned = true
+                    expanded = !expanded
+                }
+                .padding(horizontal = 2.dp, vertical = 4.dp)
+                .height(24.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (running > 0) {
+                Sparkle(size = 14.dp, color = Clay, animate = true)
+            } else {
+                Sparkle(size = 14.dp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp),
+            )
+            GlyphIcon(
+                glyph = Glyph.Chevron,
+                size = 13.dp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .padding(start = 2.dp)
+                    .rotate(chevronRotation),
+            )
+        }
+
+        AnimatedVisibility(
+            visible = expanded,
+            enter = fadeIn(tween(140)) + expandVertically(tween(180)),
+            exit = fadeOut(tween(100)) + shrinkVertically(tween(160)),
+        ) {
+            Column(modifier = Modifier.padding(start = 2.dp)) {
+                content()
+            }
+        }
+    }
+}
+
+/**
+ * 跨消息的过程组行（MessageList 在行层级合并后交给这里）。
+ *
+ * 历史重放会把一轮拆成多条「纯过程」消息（工具一条、思考一条、正文各一条），
+ * 单条消息内的前缀折叠（SegmentedContent）够不着它们 —— 必须在行层级合并。
+ * 展开态逐条渲染每条消息的过程内容（复用段循环/旧字段渲染），状态键取首条
+ * 消息 id：重载后 id 稳定，展开状态不丢。默认收起 —— 能被合并到这里的都是
+ * 没有正文的消息，收起即把屏幕还给正文。
+ */
+@Composable
+fun ProcessGroupRowContent(
+    messages: List<ChatMessage>,
+    onFetchOutput: ((String) -> Unit)?,
+) {
+    if (messages.isEmpty()) return
+    var count = 0
+    var running = 0
+    var hasThinking = false
+    var hasTool = false
+    messages.forEach { m ->
+        if (m.segments.isNotEmpty()) {
+            m.segments.forEach { seg ->
+                when (seg) {
+                    is MessageSegment.Thinking -> { hasThinking = true; count++ }
+                    is MessageSegment.Tool -> {
+                        hasTool = true
+                        count++
+                        if (seg.call.state == ToolState.Running) running++
+                    }
+                    is MessageSegment.Text -> Unit
+                }
+            }
+        } else {
+            if (!m.thinking.isNullOrBlank()) { hasThinking = true; count++ }
+            m.tools.forEach {
+                hasTool = true
+                count++
+                if (it.state == ToolState.Running) running++
+            }
+        }
+    }
+    val label = when {
+        hasThinking && hasTool -> "思考与执行 · $count 项"
+        hasTool -> "执行过程 · $count 项"
+        else -> "思考过程 · $count 项"
+    }
+    ProcessGroup(
+        message = messages.first(),
+        label = label,
+        running = running,
+        autoCollapsed = true,
+        stateKey = "pgrp-" + messages.first().id,
+    ) {
+        messages.forEach { m ->
+            if (m.segments.isNotEmpty()) {
+                RenderSegmentRange(m.segments, 0, m.segments.size, m, onFetchOutput)
+            } else {
+                m.thinking?.takeIf { it.isNotBlank() }?.let {
+                    ThinkingBlock(
+                        text = it,
+                        message = m,
+                        live = false,
+                        stateKey = "pg-thinking-" + m.id,
+                    )
+                }
+                RenderLegacyTools(m, onFetchOutput)
             }
         }
     }

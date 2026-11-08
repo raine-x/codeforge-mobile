@@ -6,7 +6,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -143,6 +145,57 @@ object EnvKit {
     fun outboxDir(context: Context): File =
         File(cellRoot(context), "outbox").apply { mkdirs() }
 
+    /**
+     * content Uri → [outboxDir] 暂存。返回绝对路径；超 20MiB 或读取失败返回 null，
+     * 超限时先在主线程回调 [onTooLarge]（调用方自行决定提示方式）。
+     *
+     * 两个消费方共用一份口径：Composer 的附件选择器（voiceNotice 提示）与
+     * 入站分享（ChatViewModel.onExternalContent，banner 提示）。落盘用
+     * 「同目录临时文件 + rename」：进程被杀/写一半不会留半截附件；x 位保留，
+     * 暂存的脚本/二进制才能直接执行。
+     */
+    suspend fun stageUriToOutbox(
+        context: Context,
+        uri: Uri,
+        onTooLarge: suspend () -> Unit = {},
+    ): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val resolver = context.contentResolver
+            var name = resolver.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
+            } ?: "file"
+            name = name.replace(Regex("[/\\\u0000:]"), "_").take(80)
+            val size = resolver.query(uri, null, null, null, null)?.use { c ->
+                val idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
+                if (idx >= 0 && c.moveToFirst()) c.getLong(idx) else -1L
+            } ?: -1L
+            if (size > 20L * 1024 * 1024) {
+                withContext(Dispatchers.Main) { onTooLarge() }
+                return@withContext null
+            }
+            // 时间戳前缀防重名；落点是应用私有暂存区（与内核工作区解耦）
+            val out = File(outboxDir(context), System.currentTimeMillis().toString() + "_" + name)
+            val tmp = File(out.parentFile, out.name + ".tmp")
+            try {
+                resolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(tmp).use { output -> input.copyTo(output) }
+                } ?: return@withContext null
+                if (tmp.length() > 20L * 1024 * 1024) {
+                    withContext(Dispatchers.Main) { onTooLarge() }
+                    return@withContext null
+                }
+                if (!tmp.renameTo(out)) {
+                    return@withContext null
+                }
+            } finally {
+                if (tmp.exists()) tmp.delete()
+            }
+            out.setExecutable(true, false)
+            out.absolutePath
+        }.getOrNull()
+    }
+
     // ---------------------------------------------------------------- 文件传输（sdcard）
 
     /**
@@ -209,19 +262,20 @@ object EnvKit {
     }
 
     /**
-     * 从系统选择器（SAF / 相册）导入一个文件到默认工作区的 `imports/`。
+     * 从系统选择器（SAF / 相册）导入一个文件。
      *
-     * 落点用 [inboxSpace] 而不是临时目录：导入是用户显式动作，重启后还要能在
-     * 工作区文件树里看到它。返回落地文件（绝对路径，可直接当工作区相对路径用）。
+     * 落点：[baseDir] 非空时写到 `baseDir/subdir`（如当前项目工作区），
+     * 否则用 [inboxSpace] 的 `subdir`（默认工作区）。导入是用户显式动作，
+     * 落到工作区里重启后仍能看到。返回落地文件。
      */
-    fun importFileFromUri(context: Context, uri: Uri, subdir: String = "imports"): File? {
+    fun importFileFromUri(context: Context, uri: Uri, baseDir: File? = null, subdir: String = "imports"): File? {
         val resolver = context.contentResolver
         var name = resolver.query(uri, null, null, null, null)?.use { c ->
             val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
             if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
         } ?: "imported"
         name = name.replace(Regex("[/\\\\\u0000:]"), "_").take(80).ifEmpty { "imported" }
-        val dir = File(inboxSpace(context), subdir).apply { mkdirs() }
+        val dir = File(baseDir ?: inboxSpace(context), subdir).apply { mkdirs() }
         var target = File(dir, name)
         var n = 2
         while (target.exists()) {

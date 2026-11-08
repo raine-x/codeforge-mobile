@@ -769,6 +769,7 @@ private fun CompactLayout(
 
             Composer(
                 running = state.running,
+                steerQueued = state.steerQueued,
                 permissionMode = state.permissionMode,
                 modelName = state.modelName,
                 // 供应商的真相在内核 config（问题 8）：弹层不再自己维护一个空字符串
@@ -803,6 +804,7 @@ private fun CompactLayout(
                 editBack = state.editBack,
                 editText = state.editText,
                 editAttachments = state.editAttachments,
+                editSeq = state.editSeq,
                 onCancelEdit = vm::clearEdit,
                 elementChips = state.attachedElements,
                 elementInsert = state.elementInsert,
@@ -1051,6 +1053,7 @@ private fun TwoPaneLayout(
 
             Composer(
                 running = state.running,
+                steerQueued = state.steerQueued,
                 permissionMode = state.permissionMode,
                 modelName = state.modelName,
                 // 供应商的真相在内核 config（问题 8）：弹层不再自己维护一个空字符串
@@ -1085,6 +1088,7 @@ private fun TwoPaneLayout(
                 editBack = state.editBack,
                 editText = state.editText,
                 editAttachments = state.editAttachments,
+                editSeq = state.editSeq,
                 onCancelEdit = vm::clearEdit,
                 elementChips = state.attachedElements,
                 elementInsert = state.elementInsert,
