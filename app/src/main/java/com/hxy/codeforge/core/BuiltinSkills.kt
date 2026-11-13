@@ -35,7 +35,7 @@ object BuiltinSkills {
     private const val ASSET = "builtin-skills.zip"
 
     /** 内置技能版本；变更内容时 +1，铺放会据此重铺。 */
-    private const val VERSION = "1"
+    private const val VERSION = "2"
 
     /** 内置技能目录名（相对工作区）。与内核约定一致。 */
     private const val SKILLS_SUBDIR = ".codeforge/skills"
@@ -46,6 +46,12 @@ object BuiltinSkills {
     /** 资产里的技能 slug 列表（首次读 zip 后缓存，避免每次切工作区都开包）。 */
     @Volatile
     private var cachedSlugs: List<String>? = null
+
+    /**
+     * 返回内置技能的 slug 集合（供动态插件安装器做同名冲突拦截，防插件覆盖内置技能）。
+     */
+    fun builtinSlugs(context: Context): Set<String> =
+        (cachedSlugs ?: assetSlugs(context)?.also { cachedSlugs = it }).orEmpty().toSet()
 
     /**
      * 把内置技能铺到 [workspace]。

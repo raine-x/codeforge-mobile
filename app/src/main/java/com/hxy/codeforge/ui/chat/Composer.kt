@@ -1855,7 +1855,7 @@ private fun PermissionShield(
         DropdownMenu(
             expanded = open,
             onDismissRequest = { open = false },
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
             tonalElevation = 0.dp,
             shape = RoundedCornerShape(16.dp),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
@@ -2144,8 +2144,9 @@ private fun SkillsSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
     ) {
+        com.hxy.codeforge.ui.common.SyncDialogStatusBar()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

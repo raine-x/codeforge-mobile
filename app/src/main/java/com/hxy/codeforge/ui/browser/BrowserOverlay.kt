@@ -136,10 +136,13 @@ fun BrowserOverlay(
         }
     }
 
+    val panelBg = MaterialTheme.colorScheme.background.let {
+        if (it.alpha < 1f) MaterialTheme.colorScheme.surface.copy(alpha = 1f) else it
+    }
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(panelBg),
     ) {
         if (!fullscreen) {
             BrowserTopBar(

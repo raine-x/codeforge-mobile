@@ -43,6 +43,7 @@ import androidx.compose.ui.unit.sp
 import com.hxy.codeforge.model.BackgroundTask
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
+import com.hxy.codeforge.ui.common.SyncDialogStatusBar
 import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
 import kotlinx.coroutines.delay
@@ -86,8 +87,9 @@ fun BackgroundTasksSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
     ) {
+        SyncDialogStatusBar()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

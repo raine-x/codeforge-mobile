@@ -37,6 +37,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -47,6 +48,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
@@ -282,10 +284,11 @@ fun TaskListDialog(
 ) {
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         val done = todos.count { it.status == TodoStatus.Completed }
+        val inProg = todos.count { it.status == TodoStatus.InProgress }
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(20.dp))
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 1f), RoundedCornerShape(20.dp))
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
                 .padding(horizontal = 18.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -293,23 +296,42 @@ fun TaskListDialog(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 GlyphIcon(
                     glyph = Glyph.Check,
-                    size = 14.dp,
+                    size = 15.dp,
                     color = Clay,
                     strokeWidth = 2.2.dp,
                     modifier = Modifier.padding(end = 8.dp),
                 )
                 Text(
                     text = "任务清单",
-                    style = MaterialTheme.typography.titleSmall,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Spacer(Modifier.weight(1f))
-                Text(
-                    text = "$done/${todos.size}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(end = 2.dp),
-                )
+                if (todos.isNotEmpty()) {
+                    AnimatedContent(
+                        targetState = done,
+                        transitionSpec = {
+                            (fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.85f))
+                                .togetherWith(fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.85f))
+                        },
+                        label = "dialog-todo-count",
+                    ) { d ->
+                        Text(
+                            text = "$d/${todos.size}",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium,
+                            color = if (d == todos.size) {
+                                Clay
+                            } else if (inProg > 0) {
+                                Clay
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            modifier = Modifier.padding(end = 6.dp),
+                        )
+                    }
+                }
                 Box(
                     modifier = Modifier
                         .clip(CircleShape)
@@ -329,20 +351,29 @@ fun TaskListDialog(
 
             if (todos.isEmpty()) {
                 Text(
-                    text = "当前没有任务",
+                    text = "暂无任务。模型开始分步执行时会在这里出现清单。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 6.dp),
+                    modifier = Modifier.padding(vertical = 8.dp),
                 )
             } else {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(max = 420.dp)
+                        .heightIn(max = 400.dp)
                         .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    todos.sortedBy { it.sort }.forEach { TodoRow(it) }
+                    todos.sortedBy { it.sort }.forEach { TodoRow(it, singleLine = false) }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+            ) {
+                TextButton(onClick = onDismiss) {
+                    Text("关闭", color = Clay)
                 }
             }
         }
@@ -350,37 +381,46 @@ fun TaskListDialog(
 }
 
 @Composable
-private fun TodoRow(todo: TodoItem) {
+private fun TodoRow(todo: TodoItem, singleLine: Boolean = true) {
+    val darkSurface = MaterialTheme.colorScheme.surface.luminance() < 0.5f
+    val completedTint = if (darkSurface) Color(0xFF66C277) else Color(0xFF3E9B4F)
     Row(
         modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = if (singleLine) Alignment.CenterVertically else Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         // 状态图标：进行中是旋转的弧（有生命感），完成打勾、取消划叉
-        AnimatedContent(
-            targetState = todo.status,
-            transitionSpec = {
-                (fadeIn(tween(180)) + scaleIn(tween(180), initialScale = 0.6f))
-                    .togetherWith(fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.6f))
-            },
-            label = "todo-status",
-        ) { status ->
-            when (status) {
-                TodoStatus.Pending -> HollowDot(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                TodoStatus.InProgress -> ArcSpinner(color = Clay, size = 14.dp)
-                TodoStatus.Completed -> GlyphIcon(
-                    glyph = Glyph.Check,
-                    size = 14.dp,
-                    color = Color(0xFF3E9B4F),
-                    strokeWidth = 2.4.dp,
-                )
+        Box(
+            modifier = Modifier
+                .padding(top = if (singleLine) 0.dp else 2.dp)
+                .size(16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            AnimatedContent(
+                targetState = todo.status,
+                transitionSpec = {
+                    (fadeIn(tween(180)) + scaleIn(tween(180), initialScale = 0.6f))
+                        .togetherWith(fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.6f))
+                },
+                label = "todo-status",
+            ) { status ->
+                when (status) {
+                    TodoStatus.Pending -> HollowDot(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TodoStatus.InProgress -> ArcSpinner(color = Clay, size = 14.dp)
+                    TodoStatus.Completed -> GlyphIcon(
+                        glyph = Glyph.Check,
+                        size = 14.dp,
+                        color = completedTint,
+                        strokeWidth = 2.4.dp,
+                    )
 
-                TodoStatus.Cancelled -> GlyphIcon(
-                    glyph = Glyph.Close,
-                    size = 12.dp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    strokeWidth = 2.dp,
-                )
+                    TodoStatus.Cancelled -> GlyphIcon(
+                        glyph = Glyph.Close,
+                        size = 12.dp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        strokeWidth = 2.dp,
+                    )
+                }
             }
         }
         Text(
@@ -392,13 +432,15 @@ private fun TodoRow(todo: TodoItem) {
                 TodoStatus.InProgress -> MaterialTheme.colorScheme.onSurface
                 TodoStatus.Pending -> MaterialTheme.colorScheme.onSurfaceVariant
             },
+            fontWeight = if (todo.status == TodoStatus.InProgress) FontWeight.Medium else FontWeight.Normal,
             textDecoration = if (todo.status == TodoStatus.Cancelled) {
                 TextDecoration.LineThrough
             } else {
                 null
             },
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            maxLines = if (singleLine) 1 else Int.MAX_VALUE,
+            overflow = if (singleLine) TextOverflow.Ellipsis else TextOverflow.Clip,
+            modifier = Modifier.weight(1f),
         )
     }
 }

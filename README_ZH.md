@@ -69,15 +69,99 @@ Android 上的 AI 编码工作台。Go 内核负责执行，Rust 引擎负责排
 
 ### 技能、插件、MCP
 
-三类东西在输入框里都用 at 补全：
+技能、内置插件与 MCP 工具都在输入框里用 at 补全，插件包里的技能装好后同样进入补全：
 
 | 来源 | 形态 | 说明 |
 |---|---|---|
 | 技能 | 工作区 .codeforge/skills 下每个名字一个 SKILL.md | 自带 frontmatter，含名称、描述、触发词、启用开关，目录名即 at 补全 token |
+| 插件包 | `.cfplugin` 文件导入 | 一个包可以只带技能，也可以带可执行 MCP 服务，见下一节 |
 | 内置插件 | 内核内置功能 | plan、goal_mode、vulnerability_research、reverse_analysis、multi_agent、skill_creator 等，可单独开关 |
 | MCP | 外部 MCP 服务 | 只补已加载的，未加载的工具还没注册，at 进去内核也调不到 |
 
 输入 at 会弹出候选列表，可滚动，点选即插入。装得越多，列表越长。
+
+### 动态插件包（.cfplugin）
+
+侧栏「插件」页可以导入 `.cfplugin` 插件包。装、停、升级、卸载都在界面上完成，不用改内核配置文件。
+
+**能装什么**
+
+| 包类型 | 包内内容 | 装后效果 |
+|---|---|---|
+| 纯文本技能包，`type: skill` | `skills/<名字>/SKILL.md` | 技能铺到工作区，at 可补全，触发词命中即把正文注入当轮 |
+| 可执行 MCP 包，`type: mcp` 或 `mcp-http` | 启动命令，或 HTTP 端点 | 内核注册工具，模型以 `id.工具名` 调用 |
+| 混合包 | 上面两者都有 | 工具与技能一起生效 |
+
+`wasm` 与 `http` 两种类型能解析并预览，安装按钮置灰，要等内核支持。
+
+**怎么写**
+
+`.cfplugin` 本质是 zip，压缩后把扩展名改成 `.cfplugin` 就能导入：
+
+```
+my-skill.cfplugin
+├── plugin.json
+└── skills/
+    └── my-skill/
+        └── SKILL.md
+```
+
+最小清单，`schema` 固定为 1：
+
+```json
+{
+  "schema": 1,
+  "id": "my-skill",
+  "name": "我的技能",
+  "version": "1.0.0",
+  "type": "skill",
+  "skills": ["my-skill"]
+}
+```
+
+技能正文的 frontmatter 必须是扁平单行：
+
+```markdown
+---
+name: my-skill
+description: 一句话说明用途
+triggers: my-skill, 我的技能
+enabled: true
+---
+
+这里写给模型的流程、清单或知识。
+```
+
+可执行包把 `type` 换成 `mcp-http` 并填 `endpoint`，或者换成 `mcp` 并填 `command` 与 `args`。要密钥时在 `permissions.secrets` 里列出变量名，安装确认页会生成掩码输入框，保存的值以环境变量传给内核：
+
+```json
+{
+  "schema": 1,
+  "id": "weather",
+  "name": "天气查询",
+  "version": "1.0.0",
+  "type": "mcp-http",
+  "endpoint": "https://api.example.com/mcp",
+  "skills": [],
+  "permissions": { "secrets": ["API_KEY"] }
+}
+```
+
+**怎么用**
+
+1. 侧栏「插件」，点「+ 导入插件包」，选 `.cfplugin`；
+2. 确认页看类型、版本、权限与风险提示，需要密钥就当场填；
+3. 确认安装。技能自动铺到当前工作区与 inbox，之后切项目也会同步；可执行包装完就注册进内核；
+4. 行尾开关启停。`详情` 里能看权限、来源、SHA-256、工具与技能状态，也能导入新版本或卸载；
+5. 卸载会同时清理工作区里由该包铺的技能副本，不碰内置技能，也不碰你自己手写的技能。
+
+**规则与上限**
+
+- `id` 形如 `my-skill`：小写字母开头，只含小写字母、数字与连字符，最长 32 个字符；不能与内置工具、已装插件或已有技能重名
+- `version` 必须 `x.y.z`。同 id 更高版本是升级，同版本提示重装，更低版本需勾选允许降级
+- `skills[]` 必须与包内 `skills/` 下的目录一一对应，多列漏列都拒装
+- 包体积不超过 8 MiB，解压后不超过 32 MiB，条目不超过 512 个；含 `..` 或绝对路径的条目直接拒绝
+- 技能 frontmatter 不能写 YAML 块标量，原因见「为什么技能 frontmatter 必须是扁平单行」
 
 ### 内置浏览器与元素挑选
 
@@ -295,7 +379,7 @@ Go 内核与排版引擎以**预编译产物**随仓库分发（`app/src/main/jn
 
 ```
 app/src/main/java/com/hxy/codeforge/
-  core/      内核传输、协议模型、兼容环境、内置技能
+  core/      内核传输、协议模型、兼容环境、内置技能、插件安装器与技能同步
   render/    排版引擎桥接与 IR
   ui/        chat、sessions、settings、common、browser、theme
   voice/     云端语音

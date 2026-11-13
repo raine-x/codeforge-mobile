@@ -2,6 +2,7 @@ package com.hxy.codeforge
 
 import android.Manifest
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
@@ -13,12 +14,11 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
 import androidx.core.content.ContextCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.ViewModelProvider
 import com.hxy.codeforge.core.CoreService
 import com.hxy.codeforge.ui.ChatViewModel
 import com.hxy.codeforge.ui.CodeForgeApp
+import com.hxy.codeforge.ui.common.applyStatusBarVisibility
 import com.hxy.codeforge.ui.settings.AppSettings
 import com.hxy.codeforge.ui.theme.CodeForgeTheme
 
@@ -47,32 +47,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // 平板解锁系统旋转：内容旋转层在平板上已关掉（见 RotateWithDevice），
-        // 但 manifest 里锁的是 portrait —— 不解锁的话平板横过来窗口仍是竖的，
-        // 等于既没有系统横屏、也没有内容旋转，布局直接错位。
-        if (resources.configuration.smallestScreenWidthDp >= 600) {
-            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-        }
         enableEdgeToEdge()
 
-        // 平板交给系统旋转，手机保持锁竖屏。
-        //
-        // 锁竖屏是为了配合「横持旋转内容」：手机横过来时旋转的是内容而不是窗口。
-        // 但平板宽度本来就够，锁竖屏会让系统把应用 letterbox 成中间一条窄窗
-        // （真机实测：1600px 宽的平板只用到约 800px），双栏布局根本触发不了。
-        //
-        // ⚠️ 必须用 getRealMetrics 拿**物理屏幕**宽度：被 letterbox 之后，
-        // resources.configuration.screenWidthDp 返回的是那个窄窗口的宽度，
-        // 按它判断会永远认为是手机、永远锁竖屏 —— 死循环。
-        @Suppress("DEPRECATION")
-        val dm = android.util.DisplayMetrics()
-        windowManager.defaultDisplay.getRealMetrics(dm)
-        val physicalWidthDp = dm.widthPixels / dm.density
-        requestedOrientation = if (physicalWidthDp >= 600) {
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-        } else {
-            android.content.pm.ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-        }
+        // 手机锁竖屏由 RotateWithDevice 转内容；平板按设置里的「横持时旋转界面」开关决定
+        // 交给系统旋转（UNSPECIFIED）还是锁定竖屏（PORTRAIT），避免开关在平板上失效。
+        // 用物理短边 + smallestScreenWidthDp 判平板，不受当前横竖屏或 letterbox 窄窗影响。
+        val isTablet = isPhysicalTablet()
+        requestedOrientation = resolveRequestedOrientation(
+            isTablet = isTablet,
+            rotateWithDevice = AppSettings.rotateWithDevice.value,
+        )
 
         // Android 13+ 通知要运行时申请，否则内核状态常驻通知不可见
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -95,18 +79,41 @@ class MainActivity : ComponentActivity() {
                 // 隐藏后 safeDrawing 的顶 inset 自动变 0，AppRoot 不需要任何改动。
                 val showStatusBar = AppSettings.showStatusBar.value
                 LaunchedEffect(showStatusBar) {
-                    val controller = WindowInsetsControllerCompat(window, window.decorView)
-                    if (showStatusBar) {
-                        controller.show(WindowInsetsCompat.Type.statusBars())
-                    } else {
-                        // 允许用户从顶部上滑临时唤出状态栏，不用退出沉浸去看时间
-                        controller.systemBarsBehavior =
-                            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                        controller.hide(WindowInsetsCompat.Type.statusBars())
+                    applyStatusBarVisibility(window, showStatusBar)
+                }
+                // 平板监听「横持时旋转界面」开关，实时同步窗口方向锁定状态
+                val rotateWithDevice = AppSettings.rotateWithDevice.value
+                LaunchedEffect(isTablet, rotateWithDevice) {
+                    val target = resolveRequestedOrientation(
+                        isTablet = isTablet,
+                        rotateWithDevice = rotateWithDevice,
+                    )
+                    if (requestedOrientation != target) {
+                        requestedOrientation = target
                     }
                 }
                 CodeForgeApp(vm)
             }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun isPhysicalTablet(): Boolean {
+        val dm = android.util.DisplayMetrics()
+        windowManager.defaultDisplay.getRealMetrics(dm)
+        val shortSideDp = if (dm.density > 0f) {
+            minOf(dm.widthPixels, dm.heightPixels) / dm.density
+        } else {
+            0f
+        }
+        return maxOf(resources.configuration.smallestScreenWidthDp.toFloat(), shortSideDp) >= 600f
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        // 弹层/系统界面关闭把焦点还给主窗口时，按用户偏好补齐状态栏隐藏态，避免临时显示后回不去
+        if (hasFocus && !AppSettings.showStatusBar.value) {
+            applyStatusBarVisibility(window, showStatusBar = false)
         }
     }
 
@@ -156,3 +163,15 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_SESSION_ID = "com.hxy.codeforge.SESSION_ID"
     }
 }
+
+/**
+ * 窗口请求方向判定：
+ * - 手机或关闭「横持时旋转界面」：锁定竖屏（手机开启时由 RotateWithDevice 做内容旋转）；
+ * - 平板且开启「横持时旋转界面」：放开给系统（竖屏切手机单栏、横屏切平板双栏）。
+ */
+internal fun resolveRequestedOrientation(isTablet: Boolean, rotateWithDevice: Boolean): Int =
+    if (isTablet && rotateWithDevice) {
+        ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    } else {
+        ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+    }

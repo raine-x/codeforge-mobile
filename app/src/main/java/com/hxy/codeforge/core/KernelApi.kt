@@ -69,6 +69,17 @@ class KernelApi(private val host: String, private val port: Int) {
             // permission 段历史上有两种形态：对象 {mode} 或裸字符串，都认；缺省 ask
             val perm = o.optJSONObject("permission")?.optString("mode")
                 ?: o.optString("permission").ifEmpty { "ask" }
+            // tools 数组：防御解析字符串数组或 {name/id} 对象数组（P-008）
+            val toolsArr = o.optJSONArray("tools")
+            val tools = if (toolsArr == null) {
+                emptyList()
+            } else {
+                (0 until toolsArr.length()).mapNotNull { i ->
+                    val item = toolsArr.optJSONObject(i)
+                    (item?.optString("name")?.ifEmpty { item.optString("id") } ?: toolsArr.optString(i))
+                        .takeIf { it.isNotBlank() }
+                }
+            }
             KernelConfigSummary(
                 model = o.optString("model"),
                 displayName = o.optString("display_name").ifEmpty { o.optString("model") },
@@ -84,6 +95,7 @@ class KernelApi(private val host: String, private val port: Int) {
                 apiKeySet = o.optBoolean("api_key_set", false),
                 // 内核专门给「模型库被清空、生效配置还在」这一种情况准备的信号
                 modelInLibrary = o.optBoolean("model_in_library", true),
+                tools = tools,
             )
         }
 
@@ -809,6 +821,12 @@ class KernelApi(private val host: String, private val port: Int) {
         val name: String,
         val configured: Boolean,
         val loaded: Boolean,
+        val type: String = "",
+        val description: String = "",
+        val command: String = "",
+        val args: List<String> = emptyList(),
+        val endpoint: String = "",
+        val path: String = "",
     ) {
         /** 运行态：进程真的起来了（工具已注册）。 */
         val running: Boolean get() = configured && loaded
@@ -829,6 +847,12 @@ class KernelApi(private val host: String, private val port: Int) {
                         name = o.optString("display_name").ifEmpty { id },
                         configured = o.optBoolean("configured", o.optBoolean("enabled", false)),
                         loaded = o.optBoolean("enabled", false),
+                        type = o.optString("type"),
+                        description = o.optString("description"),
+                        command = o.optString("command"),
+                        args = jsonStringList(o.optJSONArray("args")),
+                        endpoint = o.optString("endpoint"),
+                        path = o.optString("path"),
                     )
                 }
             }
@@ -890,22 +914,7 @@ class KernelApi(private val host: String, private val port: Int) {
             val arr = JSONObject(body).optJSONArray("items") ?: org.json.JSONArray(body)
             (0 until arr.length()).mapNotNull { i ->
                 val o = arr.optJSONObject(i) ?: return@mapNotNull null
-                val id = o.optString("id").ifEmpty { o.optString("name") }
-                if (id.isEmpty()) {
-                    null
-                } else {
-                    BuiltinPluginInfo(
-                        id = id,
-                        name = o.optString("name").ifEmpty { id },
-                        purpose = o.optString("purpose"),
-                        whenToUse = o.optString("when_to_use"),
-                        enabled = o.optBoolean("enabled", false),
-                        // triggers 是数组，旧内核不下发（null）→ 空列表；缺失 ≠ 否定（同 P-031 的三态语义）
-                        triggers = o.optJSONArray("triggers")?.let { a ->
-                            (0 until a.length()).mapNotNull { k -> a.optString(k).takeIf { it.isNotBlank() } }
-                        } ?: emptyList(),
-                    )
-                }
+                parseBuiltinPluginInfo(o)
             }
         }
 
@@ -914,6 +923,9 @@ class KernelApi(private val host: String, private val port: Int) {
     // 表现为「开关点了没反应」。
     suspend fun setBuiltinPlugin(id: String, enabled: Boolean): ApiResult<Unit> =
         request("PATCH", "/api/builtin-plugins", JSONObject().put("id", id).put("enabled", enabled)) { }
+
+    suspend fun setBuiltinPluginModify(id: String, allowModify: Boolean): ApiResult<Unit> =
+        request("PATCH", "/api/builtin-plugins", JSONObject().put("id", id).put("allow_modify", allowModify)) { }
 
     /** 项目（工作区）条目：GET /api/workspaces 的完整结构。 */
     data class WorkspaceEntry(
@@ -1101,4 +1113,27 @@ class KernelApi(private val host: String, private val port: Int) {
         override fun loadForRequest(url: HttpUrl): List<Cookie> =
             synchronized(store) { store.toList() }
     }
+}
+
+/** 解析 `/api/builtin-plugins` 单条 JSON（抽出以便 JVM 单测直接覆盖 P-031 三态语义）。 */
+internal fun parseBuiltinPluginInfo(o: JSONObject): BuiltinPluginInfo? {
+    val id = o.optString("id").ifEmpty { o.optString("name") }
+    if (id.isEmpty()) return null
+    return BuiltinPluginInfo(
+        id = id,
+        name = o.optString("name").ifEmpty { id },
+        purpose = o.optString("purpose"),
+        whenToUse = o.optString("when_to_use"),
+        enabled = o.optBoolean("enabled", false),
+        // triggers 是数组，旧内核不下发（null）→ 空列表；缺失 ≠ 否定（同 P-031 的三态语义）
+        triggers = o.optJSONArray("triggers")?.let { a ->
+            (0 until a.length()).mapNotNull { k -> a.optString(k).takeIf { it.isNotBlank() } }
+        } ?: emptyList(),
+        // allow_modify 遵循 P-031 三态语义：只有服务端显式下发布尔值才解析，否则为 null。
+        allowModify = if (o.has("allow_modify") && !o.isNull("allow_modify")) {
+            o.optBoolean("allow_modify", false)
+        } else {
+            null
+        },
+    )
 }

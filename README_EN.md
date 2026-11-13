@@ -69,15 +69,99 @@ Settings, then Model Services:
 
 ### Skills, plugins and MCP
 
-All three are reachable through at-completion in the input box:
+Skills, built-in plugins and MCP tools all complete with at in the input box, and skills shipped in packages join them:
 
 | Source | Shape | Notes |
 |---|---|---|
 | Skills | One SKILL.md per name under .codeforge/skills in the workspace | Carries frontmatter with name, description, triggers and an enabled flag; the directory name is the completion token |
+| Packages | Imported from a `.cfplugin` file | A package can carry only skills, only an executable MCP server, or both — see the next section |
 | Built-in plugins | Kernel built-ins | plan, goal_mode, vulnerability_research, reverse_analysis, multi_agent, skill_creator and others, individually switchable |
 | MCP | External MCP servers | Only loaded ones are completed, because a tool that is not registered yet cannot be called by the kernel either |
 
 Typing at pops up a candidate list. It scrolls, and it grows with what you have installed. Tap to insert.
+
+### Plugin packages (.cfplugin)
+
+The Plugins page in the sidebar imports `.cfplugin` packages. Installing, enabling, updating and uninstalling all happen in the UI, with no kernel config editing.
+
+**What a package can carry**
+
+| Package type | Contents | Effect after install |
+|---|---|---|
+| Plain-text skill package, `type: skill` | `skills/<name>/SKILL.md` | Skills are synced into workspaces, at-completion lists them, and a trigger match injects the body into the turn |
+| Executable MCP package, `type: mcp` or `mcp-http` | A launch command, or an HTTP endpoint | The kernel registers tools and the model calls them as `id.tool` |
+| Mixed package | Both of the above | Tools and skills take effect together |
+
+`wasm` and `http` packages are parsed and previewed, but the install button is greyed out until the kernel supports them.
+
+**How to write one**
+
+A `.cfplugin` is a zip; compress the folder and rename the extension to `.cfplugin`:
+
+```
+my-skill.cfplugin
+├── plugin.json
+└── skills/
+    └── my-skill/
+        └── SKILL.md
+```
+
+The minimal manifest, with `schema` fixed at 1:
+
+```json
+{
+  "schema": 1,
+  "id": "my-skill",
+  "name": "My skill",
+  "version": "1.0.0",
+  "type": "skill",
+  "skills": ["my-skill"]
+}
+```
+
+The frontmatter in SKILL.md must be flat and single-line:
+
+```markdown
+---
+name: my-skill
+description: One line on what it is for
+triggers: my-skill, my skill
+enabled: true
+---
+
+The process, checklist or knowledge the model should read here.
+```
+
+For an executable package, change `type` to `mcp-http` and fill `endpoint`, or to `mcp` and fill `command` and `args`. To ask for secrets, list the variable names in `permissions.secrets`; the install sheet renders masked inputs and the saved values reach the kernel as environment variables:
+
+```json
+{
+  "schema": 1,
+  "id": "weather",
+  "name": "Weather",
+  "version": "1.0.0",
+  "type": "mcp-http",
+  "endpoint": "https://api.example.com/mcp",
+  "skills": [],
+  "permissions": { "secrets": ["API_KEY"] }
+}
+```
+
+**How to use it**
+
+1. Open Plugins in the sidebar, tap "+ Import package" and pick the `.cfplugin`.
+2. Review type, version, permissions and the risk note on the confirm sheet, and fill in secrets if asked.
+3. Confirm. Skills are synced into the current workspace and inbox, and stay in sync when you switch projects; executable packages register with the kernel right away.
+4. The row toggle enables and disables. Details shows permissions, source, SHA-256 and tool and skill status, and also offers update and uninstall.
+5. Uninstall removes the skill copies this package placed in every workspace, and never touches built-in skills or skills you wrote yourself.
+
+**Rules and limits**
+
+- `id` looks like `my-skill`: lowercase letter first, only lowercase letters, digits and hyphens, at most 32 characters; it must not collide with built-in tools, installed packages or existing skills
+- `version` must be `x.y.z`. A higher version for the same id is an upgrade, the same version prompts a reinstall, and a lower one requires ticking allow downgrade
+- `skills[]` must match the directories under `skills/` one to one; extra or missing entries are rejected
+- The archive is capped at 8 MiB, 32 MiB after unpacking and 512 entries; entries containing `..` or absolute paths are rejected
+- Skill frontmatter cannot use YAML block scalars, for the reason in "Why skill frontmatter must be flat single-line"
 
 ### Built-in browser and element picking
 
@@ -294,7 +378,7 @@ Verification is reported at four levels, honestly. If it was not run on a device
 
 ```
 app/src/main/java/com/hxy/codeforge/
-  core/      kernel transport, protocol models, compat env, bundled skills
+  core/      kernel transport, protocol models, compat env, bundled skills, plugin installer and skill sync
   render/    typesetting engine bridge and IR
   ui/        chat, sessions, settings, common, browser, theme
   voice/     cloud speech

@@ -81,6 +81,15 @@ The built-in browser also picks elements: tap one, it gets a number and joins th
 
 Sessions, projects, models, skills, subagents, MCP, approvals, diffs, background tasks, voice input, a file tree and a full Linux environment — all in one APK.
 
+### 插件包：写完就能装 / Plugin packages: write, import, done
+
+侧栏「插件」页直接导入 `.cfplugin` 包，纯文本技能与可执行 MCP 服务都走同一条路：选文件、看权限、点安装。装完技能自动铺到所有工作区，切项目不丢；可执行包注册成工具，模型按 `id.工具名` 调用。启停、升级、卸载都在界面上，不用改内核配置。
+
+Import a `.cfplugin` package right on the Plugins page — plain-text skills and executable MCP servers take the same path: pick the file, review permissions, install. Skills are synced into every workspace so switching projects does not lose them; executable packages register tools the model calls as `id.tool`. Enable, update and uninstall all happen in the UI, with no kernel config editing.
+
+包的写法（`plugin.json` 加 `skills/<名字>/SKILL.md`）与完整规则见 [README_ZH.md](README_ZH.md#动态插件包cfplugin)。\
+Package layout (`plugin.json` plus `skills/<name>/SKILL.md`) and the full rules are in [README_EN.md](README_EN.md#plugin-packages-cfplugin).
+
 ### 完整 Linux 兼容环境 / A complete Linux compat environment
 
 随包携带 proot 加 Alpine rootfs，一键装 Python、Node、Go、C++、Rust、Java 17、Git、FFmpeg。
@@ -106,6 +115,7 @@ Formulas, tables, code blocks and diff coloring are all typeset locally, with no
 | 会话  | 多会话并行，工作区在创建那一刻绑定，归档、恢复、删除分开摆放，可恢复与不可恢复不混在一起         |
 | 模型  | 自定义接入，支持 Base URL、Key、上下文、RPM、三态能力，支持测试连接，供应商按 id 归一 |
 | 技能  | SKILL.md 技能、内置插件、MCP，输入框 @ 动态补全，随装随用                 |
+| 插件包 | `.cfplugin` 打包导入，纯文本技能与可执行 MCP 同包共存，启停、升级、卸载都在界面完成      |
 | 智能体 | 子智能体独立上下文，目标模式带判定与 findings，审批卡片逐条确认附 diff           |
 | 渲染  | 增量 IR 段落级重排，中文公式原生排版，表格列宽按实测宽度分配，思考过程可折叠可钉住          |
 | 网页  | 整页 HTML 渲染成可操作页面，内置浏览器支持返回、刷新、全屏、快照，元素挑选             |
@@ -117,6 +127,7 @@ Formulas, tables, code blocks and diff coloring are all typeset locally, with no
 | Sessions    | Parallel sessions, workspace bound at creation, archive, restore and delete laid out separately                                     |
 | Models      | Custom endpoints with base URL, key, context, RPM, three-state capabilities, connection test, providers keyed by id                 |
 | Skills      | SKILL.md skills, built-in plugins, MCP, dynamic at-completion in the input box                                                      |
+| Packages    | `.cfplugin` imports; plain-text skills and executable MCP servers in one package; enable, update and uninstall from the UI          |
 | Agents      | Subagents with their own context, goal mode with verdict and findings, per-call approval cards with diffs                           |
 | Rendering   | Paragraph-level re-typesetting on incremental IR, native Chinese formulas, measured table widths, collapsible and pinnable thinking |
 | Web         | Whole HTML pages rendered as interactive ones; built-in browser with back, refresh, fullscreen, snapshots and element picking       |

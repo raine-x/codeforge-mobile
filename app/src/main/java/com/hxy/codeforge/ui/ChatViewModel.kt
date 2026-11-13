@@ -13,11 +13,17 @@ import com.hxy.codeforge.core.HttpCoreTransport
 import com.hxy.codeforge.core.KernelApi
 import com.hxy.codeforge.core.KernelState
 import com.hxy.codeforge.core.LiveTransport
+import com.hxy.codeforge.core.ModelPresets
 import com.hxy.codeforge.core.NOTICE_COMPRESS_DONE
 import com.hxy.codeforge.core.NOTICE_COMPRESS_START
+import com.hxy.codeforge.core.PluginInstaller
+import com.hxy.codeforge.core.PluginSkills
 import com.hxy.codeforge.model.BuiltinPluginInfo
+import com.hxy.codeforge.model.InstallVersionRelation
+import com.hxy.codeforge.model.InstalledPlugin
 import com.hxy.codeforge.model.KernelConfigSummary
 import com.hxy.codeforge.model.LibraryModel
+import com.hxy.codeforge.model.PendingPluginInstall
 import com.hxy.codeforge.model.SkillInfo
 import com.hxy.codeforge.model.SubagentPolicy
 import com.hxy.codeforge.model.ApprovalCard
@@ -105,6 +111,12 @@ data class ChatUiState(
     val builtinPluginInfos: List<BuiltinPluginInfo> = emptyList(),
     /** MCP 插件开关。 */
     val mcpPlugins: List<com.hxy.codeforge.core.KernelApi.McpPluginInfo> = emptyList(),
+    /** 动态插件安装器已落盘的插件（`filesDir/plugins/<id>/install.json`，含纯文本包与可执行包）。 */
+    val installedPlugins: List<InstalledPlugin> = emptyList(),
+    /** 刚从 SAF 选入、已完成校验等待用户确认安装的 `.cfplugin` 预览态。 */
+    val pendingPluginInstall: PendingPluginInstall? = null,
+    /** 插件导入/安装/卸载进行中标记。 */
+    val pluginBusy: Boolean = false,
     /** 技能（名称 → 描述），只读展示。 */
     val skills: List<Pair<String, String>> = emptyList(),
     /** 技能完整信息（显示名/触发词/启用态）；[skills] 保留给 Composer 的 @ 补全。 */
@@ -348,12 +360,16 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     /** 最近一次收到内核 compress 帧的时间：手动压缩用它判断要不要本地补完成提示。 */
     private var lastCompressFrameAt = 0L
 
+    // 已经自动补齐过默认上下文的旧模型 id（本进程内只补一次，避免反复写库）
+    private val backfilledCtxModels = mutableSetOf<String>()
+
     // approvalId → 会话 id：审批通知的跳转目标。ApprovalCard 不带 sessionId，
     // 只在 ApprovalRequested 事件现场记录一次；切后台补发通知时从这里取
     // （全部访问都在 viewModelScope 的主线程协程里，无需并发保护）。
     private val approvalSessions = mutableMapOf<String, String>()
 
     init {
+        refreshInstalledPlugins()
         viewModelScope.launch {
             CoreService.state.collect { onKernelState(it) }
         }
@@ -374,7 +390,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     transport?.listSessions()
                     val sid = _state.value.currentSessionId
                     // 运行中不重载：History 会把 streaming 态清掉（见 wouldWipe 的教训）
-                    if (sid.isNotBlank() && !_state.value.running) transport?.loadSession(sid)
+                    if (sid.isNotBlank()) {
+                        transport?.pullTodos()
+                        if (!_state.value.running) transport?.loadSession(sid)
+                    }
                 }
             }
         }
@@ -482,7 +501,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         if (workspace.isBlank()) return
         withContext(Dispatchers.IO) {
             BuiltinSkills.install(getApplication(), workspace)
+            PluginSkills.sync(getApplication(), workspace)
         }
+        refreshInstalledPlugins(workspace)
     }
 
     /**
@@ -671,6 +692,8 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     didColdStartLoad = true
                     if (_state.value.currentSessionId.isBlank()) {
                         _state.value.sessions.firstOrNull()?.let { transport?.loadSession(it.id) }
+                    } else {
+                        transport?.pullTodos()
                     }
                 }
             }
@@ -816,7 +839,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                             },
                             running = false,
                             approvals = emptyList(),
-                            banner = null,
+                            // 不要在这里清 banner：history 会在本机动作后几十毫秒内到达
+                            // （重连快照、会话确立），把刚弹出的「导入失败」「保存失败」
+                            // 一起抹掉，用户看到的就是「点了没反应」。一次性提示由
+                            // ToastHost 自己按 2s / 3.2s 消退（见 P-058）。
                             subagents = emptyList(),
                         ).applySessions(it.sessions)
                     }
@@ -1294,10 +1320,8 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 ),
             )
         }
-        // 首条消息后把占位标题改成消息前 24 字：内核也会在落盘时改（history.go 的
-        // Save），但 sessions 帧要等一轮结束才回来 —— 本地先乐观更新，避免侧栏
-        // 一排「新建会话」分不清。
-        updateSessionTitleFromFirstMessage(req.bubbleText)
+        // 首条消息不再在客户端截断前 24 字充当标题：内核会在收到首轮提问时并发
+        // 静默请求 AI 生成小标题并通过 sessions 帧推回（用户已手动命名时不会覆盖）。
 
         // 附件从工作区根解析，必须等工作区切好再上传；纯文本也走这一步，
         // 保证内核本轮的文件根与界面显示的会话归属一致。
@@ -1366,7 +1390,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         newSessionGate = gate
         val a = api
         val st = _state.value
-        if (a != null && st.currentWorkspace.isBlank() && st.kernelConfig?.workDir.isNullOrBlank()) {
+        // 内核启动自带 `-workdir <filesDir>/workspace`，所以 kernelConfig?.workDir 几乎总是非空；
+        // 旧条件多判了 `kernelConfig?.workDir.isNullOrBlank()` 会导致「未选工作区时直接新建对话」
+        // 从来不切进私有空间（inbox），会话落错目录。只要没选工作区且没有会话在跑，就落到私有空间。
+        if (a != null && st.currentWorkspace.isBlank() && !st.sessions.any { it.busy }) {
             val root = EnvKit.inboxSpace(getApplication()).absolutePath
             installBuiltinSkills(root)
             when (val r = a.setWorkspace(root)) {
@@ -1423,35 +1450,6 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             }
         }
         return staged
-    }
-
-    /**
-     * 只在标题仍是占位名（新建会话等）时才改：用户/内核已经起过名的会话不能覆盖。
-     * 首次消息之后再发也不该再改，长度 24 与内核 truncateRunes(t, 24) 对齐。
-     */
-    private fun updateSessionTitleFromFirstMessage(text: String) {
-        val st = _state.value
-        if (!isPlaceholderSessionTitle(st.title)) return
-        val newTitle = text.trim().take(24)
-        if (newTitle.isEmpty()) return
-        _state.update { s ->
-            s.copy(
-                title = newTitle,
-                sessions = s.sessions.map {
-                    if (it.id == st.currentSessionId && isPlaceholderSessionTitle(it.title)) {
-                        it.copy(title = newTitle)
-                    } else {
-                        it
-                    }
-                },
-            )
-        }
-    }
-
-    private fun isPlaceholderSessionTitle(t: String): Boolean {
-        val s = t.trim()
-        return s.isEmpty() || s == "新会话" || s == "新建会话" || s == "新对话" ||
-            s == "未命名" || s.startsWith("新对话 ")
     }
 
     /** 运行中转向：乐观气泡照常上屏，内核确认后追加「已并入」通知行。 */
@@ -1516,6 +1514,11 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     fun switchSession(id: String) {
         if (id == _state.value.currentSessionId) return
         transport?.loadSession(id)
+    }
+
+    /** 主动向内核对齐当前会话的最新任务清单。 */
+    fun refreshTodos() {
+        transport?.pullTodos()
     }
 
     /** 撤销当前会话最近一次文件写入（内核按会话分桶；撤销结果只回传路径与剩余步数）。 */
@@ -1670,8 +1673,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             val id = EnvKit.newProjectId()
             EnvKit.newProjectWorkspace(getApplication(), id).absolutePath
         }
-        // 显示名：优先用户输入；没填就用目录名（自动工作区即项目 id）
-        val display = explicitName.ifEmpty { displayWorkspaceName(path) }
+        // 显示名：优先用户输入；选了目录用目录名，自动独立工作区用可读名称（避免暴露内部项目 id）
+        val display = explicitName.ifEmpty {
+            if (rawPath.isNotBlank()) displayWorkspaceName(path) else "新项目"
+        }
         val existing = _state.value.projects.firstOrNull { it.workspace == path }
         if (existing != null) {
             toast("已有空的新项目：${existing.name}", isError = false)
@@ -2144,7 +2149,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         return copy(
             sessions = sessions,
             projects = aggregateProjects(sessions),
-            // 当前会话不在列表里（刚建好还没推帧 / 已被删）时保持原值
+            // 后台 AI 静默生成会话小标题后会重推 sessions 帧：同步更新顶栏标题；
+            // 当前会话不在列表里（刚建好还没推帧 / 已被删）时保持原值。
+            title = cur?.title?.takeIf { it.isNotBlank() } ?: title,
             currentWorkspace = cur?.workspace ?: currentWorkspace,
             currentWorkspaceName = cur?.workspaceName ?: currentWorkspaceName,
         )
@@ -2324,6 +2331,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
 
     /** 设置页：拉内置插件 / MCP 插件 / 技能（Ready 后调，幂等）。 */
     fun loadKernelExtras() {
+        refreshInstalledPlugins()
         val a = api ?: return
         viewModelScope.launch {
             when (val r = a.listBuiltinPlugins()) {
@@ -2389,6 +2397,8 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     }
                     // 列表到齐才有得比，同步放在这里
                     syncModelToKernel()
+                    // 给历史库里未设 ctx_in（<= 0）的条目自动补齐预设或至少 128K 默认上下文
+                    backfillMissingModelContexts(a, r.value)
                 }
                 is KernelApi.ApiResult.Err -> Unit
             }
@@ -2462,6 +2472,20 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         }
     }
 
+    fun setBuiltinPluginModify(id: String, allowModify: Boolean) {
+        val a = api ?: return
+        viewModelScope.launch {
+            when (val r = a.setBuiltinPluginModify(id, allowModify)) {
+                is KernelApi.ApiResult.Ok -> toast(
+                    if (allowModify) "逆向修改能力已开启（注意保留原件备份）"
+                    else "已切回只读逆向模式",
+                )
+                is KernelApi.ApiResult.Err -> toast(r.message, isError = true)
+            }
+            loadKernelExtras()
+        }
+    }
+
     fun setMcpPlugin(id: String, enabled: Boolean) {
         val a = api ?: return
         viewModelScope.launch {
@@ -2519,9 +2543,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         }
     }
 
-    /** 把一个探测到的模型存进模型库。 */
+    /** 把一个探测到的模型存进模型库（自动补齐预设上下文与默认 128K 下限）。 */
     fun saveModel(id: String, displayName: String, provider: String) {
         val a = api ?: run { bannerNoKernel(); return }
+        val spec = ModelPresets.resolveOrDefault(id)
         viewModelScope.launch {
             // 走 /api/models/save 而不是 save_batch：批量接口只认 id/name/provider，
             // 而且实测加进去后主对话框的模型列表不刷新（等于没加）。
@@ -2529,9 +2554,16 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 id = id,
                 name = displayName.ifBlank { id },
                 providerId = provider,
+                ctxIn = spec.ctxIn,
+                ctxOut = spec.ctxOut,
+                vision = spec.vision,
+                video = spec.video,
             )) {
                 is KernelApi.ApiResult.Ok -> {
                     refreshKernelSummaries()
+                    if (_state.value.kernelConfig?.model == id) {
+                        transport?.pullContext()
+                    }
                     toast("已添加模型 $id")
                 }
 
@@ -2592,13 +2624,16 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             onDone(false, "模型 id 不能为空")
             return
         }
+        val preset = ModelPresets.resolveOrDefault(id)
+        val resolvedCtxIn = if (ctxIn > 0) ctxIn else preset.ctxIn
+        val resolvedCtxOut = if (ctxOut > 0) ctxOut else preset.ctxOut
         viewModelScope.launch {
             when (val r = a.saveModelFull(
                 id = id,
                 name = name.ifBlank { id },
                 providerId = providerId,
-                ctxIn = ctxIn,
-                ctxOut = ctxOut,
+                ctxIn = resolvedCtxIn,
+                ctxOut = resolvedCtxOut,
                 vision = vision,
                 video = video,
                 rpm = rpm,
@@ -2687,6 +2722,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             when (val r = a.addMcpPlugin(name, displayName, type, command, args, endpoint, description, env)) {
                 is KernelApi.ApiResult.Ok -> {
                     loadKernelExtras()
+                    refreshConfigSummary()
                     toast("已添加 MCP：$name")
                 }
 
@@ -2703,6 +2739,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             when (val r = a.deleteMcpPlugin(name)) {
                 is KernelApi.ApiResult.Ok -> {
                     loadKernelExtras()
+                    refreshConfigSummary()
                     toast("已删除 MCP：$name")
                 }
 
@@ -2710,6 +2747,381 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     _state.update { it.copy(banner = Banner(r.message, true)) }
             }
         }
+    }
+
+    // ---------------------------------------------------------------- 动态插件管理（.cfplugin）
+
+    /** 解析当前活跃工作区路径（与 applySessionSpaceNow 优先级一致）。 */
+    private fun resolveActiveWorkspace(): String {
+        val st = _state.value
+        val sessionWs = st.sessions.firstOrNull { it.id == st.currentSessionId }
+            ?.workspace?.takeUnless { it.isBlank() }
+        return sessionWs
+            ?: st.currentWorkspace.takeUnless { it.isBlank() }
+            ?: st.kernelConfig?.workDir?.takeUnless { it.isBlank() }
+            ?: EnvKit.inboxSpace(getApplication()).absolutePath
+    }
+
+    /** 刷新已安装插件列表（含当前工作区的技能同步状态）。 */
+    fun refreshInstalledPlugins(workspaceOverride: String? = null) {
+        val app = getApplication<android.app.Application>()
+        val ws = workspaceOverride?.takeUnless { it.isBlank() } ?: resolveActiveWorkspace()
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = PluginInstaller.listInstalled(app.filesDir, ws)
+            _state.update { it.copy(installedPlugins = list) }
+        }
+    }
+
+    /** 单独刷新一次内核 config（用于插件变更后追平 `kernelConfig.tools` 工具清单）。 */
+    private fun refreshConfigSummary() {
+        val a = api ?: return
+        viewModelScope.launch {
+            when (val r = a.getConfig()) {
+                is KernelApi.ApiResult.Ok -> _state.update { it.copy(kernelConfig = r.value) }
+                is KernelApi.ApiResult.Err -> Unit
+            }
+        }
+    }
+
+    /**
+     * 把插件技能同步到当前工作区与已知本地工作区，然后通知内核重读技能列表。
+     */
+    private suspend fun syncPluginSkillsEverywhere() {
+        val app = getApplication<android.app.Application>()
+        val activeWs = resolveActiveWorkspace()
+        val targets = buildSet {
+            if (activeWs.isNotBlank()) add(activeWs)
+            add(EnvKit.inboxSpace(app).absolutePath)
+            _state.value.projects.forEach { p ->
+                if (p.workspace.isNotBlank()) add(p.workspace)
+            }
+        }
+        withContext(Dispatchers.IO) {
+            targets.forEach { ws -> PluginSkills.sync(app.filesDir, ws) }
+        }
+        refreshInstalledPlugins(activeWs)
+    }
+
+    /**
+     * 从 SAF 选入一个 `.cfplugin` 包：暂存 + 解析校验 + 生成安装前预览 [PendingPluginInstall]。
+     *
+     * 校验通过后弹预览确认卡（展示版本对比、权限声明、随包技能、可预填密钥，或对阶段 2 类型置灰）；
+     * 校验失败立即删暂存并提示明确原因。
+     */
+    fun installPlugin(uri: Uri) {
+        if (_state.value.pluginBusy) return
+        val app = getApplication<android.app.Application>()
+        _state.update { it.copy(pluginBusy = true) }
+        viewModelScope.launch(Dispatchers.IO) {
+            // 先清理旧暂存（若上次打开了预览还没确认又选了新包）
+            _state.value.pendingPluginInstall?.stagedPath?.let { runCatching { java.io.File(it).delete() } }
+
+            val fileName = resolveUriDisplayName(app, uri)
+            val staged = when (val sr = PluginInstaller.stageUriToIncoming(app, uri, fileName)) {
+                is PluginInstaller.InstallResult.Ok -> sr.value
+                is PluginInstaller.InstallResult.Err -> {
+                    _state.update { it.copy(pluginBusy = false, banner = Banner(sr.message, isError = true)) }
+                    return@launch
+                }
+            }
+
+            val st = _state.value
+            val installed = PluginInstaller.listInstalled(app.filesDir, resolveActiveWorkspace())
+            val installedIds = installed.map { it.id }.toSet()
+            val manualIds = st.mcpPlugins.map { it.id }.filter { it !in installedIds }.toSet()
+            val builtinSlugs = BuiltinSkills.builtinSlugs(app)
+            val kernelTools = st.kernelConfig?.tools.orEmpty()
+
+            when (val ir = PluginInstaller.inspectStagedPackage(
+                stagedFile = staged,
+                sourceFileName = fileName,
+                installedPlugins = installed,
+                kernelTools = kernelTools,
+                builtinSkillSlugs = builtinSlugs,
+                manualMcpIds = manualIds,
+            )) {
+                is PluginInstaller.InstallResult.Ok -> {
+                    _state.update {
+                        it.copy(
+                            installedPlugins = installed,
+                            pendingPluginInstall = ir.value,
+                            pluginBusy = false,
+                        )
+                    }
+                }
+                is PluginInstaller.InstallResult.Err -> {
+                    staged.delete()
+                    _state.update {
+                        it.copy(
+                            pendingPluginInstall = null,
+                            pluginBusy = false,
+                            banner = Banner(ir.message, isError = true),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /** 取消待确认的插件安装预览并清理暂存包。 */
+    fun cancelPendingPluginInstall() {
+        val pending = _state.value.pendingPluginInstall
+        _state.update { it.copy(pendingPluginInstall = null) }
+        if (pending != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                runCatching { java.io.File(pending.stagedPath).delete() }
+            }
+        }
+    }
+
+    /**
+     * 确认安装 [ChatUiState.pendingPluginInstall]：
+     * 1. 落盘到 `filesDir/plugins/<id>/<version>/` + `install.json`；
+     * 2. 可执行插件向内核注册（升级/重装先 `DELETE` 再 `POST`）；若内核拒绝则回滚磁盘目录；
+     * 3. 同步随包技能到工作区并刷新工具与技能列表。
+     */
+    fun confirmPluginInstall(
+        allowDowngrade: Boolean = false,
+        secrets: Map<String, String> = emptyMap(),
+        onDone: (ok: Boolean, error: String?) -> Unit = { _, _ -> },
+    ) {
+        val pending = _state.value.pendingPluginInstall ?: return
+        if (_state.value.pluginBusy) return
+        val manifest = pending.manifest
+        val a = api
+        if (!manifest.isPureSkill && a == null) {
+            val msg = "内核未连接，暂时无法安装可执行插件"
+            toast(msg, isError = true)
+            onDone(false, msg)
+            return
+        }
+
+        val app = getApplication<android.app.Application>()
+        _state.update { it.copy(pluginBusy = true) }
+        viewModelScope.launch {
+            val commitRes = withContext(Dispatchers.IO) {
+                PluginInstaller.commitStagedInstall(
+                    filesDir = app.filesDir,
+                    pending = pending,
+                    allowDowngrade = allowDowngrade,
+                    secrets = secrets,
+                )
+            }
+            val installed = when (commitRes) {
+                is PluginInstaller.InstallResult.Ok -> commitRes.value
+                is PluginInstaller.InstallResult.Err -> {
+                    _state.update { it.copy(pluginBusy = false, banner = Banner(commitRes.message, isError = true)) }
+                    onDone(false, commitRes.message)
+                    return@launch
+                }
+            }
+
+            if (!manifest.isPureSkill && a != null) {
+                // 升级或重装先卸载旧工具，防残留旧 id.* 工具
+                if (pending.versionRelation != InstallVersionRelation.FRESH ||
+                    _state.value.mcpPlugins.any { it.id == manifest.id }
+                ) {
+                    a.deleteMcpPlugin(manifest.id)
+                }
+                val regRes = a.addMcpPlugin(
+                    name = manifest.id,
+                    displayName = manifest.name,
+                    type = manifest.type,
+                    command = manifest.command,
+                    args = manifest.args,
+                    endpoint = manifest.endpoint,
+                    description = manifest.description,
+                    env = installed.mergedEnv(),
+                )
+                if (regRes is KernelApi.ApiResult.Err) {
+                    // 注册失败且是新安装时回滚磁盘目录，不留半装状态
+                    if (pending.versionRelation == InstallVersionRelation.FRESH) {
+                        withContext(Dispatchers.IO) {
+                            PluginInstaller.uninstall(app.filesDir, manifest.id)
+                        }
+                    }
+                    _state.update { it.copy(pluginBusy = false, banner = Banner(regRes.message, isError = true)) }
+                    onDone(false, regRes.message)
+                    return@launch
+                }
+                if (!installed.enabled) {
+                    a.setPlugin(manifest.id, false)
+                }
+            }
+
+            withContext(Dispatchers.IO) {
+                runCatching { java.io.File(pending.stagedPath).delete() }
+            }
+            syncPluginSkillsEverywhere()
+            _state.update { it.copy(pendingPluginInstall = null, pluginBusy = false) }
+            loadKernelExtras()
+            refreshConfigSummary()
+            val actionVerb = when (pending.versionRelation) {
+                InstallVersionRelation.FRESH -> "已安装"
+                InstallVersionRelation.UPGRADE -> "已升级"
+                InstallVersionRelation.REINSTALL -> "已重新安装"
+                InstallVersionRelation.DOWNGRADE -> "已降级安装"
+            }
+            toast("$actionVerb：${manifest.name} v${manifest.version}")
+            onDone(true, null)
+        }
+    }
+
+    /**
+     * 启停已安装的插件（可执行包 + 纯文本技能包统一入口）。
+     *
+     * - 可执行包：写 `install.json.enabled` + 调内核 `PATCH /api/plugins` + 同步随包技能；
+     * - 纯文本技能包：写 `install.json.enabled` + 同步工作区（停用即移除工作区副本，启用即重铺）。
+     */
+    fun setPluginEnabled(id: String, enabled: Boolean) {
+        val app = getApplication<android.app.Application>()
+        val target = _state.value.installedPlugins.firstOrNull { it.id == id }
+        if (target == null) {
+            // 手动添加的 MCP 条目回退走原有方法
+            setMcpPlugin(id, enabled)
+            return
+        }
+        viewModelScope.launch {
+            val a = api
+            if (!target.manifest.isPureSkill) {
+                if (a == null) {
+                    bannerNoKernel()
+                    return@launch
+                }
+                when (val r = a.setPlugin(id, enabled)) {
+                    is KernelApi.ApiResult.Ok -> Unit
+                    is KernelApi.ApiResult.Err -> {
+                        _state.update { it.copy(banner = Banner(r.message, isError = true)) }
+                        return@launch
+                    }
+                }
+            }
+            withContext(Dispatchers.IO) {
+                PluginInstaller.setPluginEnabled(app.filesDir, id, enabled)
+            }
+            syncPluginSkillsEverywhere()
+            loadKernelExtras()
+            refreshConfigSummary()
+            toast(if (enabled) "已启用 ${target.manifest.name}" else "已停用 ${target.manifest.name}")
+        }
+    }
+
+    /**
+     * 卸载已安装的插件：
+     * 1. 可执行插件先调 `DELETE /api/plugins?name=` 卸载工具；
+     * 2. 删 `filesDir/plugins/<id>`；
+     * 3. 同步器清理带 `plugin.marker` 的工作区技能目录（绝不碰用户自建或内置技能）；
+     * 4. 刷新插件、技能与工具列表。
+     */
+    fun uninstallPlugin(id: String) {
+        val app = getApplication<android.app.Application>()
+        val target = _state.value.installedPlugins.firstOrNull { it.id == id }
+        if (target == null) {
+            deleteMcpPlugin(id)
+            return
+        }
+        viewModelScope.launch {
+            val a = api
+            if (!target.manifest.isPureSkill && a != null) {
+                when (val r = a.deleteMcpPlugin(id)) {
+                    is KernelApi.ApiResult.Ok -> Unit
+                    is KernelApi.ApiResult.Err -> {
+                        // 若内核里本就不存在该条目（比如曾被手动删过），仍允许继续卸载本地包
+                        if (_state.value.mcpPlugins.any { it.id == id }) {
+                            _state.update { it.copy(banner = Banner(r.message, isError = true)) }
+                            return@launch
+                        }
+                    }
+                }
+            }
+            withContext(Dispatchers.IO) {
+                PluginInstaller.uninstall(app.filesDir, id)
+            }
+            syncPluginSkillsEverywhere()
+            loadKernelExtras()
+            refreshConfigSummary()
+            toast("已卸载插件：${target.manifest.name}")
+        }
+    }
+
+    /**
+     * 保存插件密钥（`permissions.secrets`）：
+     * 写回 `install.json`，并对可执行插件执行 `deleteMcpPlugin` + `addMcpPlugin(env=...)` 热重载生效。
+     */
+    fun savePluginSecrets(
+        id: String,
+        secrets: Map<String, String>,
+        onDone: (ok: Boolean, message: String?) -> Unit = { _, _ -> },
+    ) {
+        val app = getApplication<android.app.Application>()
+        val target = _state.value.installedPlugins.firstOrNull { it.id == id } ?: run {
+            onDone(false, "找不到插件：$id")
+            return
+        }
+        val a = api
+        if (!target.manifest.isPureSkill && a == null) {
+            bannerNoKernel()
+            onDone(false, "内核未连接")
+            return
+        }
+        viewModelScope.launch {
+            val updatedRes = withContext(Dispatchers.IO) {
+                PluginInstaller.updatePluginSecrets(app.filesDir, id, secrets)
+            }
+            val updated = when (updatedRes) {
+                is PluginInstaller.InstallResult.Ok -> updatedRes.value
+                is PluginInstaller.InstallResult.Err -> {
+                    onDone(false, updatedRes.message)
+                    return@launch
+                }
+            }
+            if (!updated.manifest.isPureSkill && a != null) {
+                val m = updated.manifest
+                a.deleteMcpPlugin(m.id)
+                when (val ar = a.addMcpPlugin(
+                    name = m.id,
+                    displayName = m.name,
+                    type = m.type,
+                    command = m.command,
+                    args = m.args,
+                    endpoint = m.endpoint,
+                    description = m.description,
+                    env = updated.mergedEnv(),
+                )) {
+                    is KernelApi.ApiResult.Ok -> {
+                        if (!updated.enabled) {
+                            a.setPlugin(m.id, false)
+                        }
+                    }
+                    is KernelApi.ApiResult.Err -> {
+                        _state.update { it.copy(banner = Banner(ar.message, isError = true)) }
+                        onDone(false, ar.message)
+                        return@launch
+                    }
+                }
+            }
+            refreshInstalledPlugins()
+            loadKernelExtras()
+            refreshConfigSummary()
+            onDone(true, "密钥已保存并生效")
+        }
+    }
+
+    private fun resolveUriDisplayName(context: android.content.Context, uri: Uri): String {
+        val fromCursor = runCatching {
+            context.contentResolver.query(
+                uri,
+                arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull()
+        return fromCursor?.takeIf { it.isNotBlank() }
+            ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
+            ?: "plugin.cfplugin"
     }
 
     /** 新增一条用户记忆，成功后重拉列表（内核按工作区隔离）。 */
@@ -2762,24 +3174,88 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     /**
+     * 给模型库里尚未声明上下文（`ctxIn <= 0`）的老条目按 [ModelPresets] 补齐至少 128K。
+     *
+     * 用 `inheritKey = false` 且留空 `keyValue`，配合内核 `models.go` 保留既有自定义密钥，
+     * 不破坏用户原来填好的明文/环境变量密钥。
+     */
+    private suspend fun backfillMissingModelContexts(a: KernelApi, models: List<KernelApi.ModelEntry>) {
+        val candidates = models.filter { it.ctxIn <= 0 && backfilledCtxModels.add(it.id) }
+        if (candidates.isEmpty()) return
+        var updated = 0
+        var activeUpdated = false
+        val activeId = _state.value.kernelConfig?.model
+        for (m in candidates) {
+            val preset = ModelPresets.resolveOrDefault(m.id)
+            val resolvedOut = m.ctxOut.takeIf { it > 0 } ?: preset.ctxOut
+            val res = a.saveModelFull(
+                id = m.id,
+                name = m.name.ifBlank { m.id },
+                providerId = m.provider,
+                ctxIn = preset.ctxIn,
+                ctxOut = resolvedOut,
+                vision = m.vision ?: preset.vision,
+                video = m.video ?: preset.video,
+                rpm = m.rpm,
+                baseUrl = m.baseUrl,
+                protocol = m.protocol,
+                keySource = m.keySource,
+                keyName = m.keyName,
+                keyValue = "",
+                inheritKey = false,
+            )
+            if (res is KernelApi.ApiResult.Ok) {
+                updated++
+                if (activeId == m.id) activeUpdated = true
+            } else {
+                backfilledCtxModels.remove(m.id)
+            }
+        }
+        if (updated > 0) {
+            refreshKernelSummaries()
+            if (activeUpdated && !activeId.isNullOrBlank()) {
+                a.applyModel(activeId)
+                transport?.pullContext()
+            }
+        }
+    }
+
+    /**
      * 手动压缩当前会话上下文。
      *
      * 内核压缩要调用一次模型生成摘要，几秒到几十秒不等 —— 期间必须给反馈，
-     * 否则用户以为点了没反应。开始提示在**发请求前**插入（内核没有开始帧），
-     * 完成提示优先用内核 compress 帧；3 秒内没等到帧才本地补一条。
+     * 否则用户以为点了没反应。若用户刚无工作区新建对话、`session` 帧尚在路上，
+     * 先等 [newSessionGate] 落定，避免把空 id 发给内核落空。
      */
-    fun compressContext() {
-        val a = api ?: run { bannerNoKernel(); return }
-        val sid = _state.value.currentSessionId
-        compressStartShown = true
-        lastCompressFrameAt = 0L
-        appendNotice(NOTICE_COMPRESS_START, NoticeKind.Compress)
-        val requestAt = System.currentTimeMillis()
+    fun compressContext(onResult: ((ok: Boolean, message: String) -> Unit)? = null) {
+        val a = api ?: run {
+            bannerNoKernel()
+            onResult?.invoke(false, "内核未连接")
+            return
+        }
         viewModelScope.launch {
+            if (_state.value.currentSessionId.isBlank()) {
+                val gate = newSessionGate
+                if (gate != null) {
+                    withTimeoutOrNull(8_000) { gate.await() }
+                }
+            }
+            val sid = _state.value.currentSessionId
+            if (sid.isBlank() && _state.value.messages.isEmpty()) {
+                val msg = "当前没有活动会话可压缩"
+                toast(msg, isError = true)
+                onResult?.invoke(false, msg)
+                return@launch
+            }
+            compressStartShown = true
+            lastCompressFrameAt = 0L
+            appendNotice(NOTICE_COMPRESS_START, NoticeKind.Compress)
+            val requestAt = System.currentTimeMillis()
             when (val r = a.compressContext(sid.ifBlank { null })) {
                 is KernelApi.ApiResult.Ok -> {
                     // 压缩后主动拉一次占用（内核压缩路径不总是回推 context 帧）
                     transport?.pullContext()
+                    onResult?.invoke(true, r.value.ifBlank { NOTICE_COMPRESS_DONE })
                     // 完成提示优先用内核 compress 帧；3 秒内没等到才本地补，
                     // 避免与帧重复（帧先到还是响应先到，两种顺序都会出现）
                     launch {
@@ -2796,6 +3272,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 is KernelApi.ApiResult.Err -> {
                     compressStartShown = false
                     appendNotice("压缩失败：${r.message}", NoticeKind.Warn)
+                    onResult?.invoke(false, r.message)
                 }
             }
         }

@@ -37,6 +37,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -137,9 +138,9 @@ fun SessionPane(
             }
         }
 
-        // 导航：只有「对话」是当前页；MCP 铺满侧栏（点击后由外层切换到 MCP 面板）
+        // 导航：只有「对话」是当前页；插件面板铺满侧栏（点击后由外层切换）
         NavRow(label = "对话", glyph = Glyph.ChatBubble, active = true, onClick = null)
-        NavRow(label = "MCP", glyph = Glyph.Cube, active = false, onClick = onOpenMcp)
+        NavRow(label = "插件", glyph = Glyph.Cube, active = false, onClick = onOpenMcp)
 
         HorizontalDivider(
             color = MaterialTheme.colorScheme.outlineVariant,
@@ -639,10 +640,18 @@ private fun BottomBar(
                 )
             }
         } else {
+            val pillBg = MaterialTheme.colorScheme.onBackground
+            val rawFg = MaterialTheme.colorScheme.background
+            // 选中壁纸时 background 会被 Theme 设为 Transparent，直接拿它作字色会让文字/图标隐身，只剩黑胶囊
+            val pillFg = when {
+                rawFg.alpha >= 1f -> rawFg
+                pillBg.luminance() > 0.5f -> Color(0xFF1F1E1B)
+                else -> Color(0xFFFFFFFF)
+            }
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(20.dp))
-                    .background(MaterialTheme.colorScheme.onBackground)
+                    .background(pillBg)
                     .noRippleClickable(onClick = onCreate)
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -651,13 +660,13 @@ private fun BottomBar(
                 GlyphIcon(
                     glyph = Glyph.Plus,
                     size = 13.dp,
-                    color = MaterialTheme.colorScheme.background,
+                    color = pillFg,
                     strokeWidth = 2.dp,
                 )
                 Text(
                     text = "新建对话",
                     style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.background,
+                    color = pillFg,
                 )
             }
         }

@@ -12,7 +12,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.ui.input.pointer.pointerInput
@@ -210,7 +212,10 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                         onNewProject = openNewProject,
                         onOpenMcp = { sidebarPage = "mcp" },
                         onProjectLongPress = { projectActions = it },
-                        onOpenTodos = { showTodos = true },
+                        onOpenTodos = {
+                            viewModel.refreshTodos()
+                            showTodos = true
+                        },
                         onOpenTasks = { showTasks = true },
                         onOpenWorkspaceFiles = openWorkspaceFiles,
                     )
@@ -224,25 +229,29 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                             onNewProject = openNewProject,
                             onOpenMcp = { sidebarPage = "mcp" },
                             onProjectLongPress = { projectActions = it },
-                            onOpenTodos = { showTodos = true },
+                            onOpenTodos = {
+                            viewModel.refreshTodos()
+                            showTodos = true
+                        },
                             onOpenTasks = { showTasks = true },
                             onOpenWorkspaceFiles = openWorkspaceFiles,
                         )
                 }
 
-                // 侧栏浮层放在旋转层里：横持时面板跟内容一起转（同 P-009 的边界）
+                // 侧栏浮层放在旋转层里：横持时面板跟内容一起转（同 P-009 的边界）。
+                // 不用 fadeIn/fadeOut：整层做 alpha 渐变会在进退场帧里把底层侧栏与聊天内容透出来叠字。
                 AnimatedVisibility(
                     visible = sidebarPage == "mcp",
-                    enter = fadeIn(tween(160)) + scaleIn(tween(200), initialScale = 0.94f),
-                    exit = fadeOut(tween(140)) + scaleOut(tween(160), targetScale = 0.94f),
+                    enter = slideInHorizontally(tween(200)) { -it },
+                    exit = slideOutHorizontally(tween(180)) { -it },
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     McpSidebarPanel(vm = viewModel, onClose = { sidebarPage = "" })
                 }
                 AnimatedVisibility(
                     visible = sidebarPage == "tree",
-                    enter = fadeIn(tween(160)) + scaleIn(tween(200), initialScale = 0.90f),
-                    exit = fadeOut(tween(140)) + scaleOut(tween(160), targetScale = 0.90f),
+                    enter = slideInHorizontally(tween(200)) { -it },
+                    exit = slideOutHorizontally(tween(180)) { -it },
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     FileTreePanel(
@@ -322,9 +331,12 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
             )
         }
 
-        // 任务清单：从右上角三点菜单进来，数据是 state.todos 的实时快照
+        // 任务清单：从右上角三点菜单进来，打开时主动拉一次并随 todo 帧实时更新
         if (showTodos) {
-            TodoSheet(todos = state.todos, onDismiss = { showTodos = false })
+            com.hxy.codeforge.ui.chat.TaskListDialog(
+                todos = state.todos,
+                onDismiss = { showTodos = false },
+            )
         }
 
         // 后台脚本任务：打开期间面板自己按 1s 轮询 /api/tasks
@@ -368,79 +380,6 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     }
     }
     }
-}
-
-// ---------------------------------------------------------------- 任务清单弹层
-
-/**
- * 任务清单弹层（右上角三点菜单 → 任务清单）。
- *
- * 读的是 `state.todos`（内核 todo 帧推的实时快照），不新增任何协议；
- * 计数也在标题里实时显示，用户不用展开面板就知道还剩几项。
- */
-@Composable
-private fun TodoSheet(todos: List<com.hxy.codeforge.model.TodoItem>, onDismiss: () -> Unit) {
-    val done = todos.count { it.status == com.hxy.codeforge.model.TodoStatus.Completed }
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                if (todos.isEmpty()) "任务清单" else "任务清单 $done/${todos.size}",
-            )
-        },
-        text = {
-            if (todos.isEmpty()) {
-                Text(
-                    text = "暂无任务。模型开始分步执行时会在这里出现清单。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            } else {
-                Column(
-                    modifier = Modifier
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    todos.sortedBy { it.sort }.forEach { todo ->
-                        val (mark, tint) = when (todo.status) {
-                            com.hxy.codeforge.model.TodoStatus.Completed ->
-                                "✓" to Clay
-                            com.hxy.codeforge.model.TodoStatus.InProgress ->
-                                "…" to MaterialTheme.colorScheme.onSurface
-                            com.hxy.codeforge.model.TodoStatus.Cancelled ->
-                                "✕" to MaterialTheme.colorScheme.onSurfaceVariant
-                            com.hxy.codeforge.model.TodoStatus.Pending ->
-                                "○" to MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Text(
-                                text = mark,
-                                style = MaterialTheme.typography.labelMedium,
-                                color = tint,
-                            )
-                            Text(
-                                text = todo.content,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (todo.status == com.hxy.codeforge.model.TodoStatus.Completed) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
-                                },
-                                modifier = Modifier.weight(1f),
-                            )
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) { Text("关闭") }
-        },
-    )
 }
 
 // ---------------------------------------------------------------- 环境准备
@@ -661,7 +600,7 @@ private fun CompactLayout(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(
-                drawerContainerColor = MaterialTheme.colorScheme.surface,
+                drawerContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
                 modifier = Modifier.width(310.dp),
             ) {
                 SessionPane(
@@ -685,7 +624,10 @@ private fun CompactLayout(
                         onNewProject()
                     },
                     onOpenSettings = onOpenSettings,
-                    onOpenMcp = onOpenMcp,
+                    onOpenMcp = {
+                        scope.launch { drawerState.close() }
+                        onOpenMcp()
+                    },
                     onSelectProject = { project ->
                         vm.switchProject(project.workspace)
                         scope.launch { drawerState.close() }

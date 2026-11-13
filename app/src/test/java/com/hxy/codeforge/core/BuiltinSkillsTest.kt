@@ -52,7 +52,7 @@ class BuiltinSkillsTest {
     fun `版本一致时跳过`() {
         assertEquals(
             BuiltinSkills.Plan.SKIP,
-            BuiltinSkills.planFor(exists = true, markerVersion = "1"),
+            BuiltinSkills.planFor(exists = true, markerVersion = "2"),
         )
     }
 
@@ -63,7 +63,7 @@ class BuiltinSkillsTest {
     fun `版本变化时重铺`() {
         assertEquals(
             BuiltinSkills.Plan.INSTALL,
-            BuiltinSkills.planFor(exists = true, markerVersion = "0"),
+            BuiltinSkills.planFor(exists = true, markerVersion = "1"),
         )
     }
 }
@@ -117,6 +117,24 @@ class BuiltinSkillsAssetTest {
             // 正文不能是空的，也不能以 frontmatter 残留开头
             assertTrue("$slug 正文为空", body.isNotBlank())
             assertFalse("$slug 正文以 -- 开头（frontmatter 尾部残留）", body.trimStart().startsWith("--"))
+        }
+    }
+
+    @Test
+    fun `内置逆向工程技能与辅助脚本已打入资产`() {
+        val entries = ZipFile(asset).use { zf ->
+            zf.entries().asSequence().map { it.name }.toSet()
+        }
+        val expected = listOf(
+            "apk-reverse/SKILL.md",
+            "apk-reverse/references/dex_inspector.py",
+            "elf-jni-reverse/SKILL.md",
+            "elf-jni-reverse/references/elf_jni_scanner.py",
+            "crypto-unpack/SKILL.md",
+            "crypto-unpack/references/crypto_constant_scan.py",
+        )
+        expected.forEach { rel ->
+            assertTrue("builtin-skills.zip 缺少内置逆向资源 $rel", rel in entries)
         }
     }
 

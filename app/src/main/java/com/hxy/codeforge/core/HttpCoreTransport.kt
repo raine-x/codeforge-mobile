@@ -230,6 +230,14 @@ class HttpCoreTransport(
         )
     }
 
+    override fun pullTodos() {
+        send(
+            JSONObject()
+                .put("type", "todos")
+                .put("session_id", currentSession),
+        )
+    }
+
     override fun sendVisibility(hidden: Boolean) {
         visibilityHidden = hidden
         send(JSONObject().put("type", "visibility").put("hidden", hidden))
@@ -546,7 +554,7 @@ class HttpCoreTransport(
                                     else -> TodoStatus.Pending
                                 },
                                 priority = t.optInt("priority", 0),
-                                sort = t.optInt("sort", 0),
+                                sort = t.optInt("sort", i),
                             ),
                         )
                     }
@@ -645,7 +653,7 @@ class HttpCoreTransport(
      * 会话标题的展示归一。
      *
      * 内核新建会话的默认标题是「新会话」，而界面按需求统一显示「新建会话」；
-     * 首条用户消息发出后内核会自己改成前 24 字（history.go 的 Save），
+     * 首条用户消息发出后内核会并发静默请求 AI 生成小标题并推送 `sessions` 帧刷新，
      * 这里只处理占位名，不碰用户/内核起的真标题。
      */
     private fun displayTitle(raw: String): String = when (raw.trim()) {

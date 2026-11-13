@@ -364,6 +364,12 @@ object EnvKit {
         // ffmpeg 走 rootfs 而非 so 库（ffmpeg-kit 已停更）：apk 官方构建，
         // 装完内核可直接 `ffmpeg -i ...` 处理工作区媒体
         EnvPackage("FFmpeg", "apk add --no-cache ffmpeg", "ffmpeg -version"),
+        // 逆向分析工具链：ELF/二进制段表符号（binutils/file/patchelf）、反汇编（radare2）与 Python 指令级分析库
+        EnvPackage(
+            "逆向工具 (binutils/file/radare2)",
+            "apk add --no-cache file binutils patchelf radare2 py3-capstone py3-unicorn",
+            "r2 -v",
+        ),
     )
 
     /**
@@ -464,7 +470,8 @@ object EnvKit {
         runCatching {
             val f = cfrun(context)
             val script = cfrunScript(cellRoot(context), externalFilesDir(context))
-            if (f.readText() != script) {
+            if (!f.exists() || f.readText() != script) {
+                File(tmpDir(context), ".proot-probe").delete()
                 f.writeText(script)
                 f.setExecutable(true, false)
                 log(context, "syncCfrun: 检测到旧版脚本，已重写")
@@ -508,6 +515,7 @@ object EnvKit {
         scope.launch {
             log(app, "reset: 清理 rootfs…")
             rootfsDir(app).deleteRecursively()
+            File(tmpDir(app), ".proot-probe").delete()
             File(cellRoot(app), READY_MARKER).delete()
             log(app, "reset: 完成")
         }
@@ -529,6 +537,7 @@ object EnvKit {
             try {
                 log(app, "reprepare: 清理旧环境…")
                 rootfsDir(app).deleteRecursively()
+                File(tmpDir(app), ".proot-probe").delete()
                 File(cellRoot(app), READY_MARKER).delete()
                 log(app, "reprepare: 重新解压…")
                 prepare(app)
@@ -613,7 +622,26 @@ object EnvKit {
         # 缺了它，Alpine 的 apk 会以普通 uid 运行并拒绝写 /lib/apk/db
         # （真机实测：35 个包全部下载安装完成，最后一步
         #  "failed to write database: Permission denied" 整体失败）。
-        if [ -x "${'$'}ROOT/bin/busybox" ]; then
+        #
+        # 同时在执行 proot 前先做一次轻量探测（结果缓存到 .proot-probe，零 fork 复读）：
+        # x86_64 模拟器 ARM 转译层或受限 ROM 会拒绝 ptrace(TRACEME) 并打死全部命令行工具；
+        # 探测失败时自动退化到 Android 原生 /system/bin/sh，保住 unzip/readelf/strings/sha256sum 等宿主工具。
+        PROOT_OK=0
+        if [ -x "${'$'}ROOT/bin/busybox" ] && [ -x "${'$'}USR/bin/proot" ]; then
+          CACHE="${'$'}PROOT_TMP_DIR/.proot-probe"
+          PROBE=""
+          [ -r "${'$'}CACHE" ] && IFS= read -r PROBE < "${'$'}CACHE" 2>/dev/null
+          if [ "${'$'}PROBE" != "ok" ] && [ "${'$'}PROBE" != "fail" ]; then
+            if HOME="${'$'}CELL" "${'$'}USR/bin/proot" -0 -r "${'$'}ROOT" -b "${'$'}CELL:${'$'}CELL" /bin/busybox true >/dev/null 2>&1; then
+              PROBE="ok"
+            else
+              PROBE="fail"
+            fi
+            echo "${'$'}PROBE" > "${'$'}CACHE" 2>/dev/null
+          fi
+          [ "${'$'}PROBE" = "ok" ] && PROOT_OK=1
+        fi
+        if [ "${'$'}PROOT_OK" = "1" ]; then
           BINDS=""
           # 条件绑定：宿主上不存在的路径硬绑会产生 warning 并拖垮 glue（部分 ROM 无 /system/lib64）
           for D in /system/bin /system/lib64 /system/lib /system/etc; do
@@ -654,6 +682,9 @@ object EnvKit {
             ${'$'}BINDS \
             /bin/sh -c "${'$'}CMD"
         else
+          export HOME="${'$'}CELL"
+          export TMPDIR="${'$'}PROOT_TMP_DIR"
+          export PATH="/product/bin:/apex/com.android.art/bin:/apex/com.android.runtime/bin:/system/bin:/system/xbin:/vendor/bin${'$'}{PATH:+:${'$'}PATH}"
           exec /system/bin/sh -c "${'$'}CMD"
         fi
     """.trimIndent() + "\n"

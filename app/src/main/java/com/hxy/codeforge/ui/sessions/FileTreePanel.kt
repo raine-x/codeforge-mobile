@@ -62,10 +62,15 @@ fun FileTreePanel(
     val current = path.ifBlank { parent }
     val canPick = current.isNotBlank()
 
+    // 选中壁纸时 theme.background 为透明；文件树作为叠加层需要实底，防止透出底层内容。
+    val panelBg = MaterialTheme.colorScheme.background.let {
+        if (it.alpha < 1f) MaterialTheme.colorScheme.surface.copy(alpha = 1f) else it
+    }
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background),
+            .background(panelBg)
+            .noRippleClickable {},
     ) {
         Row(
             modifier = Modifier

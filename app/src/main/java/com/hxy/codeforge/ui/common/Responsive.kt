@@ -15,53 +15,57 @@ import androidx.compose.ui.platform.LocalConfiguration
  * 才退回 LocalConfiguration，并保留平板竖屏的兜底。
  */
 enum class WindowMode {
-    /** 手机竖屏：单栏，会话列表走抽屉。 */
+    /** 竖屏（高大于宽，不论手机或平板）：手机单栏布局，默认关闭侧栏，设置全屏展开。 */
     Compact,
 
-    /** 手机横屏、小平板竖屏：双栏，列表固定宽度。 */
+    /** 横屏（宽大于高）：双栏平板布局，侧栏固定宽度。 */
     Medium,
 
-    /** 平板横屏、折叠屏展开：三栏，多一块工具面板。 */
+    /** 横屏大屏（宽大于高且 >= 840dp）：双栏平板布局，侧栏更宽。 */
     Expanded,
 }
 
 /**
+ * 窗口是否处于横屏形态（内容坐标系下宽严格大于高）。
+ * 不论手机或平板，只要高大于宽（含等宽）就按竖屏处理。
+ */
+internal fun resolveIsLandscape(widthDp: Int, heightDp: Int): Boolean = widthDp > heightDp
+
+/**
+ * 统一布局档位判定规则（不区分手机/平板物理尺寸，完全按当前内容宽高比决定）：
+ * - 竖屏（高 >= 宽）：始终返回 [WindowMode.Compact]（默认关闭侧栏抽屉、设置全屏展开）；
+ * - 横屏（宽 > 高）：始终使用平板双栏布局（>= 840dp 为 [WindowMode.Expanded]，其余为 [WindowMode.Medium]）。
+ */
+internal fun resolveWindowMode(widthDp: Int, heightDp: Int): WindowMode =
+    if (!resolveIsLandscape(widthDp, heightDp)) {
+        WindowMode.Compact
+    } else if (widthDp >= 840) {
+        WindowMode.Expanded
+    } else {
+        WindowMode.Medium
+    }
+
+/**
  * 当前窗口档位。
  *
- * 阈值参考 Material 3 的 window size class（600 / 840dp）。
- * 配置兜底额外加一条「宽大于高且不窄于 480dp」：少数平板竖屏只有 560dp 宽，
- * 按 600 判会掉进单栏，但那个宽度完全放得下双栏。
+ * 手机竖屏锁窗口 + 内容旋转时优先读取 [LocalOrientation]（旋转后内容盒的真实宽高），
+ * 平板或未挂载旋转层时回退到 `LocalConfiguration` 的窗口尺寸。
  */
 @Composable
 @ReadOnlyComposable
 fun currentWindowMode(): WindowMode {
     LocalOrientation.current?.let { o ->
-        return when {
-            o.widthDp >= 840 -> WindowMode.Expanded
-            // 横持旋转（内容已转 90°）保证双栏：旋转后内容宽 = 物理窗口高，
-            // 小屏手机可能不足 600dp（如 552dp）——按旧判定会「转了但不切双栏」。
-            // 480dp 是兜底分支的同款底线，再窄双栏确实放不下。
-            o.isLandscape && o.widthDp >= 480 -> WindowMode.Medium
-            o.widthDp >= 600 -> WindowMode.Medium
-            else -> WindowMode.Compact
-        }
+        return resolveWindowMode(o.widthDp, o.heightDp)
     }
     val config = LocalConfiguration.current
-    val w = config.screenWidthDp
-    val h = config.screenHeightDp
-    return when {
-        w >= 840 -> WindowMode.Expanded
-        w >= 600 -> WindowMode.Medium
-        w > h && w >= 480 -> WindowMode.Medium
-        else -> WindowMode.Compact
-    }
+    return resolveWindowMode(config.screenWidthDp, config.screenHeightDp)
 }
 
-/** 是否横屏（内容坐标系）。用于细节调整（比如输入框单行高度）。 */
+/** 是否横屏（内容坐标系，宽大于高）。用于布局切换、设置页全屏判定及输入框高度等细节。 */
 @Composable
 @ReadOnlyComposable
 fun isLandscape(): Boolean {
-    LocalOrientation.current?.let { return it.isLandscape }
+    LocalOrientation.current?.let { return resolveIsLandscape(it.widthDp, it.heightDp) }
     val config = LocalConfiguration.current
-    return config.screenWidthDp > config.screenHeightDp
+    return resolveIsLandscape(config.screenWidthDp, config.screenHeightDp)
 }

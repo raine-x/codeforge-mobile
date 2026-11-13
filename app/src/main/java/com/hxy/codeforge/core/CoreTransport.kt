@@ -196,6 +196,9 @@ interface CoreTransport {
     /** 主动拉取当前会话的上下文占用（默认空实现；内核 idle 后本会自动推，此为补充）。 */
     fun pullContext() {}
 
+    /** 主动拉取当前会话的任务清单（打开面板或重连恢复时对齐内核最新状态）。 */
+    fun pullTodos() {}
+
     /** 打断当前生成。 */
     fun cancel()
 

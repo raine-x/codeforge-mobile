@@ -30,6 +30,7 @@ import com.hxy.codeforge.model.SessionItem
 import com.hxy.codeforge.ui.ChatViewModel
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
+import com.hxy.codeforge.ui.common.SyncDialogStatusBar
 import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
 
@@ -67,8 +68,9 @@ fun SessionActionsSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
     ) {
+        SyncDialogStatusBar()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

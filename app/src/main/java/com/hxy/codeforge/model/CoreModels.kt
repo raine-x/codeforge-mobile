@@ -201,6 +201,12 @@ data class KernelConfigSummary(
      * 而应提示「库已空、去设置里添加」。
      */
     val modelInLibrary: Boolean = true,
+    /**
+     * 内核当前已注册的全部工具名（`/api/config` 的 `tools` 数组）。
+     *
+     * 用途：① 插件安装前与内置工具撞名校验；② 插件详情页按 `<id>.` 前缀过滤展示已加载工具。
+     */
+    val tools: List<String> = emptyList(),
 )
 
 /** 子智能体策略（/api/subagents）。 */
@@ -331,6 +337,8 @@ data class BuiltinPluginInfo(
      * 旧内核不下发此键或下发了 null——与三态布尔同理，缺失 ≠ 否定，一律按空处理。
      */
     val triggers: List<String> = emptyList(),
+    /** 修改与重打包子开关（仅逆向分析等插件下发；null 表示不支持或旧内核，P-031）。 */
+    val allowModify: Boolean? = null,
 )
 
 /**

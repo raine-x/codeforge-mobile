@@ -9,18 +9,26 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -29,6 +37,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hxy.codeforge.model.SubagentPolicy
 import com.hxy.codeforge.ui.ChatViewModel
@@ -36,6 +45,7 @@ import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
+import kotlinx.coroutines.delay
 
 /**
  * 内核设置区：重试机制 / 上下文压缩 / 子智能体策略 / 权限 / 步数 / 通知 / 工作区。
@@ -188,7 +198,29 @@ fun KernelSettingsSection(vm: ChatViewModel) {
             modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
         )
     }
-    SavePill("立即压缩当前会话", icon = true) { vm.compressContext() }
+    var compressing by remember { mutableStateOf(false) }
+    var compressFeedback by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+    SavePill(
+        label = if (compressing) "正在压缩上下文…" else "立即压缩当前会话",
+        icon = true,
+    ) {
+        if (!compressing) {
+            compressing = true
+            compressFeedback = null
+            vm.compressContext { ok, msg ->
+                compressing = false
+                compressFeedback = ok to msg
+            }
+        }
+    }
+    compressFeedback?.let { (ok, msg) ->
+        Text(
+            text = msg,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (ok) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(top = 6.dp),
+        )
+    }
 
     HorizontalDivider(
         color = MaterialTheme.colorScheme.outlineVariant,
@@ -538,6 +570,8 @@ fun BuiltinPluginsSection(vm: ChatViewModel) {
             modifier = Modifier.padding(vertical = 4.dp),
         )
     }
+    var pendingModifyConfirmId by rememberSaveable { mutableStateOf<String?>(null) }
+
     state.builtinPluginInfos.forEach { plugin ->
         val title = plugin.name.takeIf { it.isNotBlank() && it != plugin.id }
             ?: names[plugin.id]
@@ -548,7 +582,123 @@ fun BuiltinPluginsSection(vm: ChatViewModel) {
             checked = plugin.enabled,
             onChange = { vm.setBuiltinPlugin(plugin.id, it) },
         )
+        if (plugin.allowModify != null) {
+            val modifyOn = plugin.allowModify
+            val canToggleModify = plugin.enabled
+            val modifySubtitle = when {
+                !canToggleModify -> "请先开启上方的「逆向分析」总开关；默认仅支持只读分析。"
+                modifyOn -> "已开启：允许在授权样本中修改字节码/资源并重打包，操作前请保留原始备份。"
+                else -> "默认关闭（仅只读分析）。开启需先阅读并确认 ${REVERSE_MODIFY_DISCLAIMER_SECONDS} 秒免责协议。"
+            }
+            SwitchRow(
+                title = "允许修改与重打包",
+                subtitle = modifySubtitle,
+                checked = modifyOn,
+                enabled = canToggleModify,
+                modifier = Modifier.padding(start = 16.dp, bottom = 4.dp),
+                onChange = { wantEnable ->
+                    if (wantEnable) {
+                        pendingModifyConfirmId = plugin.id
+                    } else {
+                        vm.setBuiltinPluginModify(plugin.id, false)
+                    }
+                },
+            )
+        }
     }
+
+    pendingModifyConfirmId?.let { targetId ->
+        ReverseModifyDisclaimerDialog(
+            pluginId = targetId,
+            onDismiss = { pendingModifyConfirmId = null },
+            onConfirm = {
+                pendingModifyConfirmId = null
+                vm.setBuiltinPluginModify(targetId, true)
+            },
+        )
+    }
+}
+
+internal const val REVERSE_MODIFY_DISCLAIMER_SECONDS = 5
+
+@Composable
+private fun ReverseModifyDisclaimerDialog(
+    pluginId: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    var secondsLeft by remember(pluginId) { mutableIntStateOf(REVERSE_MODIFY_DISCLAIMER_SECONDS) }
+    LaunchedEffect(pluginId) {
+        for (s in REVERSE_MODIFY_DISCLAIMER_SECONDS downTo 1) {
+            secondsLeft = s
+            delay(1000L)
+        }
+        secondsLeft = 0
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(dismissOnBackPress = true, dismissOnClickOutside = false),
+        shape = RoundedCornerShape(20.dp),
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
+        titleContentColor = MaterialTheme.colorScheme.onSurface,
+        textContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        title = {
+            Text(
+                text = "开启修改能力免责协议",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 320.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = "「允许修改与重打包」属于高风险能力，默认关闭。请在确认前完整阅读以下条款：",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "1. 能力范围：开启后，@reverse_analysis 可对 DEX/Smali 字节码、资源、配置或 ELF 产物执行修改、补丁、重打包与重签名调试。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    text = "2. 授权边界：仅限用于您拥有合法著作权/所有权的应用、已获书面明确授权的安全评估目标，或合法的 CTF 与教学研究样本。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    text = "3. 严禁用途：严禁破解未授权第三方商业软件、绕过付费或许可证校验、植入持久化后门、窃取凭据或实施任何侵权、破坏性操作。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    text = "4. 责任与备份：修改与重打包可能导致程序崩溃、签名失效或数据损坏；所有合规审查、风险与法律责任由使用者本人自行承担，操作前请务必备份原始产物。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = secondsLeft == 0,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Clay,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+            ) {
+                Text(if (secondsLeft > 0) "请先阅读（${secondsLeft}s）" else "我已知晓并开启")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("取消", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+    )
 }
 
 /** 内置插件的副标题：用途 + 何时使用；内核没给说明时不编造。 */
@@ -977,25 +1127,39 @@ private fun SavePillSmall(label: String, primary: Boolean = true, onClick: () ->
 }
 
 @Composable
-private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+private fun SwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    modifier: Modifier = Modifier,
+    onChange: (Boolean) -> Unit,
+) {
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 44.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f),
+            )
             Text(
                 subtitle,
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                 modifier = Modifier.padding(top = 2.dp),
             )
         }
         Switch(
             checked = checked,
             onCheckedChange = onChange,
+            enabled = enabled,
             colors = SwitchDefaults.colors(checkedTrackColor = Clay),
         )
     }

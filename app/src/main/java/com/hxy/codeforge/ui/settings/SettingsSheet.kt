@@ -2,14 +2,19 @@ package com.hxy.codeforge.ui.settings
 
 import android.content.Context
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -18,19 +23,24 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.ModalBottomSheetProperties
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
@@ -52,12 +62,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hxy.codeforge.core.EnvKit
 import com.hxy.codeforge.ui.ChatViewModel
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
+import com.hxy.codeforge.ui.common.SyncDialogStatusBar
+import com.hxy.codeforge.ui.common.isLandscape
 import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
 import kotlinx.coroutines.Dispatchers
@@ -69,8 +82,8 @@ import kotlin.math.roundToInt
  * 设置弹层（抽屉底栏入口）。
  *
  * 二级导航：主列表 → 各子页（外观/模型/记忆/技能/内置插件/MCP/归档/环境/内核/语音/诊断）。
- * 子页切换用直接 `when` + `animateContentSize` —— **不能**用 AnimatedContent：
- * 它在 verticalScroll 的 Column 里拿不到有界高度，新旧页会永久叠在一起（P-023）。
+ * 滚动容器放在 `AnimatedContent` **内部各子页各自持有**，绝不能套在 `AnimatedContent` 外层，
+ * 否则在无界纵向约束下新旧页高度测量会塌陷并永久叠在一起（P-023）。
  *
  * 本页只负责「写 AppSettings / 调 VM 服务方法」，所有状态仍来自 [ChatViewModel.state]。
  */
@@ -79,26 +92,64 @@ import kotlin.math.roundToInt
 fun SettingsSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
     val context = LocalContext.current
 
+    // null = 主列表；其余为子页 key
+    var page by rememberSaveable { mutableStateOf<String?>(null) }
+    // 提升「模型服务」的子页层级到设置顶层：让系统返回键和顶栏返回键能逐级退回，而不是直接关掉整个设置
+    var modelSub by rememberSaveable { mutableStateOf<String?>(null) }
+    var modelReturnSub by rememberSaveable { mutableStateOf<String?>(null) }
+
+    fun stepBack() {
+        if (page == "model" && modelSub != null) {
+            when (modelSub) {
+                "modelEdit", "providerEdit" -> {
+                    modelSub = modelReturnSub
+                    modelReturnSub = null
+                }
+                else -> {
+                    modelSub = null
+                    modelReturnSub = null
+                }
+            }
+        } else {
+            page = null
+            modelSub = null
+            modelReturnSub = null
+        }
+    }
+
+    // 竖屏（高大于宽，不论手机或平板）设置全屏展开；横屏平板布局保持底部弹层形态
+    val portraitFullScreen = !isLandscape()
+
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        sheetMaxWidth = if (portraitFullScreen) Dp.Unspecified else BottomSheetDefaults.SheetMaxWidth,
+        shape = if (portraitFullScreen) {
+            RoundedCornerShape(0.dp)
+        } else {
+            RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        },
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
+        dragHandle = if (portraitFullScreen) null else ({ BottomSheetDefaults.DragHandle() }),
+        contentWindowInsets = if (portraitFullScreen) {
+            { WindowInsets.safeDrawing }
+        } else {
+            { BottomSheetDefaults.windowInsets }
+        },
+        // 在任意子页内禁止 Dialog 默认的「按返回键直接关闭整张弹层」，把返回权交给下方的 BackHandler
+        properties = ModalBottomSheetProperties(shouldDismissOnBackPress = page == null),
     ) {
-        // null = 主列表；其余为子页 key
-        var page by rememberSaveable { mutableStateOf<String?>(null) }
+        SyncDialogStatusBar()
+        BackHandler(enabled = page != null) { stepBack() }
+
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp),
+            modifier = if (portraitFullScreen) Modifier.fillMaxSize() else Modifier.fillMaxWidth(),
         ) {
             val pageTitle = PAGE_TITLES[page]
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 12.dp),
+                    .padding(horizontal = 20.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (pageTitle != null) {
@@ -106,7 +157,7 @@ fun SettingsSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                         modifier = Modifier
                             .size(36.dp)
                             .clip(RoundedCornerShape(18.dp))
-                            .noRippleClickable { page = null },
+                            .noRippleClickable { stepBack() },
                         contentAlignment = Alignment.Center,
                     ) {
                         GlyphIcon(
@@ -121,31 +172,108 @@ fun SettingsSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                     text = pageTitle ?: "设置",
                     style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(start = if (pageTitle != null) 4.dp else 0.dp),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = if (pageTitle != null) 4.dp else 0.dp),
                 )
+                if (portraitFullScreen) {
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .noRippleClickable { onDismiss() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        GlyphIcon(
+                            glyph = Glyph.Close,
+                            size = 18.dp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            strokeWidth = 2.2.dp,
+                        )
+                    }
+                }
             }
 
-            Column(
-                modifier = Modifier.animateContentSize(animationSpec = tween(220)),
-            ) {
-                when (page) {
-                    null -> SettingsHome(onOpen = { page = it })
-                    "appearance" -> AppearanceSection()
-                    "model" -> ModelSection(vm)
-                    "memory" -> MemorySection(vm)
-                    "skills" -> SkillsSection(vm)
-                    "plugins" -> BuiltinPluginsSection(vm)
-                    "mcp" -> McpPluginsSection(vm)
-                    "archive" -> ArchiveSection(vm)
-                    "env" -> EnvSection(context)
-                    "transfer" -> FileTransferSection(vm)
-                    "kernel" -> KernelSettingsSection(vm)
-                    "voice" -> VoiceSection(context)
-                    "diag" -> DiagnosticsSection()
+            AnimatedContent(
+                targetState = page,
+                transitionSpec = {
+                    val forward = (initialState == null && targetState != null) ||
+                        (initialState != null && targetState != null)
+                    horizontalSlide(forward)
+                },
+                label = "settings-page",
+                modifier = if (portraitFullScreen) {
+                    Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                } else {
+                    Modifier.fillMaxWidth()
+                },
+            ) { currentPage ->
+                if (currentPage == "model") {
+                    ModelSection(
+                        vm = vm,
+                        sub = modelSub,
+                        returnSub = modelReturnSub,
+                        onNavigateSub = { next, returnTo ->
+                            modelReturnSub = returnTo
+                            modelSub = next
+                        },
+                    )
+                } else {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 20.dp)
+                            .padding(bottom = 28.dp),
+                    ) {
+                        when (currentPage) {
+                            null -> SettingsHome(onOpen = {
+                                modelSub = null
+                                modelReturnSub = null
+                                page = it
+                            })
+                            "appearance" -> AppearanceSection()
+                            "memory" -> MemorySection(vm)
+                            "skills" -> SkillsSection(vm)
+                            "plugins" -> BuiltinPluginsSection(vm)
+                            "mcp" -> McpPluginsSection(vm)
+                            "archive" -> ArchiveSection(vm)
+                            "env" -> EnvSection(context)
+                            "transfer" -> FileTransferSection(vm)
+                            "kernel" -> KernelSettingsSection(vm)
+                            "voice" -> VoiceSection(context)
+                            "diag" -> DiagnosticsSection()
+                        }
+                    }
                 }
             }
         }
     }
+}
+
+private fun <T> AnimatedContentTransitionScope<T>.horizontalSlide(forward: Boolean): ContentTransform =
+    if (forward) {
+        (slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { it } +
+            fadeIn(tween(200)))
+            .togetherWith(
+                slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 3 } +
+                    fadeOut(tween(160)),
+            )
+    } else {
+        (slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { -it / 3 } +
+            fadeIn(tween(200)))
+            .togetherWith(
+                slideOutHorizontally(tween(260, easing = FastOutSlowInEasing)) { it } +
+                    fadeOut(tween(160)),
+            )
+    }
+
+private fun modelSubRank(sub: String?): Int = when (sub) {
+    null -> 0
+    "library", "providers" -> 1
+    else -> 2
 }
 
 private val PAGE_TITLES = mapOf(
@@ -440,7 +568,7 @@ private fun AppearanceSection() {
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "关闭后完全锁定竖屏，横过来画面不转",
+                text = "开启后竖屏用手机布局、横屏用平板布局；关闭后锁定竖屏",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
@@ -505,11 +633,14 @@ private suspend fun copyBackgroundImage(context: Context, uri: Uri): String? =
  *  - `vm.loadArchived` 与本页无关，别混。
  */
 @Composable
-private fun ModelSection(vm: ChatViewModel) {
+private fun ModelSection(
+    vm: ChatViewModel,
+    sub: String?,
+    returnSub: String?,
+    onNavigateSub: (next: String?, returnTo: String?) -> Unit,
+) {
     val state by vm.state.collectAsStateWithLifecycle()
 
-    // null / "library" / "providers" / "providerEdit" / "modelEdit"
-    var sub by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedProvider by rememberSaveable { mutableStateOf("") }
 
     // 模型编辑初始值（不能用 rememberSaveable 存 data class，拆成三个字符串）
@@ -554,29 +685,43 @@ private fun ModelSection(vm: ChatViewModel) {
         editingModelId = model?.id ?: ""
         editingModelName = model?.name.orEmpty()
         editingModelProvider = model?.provider ?: providerId
-        sub = "modelEdit"
+        onNavigateSub("modelEdit", sub)
     }
 
     val providerNames = state.providerDetails.associate { it.id to it.name.ifBlank { it.id } }
     val addedIds = state.libraryModels.map { it.id }.toSet()
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        when (sub) {
+    AnimatedContent(
+        targetState = sub,
+        transitionSpec = {
+            horizontalSlide(modelSubRank(targetState) >= modelSubRank(initialState))
+        },
+        label = "model-sub",
+        modifier = Modifier.fillMaxWidth(),
+    ) { currentSub ->
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+        ) {
+            when (currentSub) {
             // ---------------- 主入口 ----------------
             null -> {
                 SectionTitle("供应商与模型")
-                SubPageEntry("模型库", "${state.libraryModels.size} 个") { sub = "library" }
-                SubPageEntry("供应商", "${state.providerDetails.size} 个") { sub = "providers" }
+                SubPageEntry("模型库", "${state.libraryModels.size} 个") { onNavigateSub("library", null) }
+                SubPageEntry("供应商", "${state.providerDetails.size} 个") { onNavigateSub("providers", null) }
                 SubPageEntry("添加模型", "") { openModelEditor(null, "") }
                 SubPageEntry("添加供应商", "") {
                     resetProviderForm()
-                    sub = "providerEdit"
+                    onNavigateSub("providerEdit", sub)
                 }
             }
 
             // ---------------- 模型库（按供应商分组） ----------------
             "library" -> {
-                BackRow { sub = null }
+                BackRow { onNavigateSub(null, null) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "模型库（${state.libraryModels.size}）",
@@ -634,7 +779,7 @@ private fun ModelSection(vm: ChatViewModel) {
 
             // ---------------- 供应商（左列表 + 右详情） ----------------
             "providers" -> {
-                BackRow { sub = null }
+                BackRow { onNavigateSub(null, null) }
                 SectionTitle("供应商")
                 if (state.providerDetails.isEmpty()) {
                     Text(
@@ -722,7 +867,7 @@ private fun ModelSection(vm: ChatViewModel) {
                                         fProtocol = p.protocol
                                         fKey = ""
                                         fKeyTouched = false
-                                        sub = "providerEdit"
+                                        onNavigateSub("providerEdit", sub)
                                     }
                                     SmallPill(if (discovering == p.id) "探测中…" else "获取模型列表") {
                                         if (discovering == null) {
@@ -843,7 +988,7 @@ private fun ModelSection(vm: ChatViewModel) {
 
             // ---------------- 添加 / 编辑供应商 ----------------
             "providerEdit" -> {
-                BackRow { sub = "providers" }
+                BackRow { onNavigateSub(returnSub, null) }
                 Text(
                     text = if (fId.isEmpty()) "添加供应商" else "编辑供应商",
                     style = MaterialTheme.typography.titleSmall,
@@ -901,11 +1046,11 @@ private fun ModelSection(vm: ChatViewModel) {
                             keyTouched = fKeyTouched,
                         )
                         resetProviderForm()
-                        sub = "providers"
+                        onNavigateSub(returnSub ?: "providers", null)
                     }
                     SmallPill("取消") {
                         resetProviderForm()
-                        sub = "providers"
+                        onNavigateSub(returnSub, null)
                     }
                 }
             }
@@ -913,7 +1058,7 @@ private fun ModelSection(vm: ChatViewModel) {
             // ---------------- 添加 / 编辑模型 ----------------
             "modelEdit" -> {
                 BackRow {
-                    sub = "library"
+                    onNavigateSub(returnSub, null)
                     editingModelId = null
                 }
                 // 编辑既有模型：从 /api/models/list 的完整条目回填全部规格。
@@ -955,15 +1100,16 @@ private fun ModelSection(vm: ChatViewModel) {
                             // 保存成功后模型表 + 供应商详情都重拉一次：新增模型会改动两边
                             vm.loadKernelExtras()
                             vm.refreshProviderDetails()
-                            sub = "library"
+                            onNavigateSub(returnSub ?: "library", null)
                             editingModelId = null
                         }
                     },
                     onCancel = {
-                        sub = "library"
+                        onNavigateSub(returnSub, null)
                         editingModelId = null
                     },
                 )
+            }
             }
         }
     }

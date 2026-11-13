@@ -38,6 +38,7 @@ import com.hxy.codeforge.model.ProjectItem
 import com.hxy.codeforge.ui.ChatViewModel
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
+import com.hxy.codeforge.ui.common.SyncDialogStatusBar
 import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
 import com.hxy.codeforge.ui.theme.SerifDisplay
@@ -72,16 +73,16 @@ fun NewProjectPanel(
     var name by rememberSaveable(initialWorkspace) { mutableStateOf(dirName(initialWorkspace)) }
     var permission by rememberSaveable { mutableStateOf(defaultPermission.name) }
 
-    // 工作区现在是可选项：容器里没有可挂载目录时，项目也得能建出来
-    // （空路径由壳侧落成 $CELL/workspace/<项目id>，见 EnvKit.newProjectWorkspace）
-    val canCreate = name.trim().isNotEmpty()
+    // 工作区和名称都是可选项：不选目录时落成独立工作区，留空名称时自动兜底（目录名或「新项目」）
+    val canCreate = true
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
     ) {
+        SyncDialogStatusBar()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -131,7 +132,9 @@ fun NewProjectPanel(
                     value = name,
                     onValueChange = { name = it.take(40) },
                     singleLine = true,
-                    placeholder = { Text("默认取目录名") },
+                    placeholder = {
+                        Text(if (workspace.isBlank()) "留空自动命名为「新项目」" else "默认取目录名")
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
 
@@ -279,8 +282,9 @@ fun ProjectActionsSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
     ) {
+        SyncDialogStatusBar()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

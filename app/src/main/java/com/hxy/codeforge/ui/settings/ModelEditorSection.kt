@@ -30,6 +30,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.hxy.codeforge.core.ModelPresets
 import com.hxy.codeforge.ui.ChatViewModel
 import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
@@ -76,14 +77,27 @@ fun ModelEditorSection(
     var keyName by remember(initial.id) { mutableStateOf(initial.keyName) }
     var keyValue by remember(initial.id) { mutableStateOf("") }
     var keyVisible by remember(initial.id) { mutableStateOf(false) }
+    val initialPreset = remember(initial.id) { ModelPresets.find(initial.id) }
     var ctxIn by remember(initial.id) {
-        mutableStateOf(initial.ctxIn.takeIf { it > 0 }?.toString().orEmpty())
+        val v = initial.ctxIn.takeIf { it > 0 } ?: initialPreset?.ctxIn ?: ModelPresets.MIN_DEFAULT_CTX_IN
+        mutableStateOf(v.toString())
     }
     var ctxOut by remember(initial.id) {
-        mutableStateOf(initial.ctxOut.takeIf { it > 0 }?.toString().orEmpty())
+        val v = initial.ctxOut.takeIf { it > 0 } ?: initialPreset?.ctxOut?.takeIf { it > 0 }
+        mutableStateOf(v?.toString().orEmpty())
     }
-    var vision by remember(initial.id) { mutableStateOf(triStateOf(initial.vision)) }
-    var video by remember(initial.id) { mutableStateOf(triStateOf(initial.video)) }
+    var vision by remember(initial.id) {
+        val v = initial.vision ?: initialPreset?.vision
+        mutableStateOf(triStateOf(v))
+    }
+    var video by remember(initial.id) {
+        val v = initial.video ?: initialPreset?.video
+        mutableStateOf(triStateOf(v))
+    }
+    var ctxInTouched by remember(initial.id) { mutableStateOf(false) }
+    var ctxOutTouched by remember(initial.id) { mutableStateOf(false) }
+    var visionTouched by remember(initial.id) { mutableStateOf(false) }
+    var videoTouched by remember(initial.id) { mutableStateOf(false) }
     var rpm by remember(initial.id) {
         mutableStateOf(initial.rpm.takeIf { it > 0 }?.toString().orEmpty())
     }
@@ -97,7 +111,9 @@ fun ModelEditorSection(
     fun resetForm() {
         modelId = ""; displayName = ""; inherit = true; baseUrl = ""; protocol = "openai"
         keySource = "plain"; keyName = ""; keyValue = ""; keyVisible = false
-        ctxIn = ""; ctxOut = ""; vision = -1; video = -1; rpm = ""
+        ctxIn = ModelPresets.MIN_DEFAULT_CTX_IN.toString()
+        ctxOut = ""; vision = -1; video = -1; rpm = ""
+        ctxInTouched = false; ctxOutTouched = false; visionTouched = false; videoTouched = false
         formError = null; testResult = null; testError = null
     }
 
@@ -157,7 +173,25 @@ fun ModelEditorSection(
         // ---------------- 显示名 / 模型 id ----------------
         OutlinedTextField(
             value = modelId,
-            onValueChange = { if (!editing) modelId = it.trim() },
+            onValueChange = { raw ->
+                if (!editing) {
+                    val next = raw.trim()
+                    modelId = next
+                    val preset = ModelPresets.find(next)
+                    if (!ctxInTouched) {
+                        ctxIn = (preset?.ctxIn ?: ModelPresets.MIN_DEFAULT_CTX_IN).toString()
+                    }
+                    if (!ctxOutTouched) {
+                        ctxOut = preset?.ctxOut?.takeIf { it > 0 }?.toString().orEmpty()
+                    }
+                    if (!visionTouched) {
+                        vision = triStateOf(preset?.vision)
+                    }
+                    if (!videoTouched) {
+                        video = triStateOf(preset?.video)
+                    }
+                }
+            },
             label = { Text("模型 id（上游真实 model 名，如 deepseek-chat）") },
             singleLine = true,
             enabled = !editing,
@@ -285,13 +319,19 @@ fun ModelEditorSection(
         EditorLabel("输入上限", small = true)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             CTX_IN_PRESETS.forEach { (v, label) ->
-                EditorChip(label, ctxIn == v.toString()) { ctxIn = v.toString() }
+                EditorChip(label, ctxIn == v.toString()) {
+                    ctxIn = v.toString()
+                    ctxInTouched = true
+                }
             }
         }
         OutlinedTextField(
             value = ctxIn,
-            onValueChange = { ctxIn = it.filter { c -> c.isDigit() }.take(8) },
-            label = { Text("自定义输入上限（0 = 未声明，内核按默认预算压缩）") },
+            onValueChange = {
+                ctxIn = it.filter { c -> c.isDigit() }.take(8)
+                ctxInTouched = true
+            },
+            label = { Text("自定义输入上限（留空或 0 默认按至少 128K 补全）") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
@@ -299,12 +339,18 @@ fun ModelEditorSection(
         EditorLabel("输出上限", small = true)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             CTX_OUT_PRESETS.forEach { (v, label) ->
-                EditorChip(label, ctxOut == v.toString()) { ctxOut = v.toString() }
+                EditorChip(label, ctxOut == v.toString()) {
+                    ctxOut = v.toString()
+                    ctxOutTouched = true
+                }
             }
         }
         OutlinedTextField(
             value = ctxOut,
-            onValueChange = { ctxOut = it.filter { c -> c.isDigit() }.take(8) },
+            onValueChange = {
+                ctxOut = it.filter { c -> c.isDigit() }.take(8)
+                ctxOutTouched = true
+            },
             label = { Text("自定义输出上限（0 = 未声明）") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -320,13 +366,19 @@ fun ModelEditorSection(
         EditorLabel("图片能力")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(-1 to "未声明", 1 to "支持", 0 to "不支持").forEach { (v, label) ->
-                EditorChip(label, vision == v) { vision = v }
+                EditorChip(label, vision == v) {
+                    vision = v
+                    visionTouched = true
+                }
             }
         }
         EditorLabel("视频能力")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(-1 to "未声明", 1 to "支持", 0 to "不支持").forEach { (v, label) ->
-                EditorChip(label, video == v) { video = v }
+                EditorChip(label, video == v) {
+                    video = v
+                    videoTouched = true
+                }
             }
         }
         Text(
@@ -408,6 +460,9 @@ fun ModelEditorSection(
                     0 -> false
                     else -> null
                 }
+                val resolvedPreset = ModelPresets.resolveOrDefault(id)
+                val finalCtxIn = ctxIn.toIntOrNull()?.takeIf { it > 0 } ?: resolvedPreset.ctxIn
+                val finalCtxOut = ctxOut.toIntOrNull()?.takeIf { it > 0 } ?: resolvedPreset.ctxOut
                 formError = null
                 saveError = null
                 saving = true
@@ -415,8 +470,8 @@ fun ModelEditorSection(
                     id = id,
                     name = displayName.trim().ifBlank { id },
                     providerId = providerId,
-                    ctxIn = ctxIn.toIntOrNull() ?: 0,
-                    ctxOut = ctxOut.toIntOrNull() ?: 0,
+                    ctxIn = finalCtxIn,
+                    ctxOut = finalCtxOut,
                     vision = visionArg,
                     video = videoArg,
                     rpm = rpm.toIntOrNull() ?: 0,

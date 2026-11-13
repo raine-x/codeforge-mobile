@@ -159,8 +159,9 @@ fun ModelPickerSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface,
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
     ) {
+        com.hxy.codeforge.ui.common.SyncDialogStatusBar()
         Column(
             modifier = Modifier
                 .fillMaxWidth()
