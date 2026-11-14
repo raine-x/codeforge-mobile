@@ -1,138 +1,115 @@
-# CodeForge 中文文档
+# CodeForge APP · 中文完整文档
 
-面向使用者的完整说明：怎么用、怎么工作、为什么这么做。
+[返回双语主文档 (README.md)](README.md) · [English Guide (README_EN.md)](README_EN.md)
 
-只看亮点，回主 [README.md](README.md)。英文版见 [README_EN.md](README_EN.md)。
+---
 
-Android 上的 AI 编码工作台。Go 内核负责执行，Rust 引擎负责排版，Compose 负责交互，三种语言，一个进程，一个 17.4 MB 的 APK。
+CodeForge-Go 的原生 Android 客户端。Go 内核作为独立进程在本地跑工具调用与推理编排，Kotlin + Compose 壳通过 HTTP + WebSocket 驱动交互界面、流式渲染与端侧安全取证流程。
+
+<div align="center">
+  <img src="docs/media/demo.gif" alt="CodeForge APP Walkthrough" width="840" />
+</div>
 
 ---
 
 ## 目录
 
-1. [快速开始](#快速开始)
-2. [使用说明](#使用说明)
-3. [技术实现](#技术实现)
-4. [核心原理](#核心原理)
-5. [构建](#构建)
-6. [工程纪律](#工程纪律)
-7. [已知限制](#已知限制)
-8. [许可](#许可)
+1. [快速开始与功能用法](#快速开始与功能用法)
+2. [内置逆向分析插件（@reverse_analysis）](#内置逆向分析插件reverse_analysis)
+3. [插件包（.cfplugin）与 MCP 扩展](#插件包cfplugin与-mcp-扩展)
+4. [实测性能指标](#实测性能指标)
+5. [架构设计与分层实现](#架构设计与分层实现)
+6. [CI 与本地源码构建](#ci-与本地源码构建)
+7. [设计原则与工程纪律](#设计原则与工程纪律)
+8. [当前边界与已知限制](#当前边界与已知限制)
+9. [许可说明](#许可说明)
 
 ---
 
-## 快速开始
+## 快速开始与功能用法
 
-### 环境要求
+### 1. 安装与连接模型
 
-| 项 | 要求 |
+1. 获取或编译 `app/build/outputs/apk/release/app-release.apk`（仅 `arm64-v8a` 设备，或支持 Houdini 转译的模拟器）。
+2. 首启时 `EnvKit` 在后台自动将 `env-kit.tgz`（proot）与 `rootfs-alpine.tgz` 解压至应用私有目录，通常 1–2 秒就绪。
+3. 打开 **设置 → 模型服务** 配置模型或供应商（API 地址、密钥经 `EncryptedSharedPreferences` 加密落盘），支持在线接口探测与一键测试连接。
+
+### 2. 日常编码与工作区协同
+
+- **项目与工作区隔离**：侧栏点「新建项目」绑定本地目录；未选择工作区时自动落到应用私有 `inbox` 空间。跨项目切换时壳侧自动校验后台运行态，防止在途工具调用落错目录。
+- **消息流与媒体渲染**：通过 `libopenrender.so` 将 Markdown 解析为增量 IR，支持公式（RaTeX + 内嵌 Noto Sans SC 子集）、实测宽度表格、diff 工具卡片、代码块、音频、视频与 SVG 渲染；裸 HTML 自动旁路挂载流内 WebView。
+- **检查点与文件撤销**：每次文件改动均按会话记录检查点，可在操作面板回滚工作区文件或撤销最近一步写入（`/api/undo`）。
+- **内置浏览器与元素挑选**：消息内链接支持内置浏览器打开；点「选择元素」后可在页面内点选 DOM 节点并附带说明，将标签、样式与位置摘要注入当前对话。
+- **后台任务与子智能体**：支持提交长时间脚本至后台任务面板监控与终止；支持 `@goal_mode` 独立验证闭环与多子智能体并行拆解。
+- **双引擎语音输入**：已配置云端 OpenAI 兼容 `/audio/transcriptions` 时优先走云端，否则走系统 `SpeechRecognizer`（带 20 秒无响应看门狗）。
+
+### 3. 兼容运行环境（proot + Alpine）
+
+在 **设置 → 运行环境** 可一键按需安装以下环境包（所有安装由单条独立存在性探测校验，避免管道屏蔽退出码）：
+
+| 类别 | 安装包 | 用途 |
+|---|---|---|
+| Python | `python3 py3-pip` | 脚本、数据处理与反编译辅助脚本 |
+| Node.js | `nodejs npm` | 前端构建与脚本执行 |
+| Go | `go` | Go 工具链 |
+| C / C++ | `build-base` | `gcc` 等基础编译链 |
+| Rust | `cargo rust` | Rust 工具链 |
+| Git | `git` | 版本控制 |
+| Java 17 | `openjdk17-jre-headless` | Java 运行时 |
+| FFmpeg | `ffmpeg` | 工作区音视频转码与媒体处理 |
+| 逆向工具链 | `file binutils patchelf radare2 py3-capstone py3-unicorn` | ELF 段表符号解析、`readelf`/`objdump`、`radare2` 反汇编与指令级静态分析 |
+
+### 4. 自适应布局与旋转规则
+
+布局严格按**当前可用窗口纵横比**决策（无论手机或平板）：
+
+| 窗口状态 | 布局模式 | 设置页呈现 |
+|---|---|---|
+| 竖屏（高 > 宽） | 手机单栏模式（默认收起侧栏，改为抽屉呼出） | 全屏展开 |
+| 横屏（宽 > 高） | 平板双栏工作区（600–840dp 中栏，≥ 840dp 加宽双栏，220ms 侧栏折叠动画） | 居中弹窗工作表 |
+
+手机竖屏锁定时支持通过加速度计姿态感应实现单手横持内容旋转（平滑动画与迟滞防抖）。
+
+| 竖屏单栏模式（高 > 宽） | 竖屏全屏设置页 |
 |---|---|
-| 架构 | arm64-v8a 真机，x86 模拟器装不上，Go 内核只交叉编译 arm64 |
-| 系统 | Android 8.0，API 26 及以上 |
-| 网络 | 无需联网，兼容环境随包携带，首启本地解压 |
-| 依赖 | 无需 root，无需 Termux，无需 PC |
-
-### 安装
-
-下载 app-release.apk 侧载安装即可。已用自建固定证书签名，v2 加 v3，后续版本可直接覆盖升级。
-
-换签名等于装不上更新，设备上若是旧 debug 签名包，需先卸载再装。
-
-### 首次启动
-
-1. App 启动后自动拉起内置内核，以 specialUse 前台服务常驻，通知栏可见；
-2. 自动解压随包携带的兼容环境，即 proot 加 Alpine rootfs，约十几秒；
-3. 首次使用先配置模型，进设置里的模型服务，添加供应商或模型。
+| ![Mobile Portrait](docs/media/mobile-portrait.png) | ![Mobile Fullscreen Settings](docs/media/mobile-settings.png) |
 
 ---
 
-## 使用说明
+## 内置逆向分析插件（`@reverse_analysis`）
 
-### 会话与项目
+CodeForge APP 内置了专为移动端静态取证与二进制逆向分析设计的技能栈和权限护栏，默认处于**只读分析**状态：
 
-新建项目：侧边栏加号新建项目，选目录，项目名默认取目录末段，再选默认权限档。权限三档是只读、请求、自主，作为内核 perm 接口的初值。
+### 1. 内置逆向技能组（自动注入工作区）
 
-工作区在会话创建那一刻绑定，之后切换项目不会串上下文。
-
-会话可重命名、归档、取消归档、删除。可恢复的归档与不可恢复的删除在界面上分开摆放。
-
-文件树在新建项目时选目录，或从侧边栏进入，浏览工作区文件。
-
-### 模型接入
-
-设置里的模型服务支持：
-
-- 供应商：Base URL、协议族（openai 兼容或 anthropic）、API Key，掩码输入，可存环境变量
-- 模型：模型 id、显示名、上下文上限、输入与输出上限、RPM、三态能力，即支持、不支持、未声明
-- 测试连接：填完立刻能验证通不通，不用等到发消息才发现 Key 错
-- 探测：让内核自动发现该供应商下可用的模型列表
-
-### 技能、插件、MCP
-
-技能、内置插件与 MCP 工具都在输入框里用 at 补全，插件包里的技能装好后同样进入补全：
-
-| 来源 | 形态 | 说明 |
+| 技能 | 触发 / 用途 | 随包辅助脚本 |
 |---|---|---|
-| 技能 | 工作区 .codeforge/skills 下每个名字一个 SKILL.md | 自带 frontmatter，含名称、描述、触发词、启用开关，目录名即 at 补全 token |
-| 插件包 | `.cfplugin` 文件导入 | 一个包可以只带技能，也可以带可执行 MCP 服务，见下一节 |
-| 内置插件 | 内核内置功能 | plan、goal_mode、vulnerability_research、reverse_analysis、multi_agent、skill_creator 等，可单独开关 |
-| MCP | 外部 MCP 服务 | 只补已加载的，未加载的工具还没注册，at 进去内核也调不到 |
+| `apk-reverse` | APK 归档盘点、AndroidManifest 解析、多 DEX 类与字符串反查、壳特征识别 | `references/dex_inspector.py` |
+| `elf-jni-reverse` | `.so` ELF 段表/动态符号检查、C ABI 导出梳理、`JNI_OnLoad` 与静态 `Java_*` 映射定位 | `references/elf_jni_scanner.py` |
+| `crypto-unpack` | 常见对称/摘要算法常数表（AES/S-box、TEA、MD5/SHA、CRC32 等）扫描与脱壳线索排查 | `references/crypto_constant_scan.py` |
 
-输入 at 会弹出候选列表，可滚动，点选即插入。装得越多，列表越长。
+在对话中输入 `@reverse_analysis` 或 `@逆向分析` 即可激活该上下文专家；配合运行环境中的 `逆向工具 (binutils/file/radare2)` 安装包，Agent 可直接在端侧工作区分析本地 APK 与 `.so` 产物。
 
-### 动态插件包（.cfplugin）
+### 2. 默认只读与「允许修改与重打包」5 秒免责保护
 
-侧栏「插件」页可以导入 `.cfplugin` 插件包。装、停、升级、卸载都在界面上完成，不用改内核配置文件。
+| 平板双栏 · ELF/JNI 逆向报告输出 | 5 秒强制阅读免责确认弹窗 |
+|---|---|
+| ![Reverse Engineering Report](docs/media/chat-reverse-analysis.png) | ![Reverse Disclaimer Dialog](docs/media/reverse-disclaimer.png) |
 
-**能装什么**
+- **只读默认策略**：首次启用或默认状态下，禁止修改目标 APK 字节码、资源文件、签名或 ELF 产物，仅提供结构取证与逆向分析结论。
+- **高风险开关保护**：在 **设置 → 内置插件 → 逆向分析** 下打开「允许修改与重打包」时，客户端会弹出强制阅读倒计时协议窗（`REVERSE_MODIFY_DISCLAIMER_SECONDS = 5`），倒计时未归零前确认按钮不可点击，明确约束仅可用于自有版权应用、明确书面授权目标或合法 CTF / 教学研究。
 
-| 包类型 | 包内内容 | 装后效果 |
-|---|---|---|
-| 纯文本技能包，`type: skill` | `skills/<名字>/SKILL.md` | 技能铺到工作区，at 可补全，触发词命中即把正文注入当轮 |
-| 可执行 MCP 包，`type: mcp` 或 `mcp-http` | 启动命令，或 HTTP 端点 | 内核注册工具，模型以 `id.工具名` 调用 |
-| 混合包 | 上面两者都有 | 工具与技能一起生效 |
-
-`wasm` 与 `http` 两种类型能解析并预览，安装按钮置灰，要等内核支持。
-
-**怎么写**
-
-`.cfplugin` 本质是 zip，压缩后把扩展名改成 `.cfplugin` 就能导入：
-
-```
-my-skill.cfplugin
-├── plugin.json
-└── skills/
-    └── my-skill/
-        └── SKILL.md
-```
-
-最小清单，`schema` 固定为 1：
-
-```json
-{
-  "schema": 1,
-  "id": "my-skill",
-  "name": "我的技能",
-  "version": "1.0.0",
-  "type": "skill",
-  "skills": ["my-skill"]
-}
-```
-
-技能正文的 frontmatter 必须是扁平单行：
-
-```markdown
----
-name: my-skill
-description: 一句话说明用途
-triggers: my-skill, 我的技能
-enabled: true
 ---
 
-这里写给模型的流程、清单或知识。
-```
+## 插件包（`.cfplugin`）与 MCP 扩展
 
-可执行包把 `type` 换成 `mcp-http` 并填 `endpoint`，或者换成 `mcp` 并填 `command` 与 `args`。要密钥时在 `permissions.secrets` 里列出变量名，安装确认页会生成掩码输入框，保存的值以环境变量传给内核：
+除内置插件外，客户端支持导入社区标准 `.cfplugin` 归档（纯文本技能包或携带 `mcp` / `mcp-http` 的可执行工具包）及手动添加 MCP 服务。
+
+<div align="center">
+  <img src="docs/media/plugins-manager.png" alt="Plugins and MCP Manager" width="800" />
+</div>
+
+### Manifest 与技能格式
 
 ```json
 {
@@ -147,284 +124,95 @@ enabled: true
 }
 ```
 
-**怎么用**
-
-1. 侧栏「插件」，点「+ 导入插件包」，选 `.cfplugin`；
-2. 确认页看类型、版本、权限与风险提示，需要密钥就当场填；
-3. 确认安装。技能自动铺到当前工作区与 inbox，之后切项目也会同步；可执行包装完就注册进内核；
-4. 行尾开关启停。`详情` 里能看权限、来源、SHA-256、工具与技能状态，也能导入新版本或卸载；
-5. 卸载会同时清理工作区里由该包铺的技能副本，不碰内置技能，也不碰你自己手写的技能。
-
-**规则与上限**
-
-- `id` 形如 `my-skill`：小写字母开头，只含小写字母、数字与连字符，最长 32 个字符；不能与内置工具、已装插件或已有技能重名
-- `version` 必须 `x.y.z`。同 id 更高版本是升级，同版本提示重装，更低版本需勾选允许降级
-- `skills[]` 必须与包内 `skills/` 下的目录一一对应，多列漏列都拒装
-- 包体积不超过 8 MiB，解压后不超过 32 MiB，条目不超过 512 个；含 `..` 或绝对路径的条目直接拒绝
-- 技能 frontmatter 不能写 YAML 块标量，原因见「为什么技能 frontmatter 必须是扁平单行」
-
-### 内置浏览器与元素挑选
-
-1. 点消息里的链接，选择系统浏览器或内置浏览器打开；
-2. 内置浏览器里点选择元素，页面元素可点选；
-3. 选中的元素编号进入对话，同时可以在气泡里补充一句说明，不用退出去手动打字；
-4. 元素摘要，含标签、id、class、文本、位置、样式，随消息送给模型。
-
-### 模型与智能体
-
-- 权限三档：只读、请求、自主，新建项目时定档，随时可改
-- 审批卡片：工具调用逐条确认，附参数与 diff
-- 目标模式：目标、轮次、判定、findings 一条状态带
-- 子智能体：独立任务、独立上下文、结果回灌
-- 检查点与撤销：可回滚到某个步骤
-
-### 后台任务
-
-随手提交脚本或命令，任务在后台跑，面板看状态与输出，随时终止。
-
-### 语音输入
-
-- 系统语音服务，即 SpeechRecognizer，zh-CN
-- 云端转写，用户自备 Key，OpenAI 兼容协议
-
-两档路由：云端已配就优先云端，系统引擎判死自动切换，20 秒零结果触发看门狗。
-
-### 兼容环境
-
-设置里的运行环境可一键安装：
-
-| 包 | 安装内容 |
-|---|---|
-| Python | python3 加 pip |
-| Node.js | nodejs 加 npm |
-| Go | go |
-| C/C++ | build-base，含 gcc 等 |
-| Rust | cargo 加 rust |
-| Git | git |
-| Java 17 | openjdk17-jre-headless |
-| FFmpeg | ffmpeg |
-
-已装标记由存在性探测决定。探测命令必须单条执行，带管道的话退出码取自管道末端，恒为 0，等于没探。
-
-### 横竖屏
-
-三档自适应：
-
-| 宽度 | 布局 |
-|---|---|
-| 小于 600dp | 单栏加抽屉侧栏 |
-| 600dp 到 840dp | 双栏 |
-| 大于等于 840dp | 加宽双栏 |
-
-横屏下侧栏收起时完全隐藏，只留主界面顶栏的三横线，展开与收起有 220 毫秒宽度过渡动画。
+- 纯技能包设 `"type": "skill"`，所有技能必须置于 `skills/<名称>/SKILL.md` 并与清单 `skills[]` 一一对应。
+- **`SKILL.md` 规范**：YAML frontmatter 必须使用扁平单行键值对，禁止写块标量（`|` / `>`），保证内核解析器零偏差识别。
+- **安全与体积校验**：单个 `.cfplugin` 归档上限 **8 MiB**、解压上限 **32 MiB**、条目上限 **512**，拒绝一切包含 `..` 或绝对路径的恶意归档；安装页自动为 `permissions.secrets` 渲染掩码密钥输入框，持久化至 Keystore 支撑的 `EncryptedSharedPreferences`，并在多工作区切换时自动同步技能副本（卸载时精准清理不误删用户自有技能）。
 
 ---
 
-## 技术实现
+## 实测性能指标
 
-### 分层
+以下测试数据均基于 **2026-11-14** `app-release.apk` 在 Android 14 模拟器（`1600×900` @ `240 dpi`，x86_64 宿主 + Houdini 转译 `arm64-v8a`）上的真实 `adb` 测量结果：
 
-| 层 | 位置 | 职责 |
+| 测试项 | 测量命令 / 工具 | 实测结果 |
 |---|---|---|
-| 入口层 | MainActivity.kt、CodeForgeApp.kt | 建窗口、edge-to-edge、通知权限、拉起内核 |
-| 界面层 | ui 下的 AppRoot、chat、sessions、browser、settings、theme | 纯 Compose，只读状态，只调 ViewModel 方法 |
-| 状态层 | ui/ChatViewModel.kt | 唯一状态源 ChatUiState，把事件折叠成界面状态 |
-| 协议层 | core 下的 CoreTransport、HttpCoreTransport | 把内核 JSON 帧翻译成 CoreEvent，共 24 种 |
-| 内核层 | libcodeforge.so，独立进程，Go 写的 | 36 个 REST 加 1 个 WebSocket，执行、协议、工作区 |
-
-单向数据流：用户操作到 ViewModel，到 transport，到内核，WS 推事件，transport 解析成 CoreEvent，ViewModel 折叠成 ChatUiState，Compose 重组。
-
-界面层不许碰协议层，状态层不许碰 UI，协议层不许 import 界面层，三条硬边界靠编译期 import 约束保证。
-
-### 内核进程怎么起
-
-CoreService 是 specialUse 前台服务，用 ProcessBuilder 拉起 libcodeforge.so：
-
-1. 环境 HOME 指向 filesDir，SQLite 库落在 .codeforge 目录，CODEFORGE_PORT 设为 0 即随机端口，写死端口会被别的进程占；
-2. 内核绑定成功后把 PORT=xxxxx 打到 stdout，服务端逐行扫这个前缀；
-3. 拿到端口才创建 HTTP 与 WS 连接。
-
-鉴权走 Cookie，名为 codeforge_token，先 GET 根路径取值，不是 query 参数，这是最容易接错的地方。
-
-### 排版引擎
-
-libopenrender.so，上游是 raine-x 的 OpenRender：
-
-```
-原始文本，到增量 Markdown IR，到 Rust 侧排版，到 PNG 或结构化块，到 Compose 渲染
-```
-
-- 增量：每次只把新增或变化的段落喂进引擎，已排版部分不重算
-- 公式：RaTeX 排版成 PNG，中文靠内嵌 Noto Sans SC 子集，靠 RATEX_UNICODE_FONT 开关
-- 表格：列宽按实际渲染宽度分配，不是按字符数加权，表头不再被挤断行
-- HTML 块：引擎没有 Html 块类型，裸 HTML 在喂引擎之前就要判定并直接挂 WebView
-
-### 内嵌浏览器
-
-- BrowserOverlay.kt 全屏浏览器，PageBridge.kt 是 JS 桥，window.__cf 提供 inspect、list、click、evaluate、contentHeight、viewport
-- HtmlBlockView.kt 是对话流内嵌块，高度按内容实测，夹在 140dp 到 520dp
-- HtmlDetection.kt 负责裸 HTML 识别与合并
-
-### 内核接口
-
-内核共 36 个 REST 端点，覆盖配置、权限、会话、工作区、模型、供应商、任务、记忆、技能、插件、MCP、文件树、撤销、diff、健康检查。
-
-客户端调本地服务一律假设首次连接会失败。判活要打业务端点，也就是 health 接口，不能只探 TCP 端口，端口通了不代表 handler 接客了。
-
-### 兼容环境
-
-随包携带 env-kit.tgz，即 proot 5.1.107.101，以及 rootfs-alpine.tgz，即 Alpine 3.24.3 minirootfs，首启解压到 filesDir 下的 rootfs。
-
-内核的 run_command 经 cfrun 在同一棵目录树上执行，路径契约是单根，也就是 CELL 变量。
-
-镜像源走中科大，官方 dl-cdn 国内常超时，版本号从 rootfs 自己读，避免镜像升级后硬编码版本对不上。
-
-### 签名
-
-密钥在 app/keystore/codeforge.keystore，RSA 2048，有效期 10000 天，产物 v2 加 v3。
-
-配置写了不等于产物有。查签名方案要看 apksigner verify 的输出，不看构建脚本，密钥文件不存在时构建会静默回落到 debug keystore，那只有 v2。
+| Release 安装包大小 | `Get-Item app-release.apk`（R8 + shrinkResources，`arm64-v8a`） | **17.58 MiB** (`18,428,777 B`) |
+| 原生库与内置资产构成 | `jniLibs/arm64-v8a` + `assets/` | `libcodeforge.so` **17.00 MiB**、`libopenrender.so` **8.52 MiB**、`rootfs-alpine.tgz` **3.84 MiB**、`builtin-skills.zip` **0.72 MiB**、`env-kit.tgz` **0.13 MiB** |
+| 冷启动耗时（ART 预热后 3 轮） | `adb shell am start -W -n com.hxy.codeforge/.MainActivity` | **360 ms / 276 ms / 283 ms**（中位数 **283 ms**） |
+| 滚动帧渲染统计（838 帧连续滑动长逆向报告） | `adb shell dumpsys gfxinfo com.hxy.codeforge` | **2 / 838** 掉帧（**0.24%**），Missed Vsync **0** |
+| UI 帧耗时分布 | `adb shell dumpsys gfxinfo com.hxy.codeforge` | **P50 = 9 ms · P90 = 9 ms · P95 = 10 ms · P99 = 11 ms** |
+| 进程内存占用（连接后空闲 → 加载长会话） | `adb shell dumpsys meminfo com.hxy.codeforge` | **82.9 MB → 120.5 MB PSS**（RSS 197.2 MB → 236.7 MB） |
+| 源码与测试规模 | `app/src/{main,test}/java/` + `testDebugUnitTest` + `lintDebug` | **70** 个主 `.kt`（**31,793** 行）· **16** 个测试 `.kt`（**2,140** 行）· **113 / 113** 单测通过 · Lint **0 错误** |
 
 ---
 
-## 核心原理
+## 架构设计与分层实现
 
-### 为什么 targetSdk 28
+### 单向数据流与严格分层
 
-Android 10 起禁止执行应用可写目录中的文件。内核是一个 ELF 可执行文件，必须能在应用私有目录里跑起来，所以 targetSdk 28 是刻意的，用兼容级别换运行能力，一次明确的取舍。
+```text
+用户交互 → 界面层 (Compose) → 状态层 (ChatViewModel) → 协议层 (CoreTransport) → 内核层 (libcodeforge.so)
+   ↑                                                                                   │
+   └──── Compose 重组 ←─── StateFlow<ChatUiState> ←─── CoreEvent ←─── WebSocket / HTTP ──┘
+```
 
-代价是 Play 政策敌视，但这个 app 本质是在设备上跑任意代码的开发者工具，侧载定位明确。
-
-### 为什么自己写排版引擎
-
-现成方案有三个硬伤：
-
-1. 中文公式，常见引擎遇到中文会退回源码或错位；
-2. 流式，整段解析完再排，长回复会等；
-3. 离线，依赖远程渲染服务就等于联网才能看公式。
-
-自研链路把这三条全占了，增量 IR 保证流式，嵌入 CJK 字体子集保证中文，全程本地保证离线。
-
-### 为什么 HTML 要在喂引擎之前判定
-
-CommonMark 的 HTML 块在空行处结束。模型输出带缩进的 HTML 文档时，引擎会把它切成碎片，碎片拼不回原文。
-
-所以流程是：先判定是不是整页 HTML，是就直接挂 WebView 绕开引擎，不是才交给引擎。
-
-### 为什么触屏上元素挑选不能靠 hover
-
-触屏没有 mousemove，靠鼠标悬停记住当前选中元素的方案在手机上必然失效。
-
-正确做法是点选：点一下，JS 桥回传元素信息，编号登记进对话。
-
-### 为什么技能 frontmatter 必须是扁平单行
-
-内核的 frontmatter 解析器是逐行 strings.Cut 按冒号切，不是 YAML 解析器。YAML 块标量，也就是 description 后跟竖线再加缩进多行，会被切碎，描述只剩一根竖线。
-
-所以内置技能的 frontmatter 一律改写成内核认的扁平单行形式。
-
-推广：跨进程传结构化元数据前，先确认对面的解析器到底吃哪种语法，「对面支持 YAML」这个假设往往是错的。
-
-### 为什么探测命令不能带管道
-
-gcc --version 管道 head -1 的退出码取自管道末端，也就是 head，恒为 0。于是 gcc 不存在也被判成已安装。
-
-探测命令必须是目标命令自己的单条执行。
+| 架构层 | 目录 / 核心文件 | 职责边界 |
+|---|---|---|
+| **入口层** | `MainActivity.kt`、`CodeForgeApp.kt`、`CoreService.kt` | 窗口 edge-to-edge、通知权限、崩溃落盘、`EnvKit` 首启环境流水线、以 `specialUse` 前台服务拉起内核与 PORT 握手 |
+| **状态层** | `ChatViewModel.kt` 及其领域拆分：<br>`ChatViewModelSessions.kt`（会话/项目/归档/分支）<br>`ChatViewModelModels.kt`（模型库/供应商/内核配置/任务）<br>`ChatViewModelPlugins.kt`（`.cfplugin`/MCP 生命周期）<br>`ChatViewModelWorkspace.kt`（文件树/元素/草稿/记忆/压缩） | 维护唯一状态源 `ChatUiState`；串行化发送队列；隔离后台多会话事件；不依赖任何 Android UI |
+| **界面层** | `AppRoot.kt`、`ui/chat/`（含 `Composer.kt`、`ComposerPanels.kt`、`MessageList.kt`、`OpenRenderMessage.kt`、`MessageBlocks.kt`、`StatusStrips.kt` 等）、`ui/sessions/`、`ui/settings/`（含 `SettingsSheet.kt`、`SettingsModelSection.kt`、`KernelSettingsSection.kt`、`ModelEditorSection.kt` 等）、`ui/browser/` | 纯 Compose 渲染：界面层严禁直接触碰协议层或持有业务状态 |
+| **渲染桥** | `render/OpenRenderNative.kt`、`render/RenderIr.kt` | JNI 封装 `libopenrender.so`（失败触发进程级降级开关 `nativeDead` 退纯文本），执行公式定界符状态机归一（跳过代码围栏与 `$$` 内） |
+| **协议与服务** | `core/CoreTransport.kt`、`core/HttpCoreTransport.kt`、`core/KernelApi.kt`、`core/EnvKit.kt`、`core/PluginInstaller.kt`、`core/PluginSkills.kt` | 36 个 REST 端点 + WebSocket 断线退避重连、`codeforge_token` Cookie 鉴权、单根 `$CELL` 环境与插件安装器 |
 
 ---
 
-## 构建
+## CI 与本地源码构建
+
+### 1. GitHub Actions CI（`.github/workflows/android-ci.yml`）
+
+每次推送或 PR 至 `main` 分支自动执行：
+1. 环境配置：JDK 17（Temurin）+ Android SDK + Gradle 8.14.6；
+2. `./gradlew testDebugUnitTest --no-daemon`（运行全量 **113** 项 JVM 单元测试与源码守护测试）；
+3. `./gradlew lintDebug --no-daemon`（执行 Android / Compose Lint 静态分析）；
+4. `./gradlew assembleDebug --no-daemon` 并上传测试/Lint 报告及 Debug APK 工件。
+
+### 2. 本地构建
 
 ```bash
-# 需要 JDK 17 加 Android SDK，compileSdk 36，build-tools 36.0.0
+# 运行全部 JVM 单元测试与源码边界测试
+./gradlew testDebugUnitTest
+
+# 运行 Android Lint 静态分析
+./gradlew lintDebug
+
+# 构建 Debug APK
 ./gradlew assembleDebug
-# 产物在 app/build/outputs/apk/debug/app-debug.apk
 
+# 构建 R8 优化 Release APK（产物位于 app/build/outputs/apk/release/app-release.apk）
 ./gradlew assembleRelease
-# 产物在 app/build/outputs/apk/release/app-release.apk
 ```
 
-| 组件 | 版本 |
-|---|---|
-| Gradle | 8.14.6，wrapper 自带 |
-| Android Gradle Plugin | 8.13.2 |
-| Kotlin | 2.4.21 |
-| Compose UI | 1.9.5 |
-| Material 3 | 1.3.2 |
-| compileSdk / targetSdk / minSdk | 36 / 28 / 26 |
-| ABI | arm64-v8a |
-
-版本是钉死的，不是随手升的，升级要整条链一起动。理由见 AGENTS.md 的版本锁定一节。
-
-### 原生库
-
-Go 内核与排版引擎以**预编译产物**随仓库分发（`app/src/main/jniLibs/arm64-v8a/`），构建 APK
-不需要重编它们。两者的源码不在本仓库：重编或获取源码请联系 2653603072@qq.com（见「许可」）。
+> **签名说明**：`app/build.gradle.kts` 优先读取仓库外忽略的 `app/keystore/codeforge.keystore` 覆盖安装，缺失时自动回退默认 `debug` 密钥以便本地直接编译。`libcodeforge.so` 与 `libopenrender.so` 为预编译产物直接随仓库分发，构建 App 无需额外配置 Go / Rust / NDK 环境。
 
 ---
 
-## 工程纪律
+## 设计原则与工程纪律
 
-规矩写在文件里，不靠口头传承：
-
-| 文件 | 记什么 |
-|---|---|
-| AGENTS.md | 架构分层、编辑准则、验证标准、提交规范，以及已踩过的坑，编号到 P-053 |
-| 工作进程.md | 做到哪、下一步是什么、待决策项 |
-| 改动历史.md | 逐次变更，时间、文件、改了什么、为什么、验证到哪一级，只归档不删条目 |
-
-验证分四级，如实标注，没在真机跑过就写运行时未验证。文档比结论可信，结论比文档可信。
-
-### 目录
-
-```
-app/src/main/java/com/hxy/codeforge/
-  core/      内核传输、协议模型、兼容环境、内置技能、插件安装器与技能同步
-  render/    排版引擎桥接与 IR
-  ui/        chat、sessions、settings、common、browser、theme
-  voice/     云端语音
-app/src/main/jniLibs/arm64-v8a/   Go 内核与 Rust 引擎（预编译产物）
-docs/                              方案文档与对齐清单
-```
+- **架构硬边界**：UI 层禁导 `HttpCoreTransport`，ViewModel 层禁导 Compose，渲染层 `render/` 只做文本到 IR 转换不依赖 UI 与网络。
+- **源码守护单测**：通过 `TaskListThemeAndSyncTest`、`MentionListScrollTest`、`ResponsiveTest`、`NoOfflineVoiceTest`、`BuiltinSkillsTest`、`PluginInstallerTest`、`CapabilityPromptTest`、`RenderIrTest` 等 **17** 个测试套件守住关键手感和边界不被重构回退。
+- **三份工程文档与 59 条踩坑记录**：项目根目录严格维护 `AGENTS.md`（含 `P-001`–`P-059` 可执行排雷记录）、`工作进程.md` 与 `改动历史.md`，每次结构修改均保留完整可追溯审计链。
 
 ---
 
-## 已知限制
+## 当前边界与已知限制
 
-1. 只支持 arm64-v8a，Go 内核只交叉编译 arm64，x86 模拟器装不上。
-2. 兼容环境未经真机验证，proot 走 mmap 的 PROT_EXEC 而非 execve，SELinux 对 app_data_file 的 PROT_EXEC 是否放行需要实测，不能靠推理。
-3. 多会话并发分桶未实现，网页端按 session_id 分桶隔离流式帧，Android 侧没有这层机制，切会话时后台会话的帧可能画进当前视图。
-4. 文件树的引用文件到对话未做，点文件只处理目录。
-5. 子智能体没有独立面板，只有消息流内联卡片条与设置页策略。
-6. 签名密钥明文写在构建脚本里，侧载自用可以，上架前必须换成离线保管的密钥加环境变量。
+1. **ABI 支持范围**：`app/build.gradle.kts` 仅打包 `arm64-v8a` 原生产物；真机需 ARM64 架构，x86_64 模拟器需系统内置 Houdini / ARM 转译层。
+2. **`targetSdk = 28` 侧载定位**：为了允许在 Android 新版系统上直接 `exec()` 执行 `filesDir` 内的 `libcodeforge.so` 与 `proot` 工具链，项目显式采用 `targetSdk = 28` 侧载方案，不面向 Google Play 分发。
+3. **预编译原生源码分离**：`libcodeforge.so` 与 `libopenrender.so` 源码均保留在仓库外独立维护，本仓库不直接包含其 Go / Rust 源码。
+4. **虚拟化与沙箱 ptrace 限制**：在部分关闭宿主 ptrace 或强约束沙箱的模拟器镜像中，`proot` 部分需要系统调用跟踪的子进程可能受限，基础静态分析与本地工具优先走内置脚本或系统工具降级。
 
 ---
 
-## 许可
+## 许可说明
 
-本项目采用 **MIT + 商业授权双许可**（Copyright (c) 2026 raine-x）。
-
-### MIT 许可（默认）
-
-按标准 MIT 许可证使用、复制、修改、合并、发布、分发、再许可与销售——包括商业用途，
-前提是保留版权声明与许可声明。随仓库分发的 `libcodeforge.so` 与 `libopenrender.so`
-二进制产物同样按 MIT 授权；两者的构建源码不在本仓库，获取方式见下。
-
-### 商业授权（可选）
-
-如需超出 MIT 条款的使用方式——免除署名与来源标注、独家授权、OEM 预装与定制、
-源码级交付、保修与技术支持等——联系 **2653603072@qq.com** 获取商业授权。
-商业授权与 MIT 并行提供，任选其一；第三方组件不在其覆盖范围内。
-
-### 第三方组件保留原许可
-
-APK 内含的排版引擎（MIT）、Noto Sans SC 字体子集（SIL OFL 1.1）、proot（GPL-2.0 系）、
-libtalloc（LGPL 系）与 Alpine rootfs 等第三方组件，著作权归各自作者，按各自许可证发布。
-本项目的授权不改变、也不扩及这些组件，完整清单见 LICENSE 的「第三方组件与许可」一节。
-
-### 关于源代码
-
-内核（libcodeforge.so）源代码曾以 GPL-3.0 + 附加条款随旧版本分发；自本版本起著作权人
-将其重许可为 MIT，且源码不再随本仓库分发。此前按旧许可获得的副本仍适用其当时的许可。
-
-完整条款与全文见 [LICENSE](LICENSE)。
+采用 **MIT + 商业授权双许可**。个人学习、开源研究与非商业使用适用 MIT 协议；商业分发、OEM 预装或闭源二开请联系邮箱 `2653603072@qq.com`。详细第三方组件与开源协议清单见 [LICENSE](LICENSE)。

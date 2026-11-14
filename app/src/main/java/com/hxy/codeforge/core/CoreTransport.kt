@@ -164,8 +164,7 @@ sealed interface CoreEvent {
 /**
  * 与内核通信的抽象。
  *
- * 真实实现见 [HttpCoreTransport]（HTTP + WebSocket 连 127.0.0.1:随机端口）；
- * 界面开发期用 [MockCoreTransport] 驱动，两者事件完全同构。
+ * 真实实现见 [HttpCoreTransport]（HTTP + WebSocket 连 127.0.0.1:随机端口）。
  */
 interface CoreTransport {
 

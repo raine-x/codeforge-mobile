@@ -1,174 +1,79 @@
-# CodeForge
+<div align="center">
 
-**Android 上的 AI 编码工作台。**
-**The AI coding workbench for Android.**
+# CodeForge APP
 
-三种语言，一个进程，一个 17.4 MB 的 APK，而且能跑真代码。
-Three languages, one process, one 17.4 MB APK — and it runs real code.
+**原生 Android AI 编程与移动安全逆向工作台 · Native Android Client for CodeForge-Go**
 
-完整文档 / Full documentation：
+[中文完整文档 (README_ZH.md)](README_ZH.md) · [English Documentation (README_EN.md)](README_EN.md)
 
-- 中文完整版：[README\_ZH.md](README_ZH.md)
-- English full docs: [README\_EN.md](README_EN.md)
+</div>
 
-***
+---
 
-## 硬指标 / Key Metrics
+> 双语主 README 聚焦核心功能、实机演示与实测指标；架构分层、插件包规范、构建方式与已知边界见 [README_ZH.md](README_ZH.md) / [README_EN.md](README_EN.md)。
+>
+> This bilingual overview highlights features, live captures, and measured benchmarks. See [README_ZH.md](README_ZH.md) or [README_EN.md](README_EN.md) for architecture, `.cfplugin` packaging, build instructions, and known limits.
 
-| 项    | 数值                                                |
-| ---- | ------------------------------------------------- |
-| 包体   | 17.4 MB 单包（曾 65.5 MB，砍掉内置语音模型后减少 72%）             |
-| 界面   | 100% 原生 Compose，零 XML 布局，56 个 Kotlin 文件共 25,727 行 |
-| 内核   | Go 原生库 16.6 MB，36 个 REST 端点加 1 条 WebSocket 长连接    |
-| 排版引擎 | Rust 原生库 8.5 MB，自研增量 Markdown IR，自研公式排版           |
-| 运行   | arm64-v8a，minSdk 26，随包携带完整 Linux 兼容环境             |
-| 测试   | 66 个单元测试，零失败                                      |
+---
 
-| Item       | Value                                                                                 |
-| ---------- | ------------------------------------------------------------------------------------- |
-| Package    | 17.4 MB single APK (was 65.5 MB, 72% smaller after removing the bundled voice model)  |
-| UI         | 100% native Compose, zero XML layouts, 25,727 lines across 56 Kotlin files            |
-| Kernel     | 16.6 MB Go native library, 36 REST endpoints plus 1 WebSocket connection              |
-| Typesetter | 8.5 MB Rust native library, in-house incremental Markdown IR, in-house formula layout |
-| Runtime    | arm64-v8a, minSdk 26, complete Linux compat environment shipped in the package        |
-| Tests      | 66 unit tests, zero failures                                                          |
+## 实机演示 · Live Demo
 
-***
+<div align="center">
+  <img src="docs/media/demo.gif" alt="CodeForge APP Live Demo" width="880" />
+  <br />
+  <sub>双栏平板布局浏览、@reverse_analysis ELF/JNI 分析报告滚动、插件管理与逆向修改 5 秒免责保护流（Android 14 模拟器实录）</sub>
+</div>
 
-## 项目特色 / Highlights
+<br />
 
-### 三种语言，一个 APK / Three languages, one APK
+| 平板双栏 · 逆向 JNI/ABI 分析报告 | 内置逆向插件 · 修改能力 5 秒强制免责门禁 |
+|---|---|
+| ![Reverse Engineering Session](docs/media/chat-reverse-analysis.png) | ![Reverse Modify Disclaimer](docs/media/reverse-disclaimer.png) |
+| **Markdown 表格与任务追踪流** | **插件包 (`.cfplugin`) 与 MCP 管理** |
+| ![Markdown Table and Tasks](docs/media/chat-markdown-table.png) | ![Plugins Manager](docs/media/plugins-manager.png) |
+| **竖屏单栏手机模式（高 > 宽自动切换）** | **竖屏全屏设置页** |
+| ![Mobile Portrait Layout](docs/media/mobile-portrait.png) | ![Mobile Fullscreen Settings](docs/media/mobile-settings.png) |
 
-Go 当内核，Rust 当排版引擎，Kotlin 加 Compose 当界面。
+---
 
-Go runs the kernel, Rust does the typesetting, Kotlin plus Compose handles the UI.
+## 核心功能 · Key Features
 
-界面与内核之间是进程内的一条 REST 加 WebSocket 长连接，界面与排版引擎之间是 JNI 直调。没有 WebView 套壳，没有跨进程序列化损耗。
+### 1. 内置逆向分析插件（`@reverse_analysis` / Built-in Reverse Engineering）
 
-Between UI and kernel: a single in-process REST plus WebSocket connection. Between UI and typesetter: direct JNI calls. No WebView shell, no cross-process serialization cost.
+- **全链路只读取证技能栈**：内置 `apk-reverse`（Manifest / DEX 类与字符串索引 `dex_inspector.py`）、`elf-jni-reverse`（ELF 段表 / C ABI / JNI 符号定位 `elf_jni_scanner.py`）、`crypto-unpack`（常见加密常量与壳特征扫描 `crypto_constant_scan.py`）。
+- **沙箱逆向工具链一键安装**：在运行环境中内置 `逆向工具` 安装包（`file`、`binutils`、`patchelf`、`radare2`、`py3-capstone`、`py3-unicorn`），随兼容 Alpine rootfs 即可开展二进制分析。
+- **高风险修改 5 秒强制免责门禁**：修改与重打包能力默认**关闭**（仅允许只读分析）；在设置页开启「允许修改与重打包」前需强制阅读 5 秒合规免责声明（`REVERSE_MODIFY_DISCLAIMER_SECONDS = 5`），明确授权边界。
 
-### 高性能排版引擎 / A high-performance typesetting engine
+### 2. 原生端侧 Coding Agent 宿主 · On-Device Agent Host
 
-不是 Markdown 库加公式插件的拼装。是从增量 Markdown IR，到公式原生排版，再到表格列宽实测分配的一整条自研链路，编译成原生库随包分发，全程离线。
-参考仓库：<https://github.com/raine-x/OpenRender.git>
+- **独立内核进程 + 断线自愈**：以 `specialUse` 前台服务拉起 `libcodeforge.so`，随机本地回环端口 + Cookie 鉴权，HTTP / WebSocket 断线按退避重试自动恢复。
+- **流式增量排版与多模态渲染**：基于 `libopenrender.so` 的增量 Markdown IR 渲染，支持公式（RaTeX + 内嵌中文字体子集）、按实测宽度分列的表格、diff 工具卡片、代码块、音频、视频与 SVG 预览。
+- **内置浏览器与可视元素挑选**：消息内链接可直接唤起内置 WebView，点选页面节点并将标签、样式、几何位置与用户批注直接送入上下文。
+- **模型服务、记忆、检查点与多工作区**：支持多供应商接入、接口探测、连通性测试、自动补齐上下文窗口、分步文件撤销与检查点回滚（`/api/undo` / checkpoints）、按项目隔离的工作区与文件树浏览。
+- **`.cfplugin` 动态插件体系与 MCP 接入**：支持导入经过结构、路径遍历与大小校验的 `.cfplugin` 插件包（纯文本技能与可执行 MCP 工具），密钥经 `EncryptedSharedPreferences` 加密保存并同步至各工作区。
+- **横竖屏与手机/平板自适应**：以窗口实际纵横比判定布局——竖屏（高 > 宽）自动走单栏抽屉与全屏设置页，横屏（宽 > 高）自动切换双栏工作区，并支持单手横持传感器自适应内容旋转。
+- **后台任务、目标验证与双引擎语音**：支持自主后台脚本调度（`@goal_mode` 闭环验证与子智能体协同）、以及系统 `SpeechRecognizer` / 云端 OpenAI 兼容 `/audio/transcriptions` 双引擎语音输入。
 
-Not a Markdown library bolted onto a formula plugin. It is a full in-house chain — incremental Markdown IR, native formula layout, table columns allocated from measured widths — compiled into a native library shipped in the package, fully offline.
-Upstream repo: <https://github.com/raine-x/OpenRender.git>
+---
 
-含中文的 aligned、cases、bmatrix 完整呈现，不退回源码，这是很多现成方案做不到的。
+## 实测指标 · Measured Metrics
 
-aligned, cases and bmatrix with Chinese inside render in full, without falling back to source text — something most off-the-shelf solutions cannot do.
+> 以下全部数值均来自 **2026-11-14** 本地仓库实测统计与 Android 14 模拟器（`1600×900` @ `240 dpi`，`arm64-v8a` Release 包经 Houdini 转译运行）`adb` 实测采集，无任何估算或营销话术。
 
-### 流式显示 / Streaming display
+| 维度 · Metric | 实测数值 · Measured Value | 采集方式 · Source |
+|---|---|---|
+| Release 安装包体积（含双 `.so` + Alpine 环境 + 技能库） | **17.58 MiB** (`18,428,777 B`) | `app/build/outputs/apk/release/app-release.apk`（R8 + ShrinkResources，`arm64-v8a`） |
+| 核心原生二进制构成 | `libcodeforge.so` **17.00 MiB** + `libopenrender.so` **8.52 MiB** | `app/src/main/jniLibs/arm64-v8a/` |
+| 主工程源码与单测规模 | **70** 个主 `.kt` 文件 / **31,793** 行 · **16** 个测试 `.kt` 文件 / **2,140** 行 | `app/src/{main,test}/java/` |
+| JVM 单元测试与静态检查 | **113 / 113** 项用例通过（17 个测试套件，0 失败 / 0 跳过），Android Lint **0 错误** | `./gradlew testDebugUnitTest lintDebug` |
+| 热态冷启动耗时（`am start -W`，3 次均值/中位） | **276 – 360 ms**（实测：360 / 276 / 283 ms，中位数 **283 ms**） | `adb shell am start -W -n com.hxy.codeforge/.MainActivity` |
+| 滚动与切换帧渲染性能（838 帧连续滑动长 Markdown 报告） | 掉帧率 **0.24%**（**2 / 838** 帧），Missed Vsync **0** | `adb shell dumpsys gfxinfo com.hxy.codeforge` |
+| 帧耗时分位数（P50 / P90 / P95 / P99） | **9 ms / 9 ms / 10 ms / 11 ms** | `adb shell dumpsys gfxinfo com.hxy.codeforge` |
+| 进程内存占用（连接内核后空闲 → 已加载长会话） | **82.9 MB → 120.5 MB PSS**（RSS 197.2 MB → 236.7 MB） | `adb shell dumpsys meminfo com.hxy.codeforge` |
 
-增量 IR 加增量排版，内容边到边出图边排版，不等整段结束。长回复不卡、不闪、不跳。
+---
 
-Incremental IR plus incremental typesetting: content renders as it arrives, no waiting for the whole block to finish. Long replies do not stall, flicker or jump.
+## 更多文档 · Documentation
 
-### 模型输出的是页面，不是文本 / Models output pages, not text
-
-模型吐出整页 HTML，直接渲染成能点的页面，按钮、展开收起、表单、动画全部可用。
-
-A model emits a whole HTML page and it renders straight into an interactive one: buttons, expand and collapse, forms and animations all work.
-
-内置浏览器还带元素挑选，点页面上的元素，编号进对话，元素布局随消息送给模型。指着页面说「这个改一下」就行。
-
-The built-in browser also picks elements: tap one, it gets a number and joins the conversation, and its layout travels to the model with the message. Point at the page and say "change this".
-
-### 装得进口袋，但不止是聊天 / Fits in a pocket, not just a chat app
-
-会话、项目、模型、技能、子智能体、MCP、审批、diff、后台任务、语音输入、文件树、完整 Linux 环境，一个 APK 全装。
-
-Sessions, projects, models, skills, subagents, MCP, approvals, diffs, background tasks, voice input, a file tree and a full Linux environment — all in one APK.
-
-### 插件包：写完就能装 / Plugin packages: write, import, done
-
-侧栏「插件」页直接导入 `.cfplugin` 包，纯文本技能与可执行 MCP 服务都走同一条路：选文件、看权限、点安装。装完技能自动铺到所有工作区，切项目不丢；可执行包注册成工具，模型按 `id.工具名` 调用。启停、升级、卸载都在界面上，不用改内核配置。
-
-Import a `.cfplugin` package right on the Plugins page — plain-text skills and executable MCP servers take the same path: pick the file, review permissions, install. Skills are synced into every workspace so switching projects does not lose them; executable packages register tools the model calls as `id.tool`. Enable, update and uninstall all happen in the UI, with no kernel config editing.
-
-包的写法（`plugin.json` 加 `skills/<名字>/SKILL.md`）与完整规则见 [README_ZH.md](README_ZH.md#动态插件包cfplugin)。\
-Package layout (`plugin.json` plus `skills/<name>/SKILL.md`) and the full rules are in [README_EN.md](README_EN.md#plugin-packages-cfplugin).
-
-### 完整 Linux 兼容环境 / A complete Linux compat environment
-
-随包携带 proot 加 Alpine rootfs，一键装 Python、Node、Go、C++、Rust、Java 17、Git、FFmpeg。
-
-proot plus an Alpine rootfs ships in the package; Python, Node, Go, C++, Rust, Java 17, Git and FFmpeg install in one tap.
-
-模型可以在里面真的写代码、真的跑起来、真的装依赖。
-
-The model can really write code in there, really run it, and really install dependencies.
-
-### 全离线可用的公式与图表 / Formulas and diagrams, fully offline
-
-公式、表格、代码块、diff 着色全部本地排版，不依赖任何远程渲染服务。深浅双主题，公式与图表随主题重新着色。
-
-Formulas, tables, code blocks and diff coloring are all typeset locally, with no remote rendering service. Light and dark themes, and formulas and diagrams recolor with the theme.
-
-***
-
-## 特色清单 / Feature Matrix
-
-| 领域  | 亮点                                                   |
-| --- | ---------------------------------------------------- |
-| 会话  | 多会话并行，工作区在创建那一刻绑定，归档、恢复、删除分开摆放，可恢复与不可恢复不混在一起         |
-| 模型  | 自定义接入，支持 Base URL、Key、上下文、RPM、三态能力，支持测试连接，供应商按 id 归一 |
-| 技能  | SKILL.md 技能、内置插件、MCP，输入框 @ 动态补全，随装随用                 |
-| 插件包 | `.cfplugin` 打包导入，纯文本技能与可执行 MCP 同包共存，启停、升级、卸载都在界面完成      |
-| 智能体 | 子智能体独立上下文，目标模式带判定与 findings，审批卡片逐条确认附 diff           |
-| 渲染  | 增量 IR 段落级重排，中文公式原生排版，表格列宽按实测宽度分配，思考过程可折叠可钉住          |
-| 网页  | 整页 HTML 渲染成可操作页面，内置浏览器支持返回、刷新、全屏、快照，元素挑选             |
-| 交互  | 横竖屏三档自适应，背景图、模糊、亮度、文字色可调，语音输入双引擎                     |
-| 工程  | 单一状态源，单向数据流，四级验证标准如实标注                               |
-
-| Area        | Highlight                                                                                                                           |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Sessions    | Parallel sessions, workspace bound at creation, archive, restore and delete laid out separately                                     |
-| Models      | Custom endpoints with base URL, key, context, RPM, three-state capabilities, connection test, providers keyed by id                 |
-| Skills      | SKILL.md skills, built-in plugins, MCP, dynamic at-completion in the input box                                                      |
-| Packages    | `.cfplugin` imports; plain-text skills and executable MCP servers in one package; enable, update and uninstall from the UI          |
-| Agents      | Subagents with their own context, goal mode with verdict and findings, per-call approval cards with diffs                           |
-| Rendering   | Paragraph-level re-typesetting on incremental IR, native Chinese formulas, measured table widths, collapsible and pinnable thinking |
-| Web         | Whole HTML pages rendered as interactive ones; built-in browser with back, refresh, fullscreen, snapshots and element picking       |
-| Interaction | Three responsive tiers, adjustable wallpaper, blur, brightness and text color, dual voice engines                                   |
-| Engineering | Single source of truth, unidirectional data flow, four verification levels reported honestly                                        |
-
-***
-
-## 架构 / Architecture
-
-| 层    | 技术                    | 体积               | 职责        |
-| ---- | --------------------- | ---------------- | --------- |
-| 界面   | Kotlin 加 Compose      | 56 文件 / 25,727 行 | 交互        |
-| 排版引擎 | Rust，libopenrender.so | 8.5 MB           | 解析、排版、公式  |
-| 内核   | Go，libcodeforge.so    | 16.6 MB          | 执行、协议、工作区 |
-
-| Layer      | Tech                   | Size                    | Responsibility                 |
-| ---------- | ---------------------- | ----------------------- | ------------------------------ |
-| UI         | Kotlin plus Compose    | 56 files / 25,727 lines | Interaction                    |
-| Typesetter | Rust, libopenrender.so | 8.5 MB                  | Parsing, layout, formulas      |
-| Kernel     | Go, libcodeforge.so    | 16.6 MB                 | Execution, protocol, workspace |
-
-界面与内核之间是进程内直连。
-UI and kernel are connected in-process, directly.
-
-***
-
-## 状态 / Status
-
-0.1.0，arm64-v8a，targetSdk 28
-
-***
-
-## 许可 / License
-
-MIT + 商业授权双许可（Copyright (c) 2026 raine-x）\
-默认按 MIT 许可使用、修改与分发（含商用）；如需免除署名、OEM 预装、源码交付或技术支持等
-超出 MIT 条款的方式，联系 2653603072@qq.com 获取商业授权。
-Dual-licensed: MIT by default; for uses beyond its terms (no-attribution, OEM, source
-delivery, support), contact 2653603072@qq.com for a commercial license.
-
-完整条款（含第三方组件清单，proot 等第三方组件保留原许可）见 [LICENSE](LICENSE)。
-Full terms (including the third-party component list — proot etc. keep their original
-licenses) are in [LICENSE](LICENSE).
+- **[中文详版文档（README_ZH.md）](README_ZH.md)** — 安装与使用指南、逆向分析插件详解、`.cfplugin` 规范、完整架构分层、实测性能数据、CI 与源码构建方式、工程记录与已知限制。
+- **[English Full Guide (README_EN.md)](README_EN.md)** — Installation, Reverse Engineering workflow, `.cfplugin` packaging, architecture layers, measured benchmarks, CI setup, building from source, and known limits.

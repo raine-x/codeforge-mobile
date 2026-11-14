@@ -33,6 +33,9 @@ import androidx.compose.ui.unit.dp
 import com.hxy.codeforge.core.ModelPresets
 import com.hxy.codeforge.ui.ChatViewModel
 import com.hxy.codeforge.ui.common.noRippleClickable
+import com.hxy.codeforge.ui.saveModel
+import com.hxy.codeforge.ui.saveModelFull
+import com.hxy.codeforge.ui.testModel
 import com.hxy.codeforge.ui.theme.Clay
 
 /**

@@ -41,10 +41,25 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.hxy.codeforge.model.SubagentPolicy
 import com.hxy.codeforge.ui.ChatViewModel
+import com.hxy.codeforge.ui.addMcpPlugin
+import com.hxy.codeforge.ui.addMemory
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.common.noRippleClickable
+import com.hxy.codeforge.ui.compressContext
+import com.hxy.codeforge.ui.deleteMcpPlugin
+import com.hxy.codeforge.ui.deleteMemory
+import com.hxy.codeforge.ui.loadKernelExtras
+import com.hxy.codeforge.ui.setBuiltinPlugin
+import com.hxy.codeforge.ui.setBuiltinPluginModify
+import com.hxy.codeforge.ui.setMcpPlugin
+import com.hxy.codeforge.ui.setNotifyEnabled
+import com.hxy.codeforge.ui.setPermissionMode
 import com.hxy.codeforge.ui.theme.Clay
+import com.hxy.codeforge.ui.updateAgentConfig
+import com.hxy.codeforge.ui.updateMemory
+import com.hxy.codeforge.ui.updateRetryConfig
+import com.hxy.codeforge.ui.updateSubagentPolicy
 import kotlinx.coroutines.delay
 
 /**

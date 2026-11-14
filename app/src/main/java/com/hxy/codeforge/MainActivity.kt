@@ -19,7 +19,10 @@ import com.hxy.codeforge.core.CoreService
 import com.hxy.codeforge.ui.ChatViewModel
 import com.hxy.codeforge.ui.CodeForgeApp
 import com.hxy.codeforge.ui.common.applyStatusBarVisibility
+import com.hxy.codeforge.ui.createSession
+import com.hxy.codeforge.ui.onExternalContent
 import com.hxy.codeforge.ui.settings.AppSettings
+import com.hxy.codeforge.ui.switchSession
 import com.hxy.codeforge.ui.theme.CodeForgeTheme
 
 /**

@@ -5,7 +5,6 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -26,7 +25,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -53,7 +51,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.hxy.codeforge.model.ContextUsage
 import com.hxy.codeforge.model.SubagentTask
 import com.hxy.codeforge.model.TodoItem
 import com.hxy.codeforge.model.TodoStatus
@@ -62,76 +59,12 @@ import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.theme.Clay
 
 /**
- * 输入卡上方的三条状态区（对应内核 context / todo / subagent 帧）：
+ * 状态提示条与任务弹窗（对应内核 goal / todo / subagent 帧）：
  *
- *  - [ContextMeter]：上下文占用细条，超 90% 变警示色；
- *  - [TodoPanel]：任务清单，行状态图标带动画切换；
+ *  - [GoalStrip]：目标账本状态条；
+ *  - [TaskListDialog]：右上角菜单打开的任务清单弹窗；
  *  - [SubagentBar]：子智能体任务卡，运行中转圈、完成打勾。
- *
- * 三者都是「有数据才出现」，进出用 expand+fade，不占常驻空间。
  */
-
-// ---------------------------------------------------------------- 上下文表
-
-@Composable
-fun ContextMeter(usage: ContextUsage?, modifier: Modifier = Modifier) {
-    AnimatedVisibility(
-        visible = usage != null,
-        enter = fadeIn(tween(200)) + expandVertically(tween(220)),
-        exit = fadeOut(tween(140)) + shrinkVertically(tween(180)),
-        modifier = modifier,
-    ) {
-        val u = usage ?: return@AnimatedVisibility
-        // 有模型真实窗口（ctx_in）时按窗口算占比；否则退回内核预算。
-        // percent 可能 >100（超预算），条形填充必须夹到 1，数字保留原值。
-        val fill by animateFloatAsState(
-            targetValue = u.displayFraction,
-            animationSpec = tween(420),
-            label = "ctx-fill",
-        )
-        val warn = u.overBudget || u.displayFraction >= 0.9f
-        val barColor = when {
-            u.overBudget -> MaterialTheme.colorScheme.error
-            warn -> MaterialTheme.colorScheme.secondary
-            else -> Clay
-        }
-        val usedText = if (u.used >= 1000) "${u.used / 1000}k" else "${u.used}"
-
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            Text(
-                text = "上下文",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(3.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth(fraction = fill)
-                        .height(3.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(barColor),
-                )
-            }
-            Text(
-                text = "$usedText / ${(u.displayFraction * 100).toInt()}%",
-                style = MaterialTheme.typography.labelSmall,
-                color = if (warn) barColor else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-    }
-}
 
 // ---------------------------------------------------------------- 目标模式
 
@@ -213,62 +146,6 @@ fun GoalStrip(goal: com.hxy.codeforge.model.GoalStatus?, modifier: Modifier = Mo
 }
 
 // ---------------------------------------------------------------- 任务清单
-
-@Composable
-fun TodoPanel(todos: List<TodoItem>, modifier: Modifier = Modifier) {
-    AnimatedVisibility(
-        visible = todos.isNotEmpty(),
-        enter = fadeIn(tween(220)) + expandVertically(tween(260),
-            expandFrom = Alignment.Top),
-        exit = fadeOut(tween(140)) + shrinkVertically(tween(200)),
-        modifier = modifier,
-    ) {
-        val done = todos.count { it.status == TodoStatus.Completed }
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 2.dp)
-                .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(16.dp))
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(16.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                GlyphIcon(
-                    glyph = Glyph.Check,
-                    size = 13.dp,
-                    color = Clay,
-                    strokeWidth = 2.2.dp,
-                    modifier = Modifier.padding(end = 6.dp),
-                )
-                Text(
-                    text = "任务",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Spacer(Modifier.weight(1f))
-                // 计数变化只淡入淡出数字，不挪位置
-                AnimatedContent(
-                    targetState = done,
-                    transitionSpec = {
-                        (fadeIn(tween(160)) + scaleIn(tween(160), initialScale = 0.8f))
-                            .togetherWith(fadeOut(tween(120)) + scaleOut(tween(120), targetScale = 0.8f))
-                    },
-                    label = "todo-count",
-                ) { d ->
-                    Text(
-                        text = "$d/${todos.size}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-
-            todos.sortedBy { it.sort }.forEach { todo -> TodoRow(todo) }
-        }
-    }
-}
 
 /**
  * 任务清单弹窗：顶栏「三点」菜单的入口（B 接线，`showTaskList` 为 true 时挂载）。

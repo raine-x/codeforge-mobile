@@ -32,7 +32,11 @@ import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.common.SyncDialogStatusBar
 import com.hxy.codeforge.ui.common.noRippleClickable
+import com.hxy.codeforge.ui.deleteSession
+import com.hxy.codeforge.ui.renameSession
+import com.hxy.codeforge.ui.setSessionArchived
 import com.hxy.codeforge.ui.theme.Clay
+import com.hxy.codeforge.ui.undoLastWrite
 
 /**
  * 会话长按操作弹层：重命名 / 归档 / 删除。

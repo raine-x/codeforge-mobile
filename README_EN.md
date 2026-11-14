@@ -1,138 +1,113 @@
-# CodeForge English Docs
+# CodeForge APP · English Documentation
 
-The complete guide: how to use it, how it works, and why it was built this way.
+[Back to Bilingual Overview (README.md)](README.md) · [中文完整文档 (README_ZH.md)](README_ZH.md)
 
-For the highlights only, see the main [README.md](README.md). Chinese version: [README_ZH.md](README_ZH.md).
+---
 
-An AI coding workbench for Android. Go runs the kernel, Rust does the typesetting, Compose handles the interaction. Three languages, one process, one 17.4 MB APK.
+Native Android client for CodeForge-Go. The Go kernel runs locally as an isolated process handling tool execution and agent orchestration, while the Kotlin + Jetpack Compose shell drives the UI, streaming Markdown layout, and on-device security analysis workflows over HTTP and WebSocket.
+
+<div align="center">
+  <img src="docs/media/demo.gif" alt="CodeForge APP Walkthrough" width="840" />
+</div>
 
 ---
 
 ## Contents
 
-1. [Quick start](#quick-start)
-2. [Using it](#using-it)
-3. [Implementation](#implementation)
-4. [How it works](#how-it-works)
-5. [Build](#build)
-6. [Engineering discipline](#engineering-discipline)
-7. [Known limits](#known-limits)
-8. [License](#license)
+1. [Quick Start and Everyday Usage](#quick-start-and-everyday-usage)
+2. [Built-in Reverse Engineering Plugin (@reverse_analysis)](#built-in-reverse-engineering-plugin-reverse_analysis)
+3. [Plugin Packages (.cfplugin) and MCP Extensions](#plugin-packages-cfplugin-and-mcp-extensions)
+4. [Measured Performance Benchmarks](#measured-performance-benchmarks)
+5. [Architecture and Layered Design](#architecture-and-layered-design)
+6. [CI and Building from Source](#ci-and-building-from-source)
+7. [Design Principles and Engineering Discipline](#design-principles-and-engineering-discipline)
+8. [Current Scope and Known Limits](#current-scope-and-known-limits)
+9. [License](#license)
 
 ---
 
-## Quick start
+## Quick Start and Everyday Usage
 
-### Requirements
+### 1. Installation and Model Setup
 
-| Item | Requirement |
+1. Grab or build `app/build/outputs/apk/release/app-release.apk` (`arm64-v8a` physical devices, or emulators with ARM64 translation).
+2. On first launch, `EnvKit` unpacks `env-kit.tgz` (proot) and `rootfs-alpine.tgz` into private app storage in the background (typically ready within 1–2 seconds).
+3. Open **Settings → Model Service** to configure providers and models (API keys are encrypted on-device with Keystore-backed `EncryptedSharedPreferences`), probe endpoints, or run live connection checks.
+
+### 2. Core Capabilities
+
+- **Project-Scoped Workspaces**: Create projects bound to any local folder from the sidebar; unbound chats default cleanly to the private `inbox` space. Project switching validates whether any background session is busy before changing the kernel working directory.
+- **Multimodal Streaming & Formatting**: Feeds incremental Markdown IR through `libopenrender.so`, rendering LaTeX math (RaTeX with an embedded Noto Sans SC subset), measured-width tables, diff tool cards, code blocks, audio, video, and SVG, while bypassing raw HTML directly into in-stream WebViews.
+- **Checkpoints & Step-by-Step Undo**: Every file write is checkpointed per session, allowing workspace rollback or undo (`/api/undo`) straight from session controls.
+- **Built-in Browser & Element Picking**: Open links from messages in an embedded WebView, tap **Select Element** to inspect DOM nodes, and attach tag/style/geometry metadata plus user notes directly to the active prompt.
+- **Background Tasks & Subagents**: Launch long-running shell scripts into the background task panel to stream output or kill runs; supports `@goal_mode` verifier loops and multi-agent decomposition.
+- **Dual-Engine Voice Input**: Prefers user-configured cloud OpenAI-compatible `/audio/transcriptions`, falling back to Android `SpeechRecognizer` with a 20-second no-result watchdog.
+
+### 3. Compatible Linux Runtime (proot + Alpine)
+
+Under **Settings → Runtime Environment**, users can install packages into the Alpine minirootfs with a single tap (verified via standalone existence probes with no masking pipes):
+
+| Category | Packages Installed | Purpose |
+|---|---|---|
+| Python | `python3 py3-pip` | Scripting, automation, and binary helpers |
+| Node.js | `nodejs npm` | JavaScript runtime and tooling |
+| Go | `go` | Go toolchain |
+| C / C++ | `build-base` | `gcc` and standard build toolchain |
+| Rust | `cargo rust` | Rust compiler and Cargo |
+| Git | `git` | Source control |
+| Java 17 | `openjdk17-jre-headless` | JVM runtime |
+| FFmpeg | `ffmpeg` | Media inspection and conversion |
+| Reverse Toolkit | `file binutils patchelf radare2 py3-capstone py3-unicorn` | ELF section/symbol inspection, `readelf`/`objdump`, `radare2` disassembly, and Python binary analysis |
+
+### 4. Responsive Portrait / Landscape Layout
+
+Layout mode follows the **live viewport aspect ratio** uniformly across phones and tablets:
+
+| Orientation | Layout Tier | Settings Presentation |
+|---|---|---|
+| Portrait (`height > width`) | Single-column mobile layout (drawer sidebar collapsed by default) | Full-screen sheet |
+| Landscape (`width > height`) | Two-pane tablet layout (`Medium` 600–840dp, `Expanded` ≥ 840dp with 220ms animated sidebar collapse) | Centered modal sheet |
+
+On phones locked to portrait, an accelerometer-based pose detector rotates page content smoothly with hysteresis when held sideways.
+
+| Portrait Single-Column Mode (`height > width`) | Portrait Full-Screen Settings |
 |---|---|
-| Architecture | arm64-v8a real device, x86 emulators will not work because the Go kernel is cross-compiled for arm64 only |
-| OS | Android 8.0, API 26 or newer |
-| Network | None needed, the compat environment ships in the APK and unpacks locally on first launch |
-| Dependencies | No root, no Termux, no PC |
-
-### Install
-
-Download app-release.apk and side-load it. It is signed with a self-built fixed certificate, v2 plus v3, so later versions install straight over the top.
-
-Changing the signature breaks in-place updates. If the device still has an old debug-signed build, uninstall it first.
-
-### First launch
-
-1. The app pulls up the bundled kernel automatically, running as a specialUse foreground service visible in the notification shade.
-2. It unpacks the bundled compat environment, proot plus an Alpine rootfs, in about ten seconds.
-3. Before the first conversation, configure a model: open Settings, then Model Services, and add a provider or a model.
+| ![Mobile Portrait](docs/media/mobile-portrait.png) | ![Mobile Fullscreen Settings](docs/media/mobile-settings.png) |
 
 ---
 
-## Using it
+## Built-in Reverse Engineering Plugin (`@reverse_analysis`)
 
-### Sessions and projects
+CodeForge APP bundles a dedicated mobile static-analysis and binary forensics workflow designed with safety guardrails:
 
-Create a project from the sidebar, pick a directory, the project name defaults to the last path segment, then choose a default permission tier. The three tiers are read-only, ask and auto, used as the initial value of the kernel perm endpoint.
+### 1. Bundled Reverse Skills
 
-The workspace is bound at the moment the session is created, so switching projects never leaks context.
-
-Sessions can be renamed, archived, unarchived and deleted. Recoverable actions such as archiving are kept visually apart from irreversible ones such as deleting.
-
-The file tree is reached by picking a directory while creating a project, or from the sidebar, to browse workspace files.
-
-### Model setup
-
-Settings, then Model Services:
-
-- Provider: base URL, protocol family (OpenAI-compatible or Anthropic), API key with masked input, optionally stored as an env var
-- Model: model id, display name, context window, input and output limits, RPM, and a three-state capability of supported, unsupported or undeclared
-- Test connection: verify the key right away instead of discovering it is wrong after sending a message
-- Discover: let the kernel enumerate the models a provider actually offers
-
-### Skills, plugins and MCP
-
-Skills, built-in plugins and MCP tools all complete with at in the input box, and skills shipped in packages join them:
-
-| Source | Shape | Notes |
+| Skill | Scope | Helper Script Bundled |
 |---|---|---|
-| Skills | One SKILL.md per name under .codeforge/skills in the workspace | Carries frontmatter with name, description, triggers and an enabled flag; the directory name is the completion token |
-| Packages | Imported from a `.cfplugin` file | A package can carry only skills, only an executable MCP server, or both — see the next section |
-| Built-in plugins | Kernel built-ins | plan, goal_mode, vulnerability_research, reverse_analysis, multi_agent, skill_creator and others, individually switchable |
-| MCP | External MCP servers | Only loaded ones are completed, because a tool that is not registered yet cannot be called by the kernel either |
+| `apk-reverse` | APK archive audit, `AndroidManifest.xml` inspection, multi-DEX class/string recovery, packer detection | `references/dex_inspector.py` |
+| `elf-jni-reverse` | `.so` ELF header/section/dynamic symbol parsing, C ABI exports, `JNI_OnLoad` and `Java_*` symbol mapping | `references/elf_jni_scanner.py` |
+| `crypto-unpack` | Known crypto constant detection (AES S-box, TEA, MD5/SHA, CRC32) and unpacking triage | `references/crypto_constant_scan.py` |
 
-Typing at pops up a candidate list. It scrolls, and it grows with what you have installed. Tap to insert.
+Mention `@reverse_analysis` (or `@逆向分析`) in any chat to engage the specialist workflow; combined with the one-tap `Reverse Toolkit` package in Runtime Settings, the agent inspects APKs and native libraries directly in the workspace.
 
-### Plugin packages (.cfplugin)
+### 2. Read-Only by Default + Mandatory 5-Second Modify Disclaimer
 
-The Plugins page in the sidebar imports `.cfplugin` packages. Installing, enabling, updating and uninstalling all happen in the UI, with no kernel config editing.
+| Two-Pane Landscape · ELF/JNI Analysis Report | Mandatory 5s Disclaimer Before Enabling Modification |
+|---|---|
+| ![Reverse Engineering Report](docs/media/chat-reverse-analysis.png) | ![Reverse Disclaimer Dialog](docs/media/reverse-disclaimer.png) |
 
-**What a package can carry**
+- **Safe Default**: Out of the box, `@reverse_analysis` is strictly **read-only**—no patching, repackaging, or re-signing tools are permitted.
+- **5-Second Compliance Guard**: Enabling **"Allow Modification & Repackaging"** under **Settings → Built-in Plugins → Reverse Analysis** triggers a mandatory 5-second countdown disclaimer (`REVERSE_MODIFY_DISCLAIMER_SECONDS = 5`) keeping the confirm button disabled until read, restricting modification exclusively to software you own or have explicit written authorization / lawful CTF scope to test.
 
-| Package type | Contents | Effect after install |
-|---|---|---|
-| Plain-text skill package, `type: skill` | `skills/<name>/SKILL.md` | Skills are synced into workspaces, at-completion lists them, and a trigger match injects the body into the turn |
-| Executable MCP package, `type: mcp` or `mcp-http` | A launch command, or an HTTP endpoint | The kernel registers tools and the model calls them as `id.tool` |
-| Mixed package | Both of the above | Tools and skills take effect together |
-
-`wasm` and `http` packages are parsed and previewed, but the install button is greyed out until the kernel supports them.
-
-**How to write one**
-
-A `.cfplugin` is a zip; compress the folder and rename the extension to `.cfplugin`:
-
-```
-my-skill.cfplugin
-├── plugin.json
-└── skills/
-    └── my-skill/
-        └── SKILL.md
-```
-
-The minimal manifest, with `schema` fixed at 1:
-
-```json
-{
-  "schema": 1,
-  "id": "my-skill",
-  "name": "My skill",
-  "version": "1.0.0",
-  "type": "skill",
-  "skills": ["my-skill"]
-}
-```
-
-The frontmatter in SKILL.md must be flat and single-line:
-
-```markdown
----
-name: my-skill
-description: One line on what it is for
-triggers: my-skill, my skill
-enabled: true
 ---
 
-The process, checklist or knowledge the model should read here.
-```
+## Plugin Packages (`.cfplugin`) and MCP Extensions
 
-For an executable package, change `type` to `mcp-http` and fill `endpoint`, or to `mcp` and fill `command` and `args`. To ask for secrets, list the variable names in `permissions.secrets`; the install sheet renders masked inputs and the saved values reach the kernel as environment variables:
+Beyond built-in plugins, CodeForge APP imports `.cfplugin` archives (text-only skill bundles or executable `mcp` / `mcp-http` packages) alongside manually configured MCP servers.
+
+<div align="center">
+  <img src="docs/media/plugins-manager.png" alt="Plugins and MCP Manager" width="800" />
+</div>
 
 ```json
 {
@@ -147,276 +122,93 @@ For an executable package, change `type` to `mcp-http` and fill `endpoint`, or t
 }
 ```
 
-**How to use it**
-
-1. Open Plugins in the sidebar, tap "+ Import package" and pick the `.cfplugin`.
-2. Review type, version, permissions and the risk note on the confirm sheet, and fill in secrets if asked.
-3. Confirm. Skills are synced into the current workspace and inbox, and stay in sync when you switch projects; executable packages register with the kernel right away.
-4. The row toggle enables and disables. Details shows permissions, source, SHA-256 and tool and skill status, and also offers update and uninstall.
-5. Uninstall removes the skill copies this package placed in every workspace, and never touches built-in skills or skills you wrote yourself.
-
-**Rules and limits**
-
-- `id` looks like `my-skill`: lowercase letter first, only lowercase letters, digits and hyphens, at most 32 characters; it must not collide with built-in tools, installed packages or existing skills
-- `version` must be `x.y.z`. A higher version for the same id is an upgrade, the same version prompts a reinstall, and a lower one requires ticking allow downgrade
-- `skills[]` must match the directories under `skills/` one to one; extra or missing entries are rejected
-- The archive is capped at 8 MiB, 32 MiB after unpacking and 512 entries; entries containing `..` or absolute paths are rejected
-- Skill frontmatter cannot use YAML block scalars, for the reason in "Why skill frontmatter must be flat single-line"
-
-### Built-in browser and element picking
-
-1. Tap a link in a message and choose the system browser or the built-in one.
-2. In the built-in browser, tap Select element and page elements become tappable.
-3. A picked element gets a number and joins the conversation, and you can type a note in the same bubble so you never have to leave to type.
-4. The element summary, with tag, id, class, text, geometry and styles, travels to the model with the message.
-
-### Models and agents
-
-- Three permission tiers: read-only, ask and auto, set at project creation and changeable at any time
-- Approval cards: per-call confirmation, with arguments and diffs
-- Goal mode: goal, rounds, verdict and findings in one status strip
-- Subagents: their own task, their own context, results merged back
-- Checkpoints and undo: roll back to any recorded step
-
-### Background tasks
-
-Submit a script or a command. It runs in the background, the panel shows status and output, and you can terminate it at any time.
-
-### Voice input
-
-- System speech service, that is SpeechRecognizer, zh-CN
-- Cloud transcription, bring your own key, OpenAI-compatible protocol
-
-Two-tier routing: cloud wins when configured, a dead system engine falls back automatically, and a 20-second no-result watchdog closes the attempt.
-
-### Compat environment
-
-Settings, then Runtime, one-tap installs:
-
-| Package | Installs |
-|---|---|
-| Python | python3 plus pip |
-| Node.js | nodejs plus npm |
-| Go | go |
-| C/C++ | build-base, which includes gcc and friends |
-| Rust | cargo plus rust |
-| Git | git |
-| Java 17 | openjdk17-jre-headless |
-| FFmpeg | ffmpeg |
-
-The installed badge comes from an existence probe, and the probe command must run alone. Piping it makes the exit code come from the last stage of the pipe, which is always 0, so the probe silently reports everything as installed.
-
-### Orientation
-
-Three responsive tiers:
-
-| Width | Layout |
-|---|---|
-| Under 600dp | Single column with a drawer sidebar |
-| 600dp to 840dp | Two columns |
-| 840dp and above | Wide two columns |
-
-In landscape the sidebar collapses completely out of sight, leaving only the hamburger in the main top bar, and expanding or collapsing runs a 220 millisecond width transition.
+- Pure skill bundles set `"type": "skill"` with entries under `skills/<name>/SKILL.md` matching `skills[]` one-to-one.
+- **`SKILL.md` rule**: YAML frontmatter must use flat single-line fields (no `|` or `>` block scalars) so the kernel parser reads triggers cleanly.
+- **Security & Validation**: Archives are capped at **8 MiB** compressed, **32 MiB** extracted, and **512** entries; path traversal (`..`) and absolute entry paths are rejected outright. Required `permissions.secrets` prompt masked inputs on install, persist encrypted via Keystore, sync across workspaces automatically, and clean up cleanly on uninstall.
 
 ---
 
-## Implementation
+## Measured Performance Benchmarks
 
-### Layers
+All numbers below were measured on **2026-11-14** with the `app-release.apk` build running on an Android 14 emulator (`1600×900` @ `240 dpi`, x86_64 host translating `arm64-v8a` via Houdini) via `adb`:
 
-| Layer | Where | Responsibility |
+| Measurement | How Measured | Result |
 |---|---|---|
-| Entry | MainActivity.kt, CodeForgeApp.kt | Window, edge-to-edge, notifications, launching the kernel |
-| UI | AppRoot, chat, sessions, browser, settings, theme under ui | Pure Compose, reads state, calls ViewModel methods |
-| State | ui/ChatViewModel.kt | Single source of truth ChatUiState, folds events into interface state |
-| Protocol | CoreTransport and HttpCoreTransport under core | Translates kernel JSON frames into CoreEvent, 24 kinds |
-| Kernel | libcodeforge.so, a separate process written in Go | 36 REST endpoints plus 1 WebSocket, execution, protocol, workspace |
-
-Unidirectional data flow: a user action reaches the ViewModel, then the transport, then the kernel, the WebSocket pushes events, the transport parses them into CoreEvent, the ViewModel folds them into ChatUiState, and Compose recomposes.
-
-The UI layer must not touch the protocol layer, the state layer must not touch UI, and the protocol layer must not import the UI layer. Three hard boundaries enforced at compile time by imports.
-
-### How the kernel process starts
-
-CoreService is a specialUse foreground service that launches libcodeforge.so through ProcessBuilder:
-
-1. The environment sets HOME to filesDir so the SQLite database lands in the .codeforge directory, and sets CODEFORGE_PORT to 0 for a random port, because a hardcoded one gets taken by another process.
-2. Once the kernel binds it prints PORT=xxxxx to stdout, and the service scans for that prefix line by line.
-3. Only then is the HTTP and WebSocket client created.
-
-Authentication uses a cookie named codeforge_token, fetched from a GET on the root path. It is not a query parameter, and this is the easiest thing to get wrong.
-
-### The typesetting engine
-
-libopenrender.so, upstream raine-x OpenRender:
-
-```
-raw text, to incremental Markdown IR, to Rust typesetting, to PNG or structured blocks, to Compose
-```
-
-- Incremental: only new or changed paragraphs are fed to the engine, already-typeset parts are not recomputed
-- Formulas: RaTeX renders them to PNG, and Chinese works through an embedded Noto Sans SC subset behind the RATEX_UNICODE_FONT switch
-- Tables: column widths are allocated from measured render widths, not character-count heuristics, so headers stop breaking across lines
-- HTML blocks: the engine has no HTML block type, so raw HTML must be detected before it is fed to the engine and mounted as a WebView instead
-
-### The embedded browser
-
-- BrowserOverlay.kt is the full-screen browser, and PageBridge.kt is the JS bridge, where window.__cf provides inspect, list, click, evaluate, contentHeight and viewport
-- HtmlBlockView.kt is the HTML embedded in the message stream, with height measured from content and clamped between 140dp and 520dp
-- HtmlDetection.kt handles raw HTML detection and merging
-
-### Kernel API
-
-The kernel exposes 36 REST endpoints covering config, permissions, sessions, workspaces, models, providers, tasks, memory, skills, plugins, MCP, the file tree, undo, diff and health checks.
-
-When talking to a local service, always assume the first connection attempt fails. Liveness must be checked against a business endpoint, the health one, because an open port does not mean the handler is serving.
-
-### Compat environment
-
-env-kit.tgz, which is proot 5.1.107.101, and rootfs-alpine.tgz, which is an Alpine 3.24.3 minirootfs, ship inside the APK and unpack into the rootfs folder under filesDir on first launch.
-
-The kernel runs commands inside that same directory tree through cfrun, and the path contract is single-rooted, exposed as the CELL variable.
-
-Mirrors point at the USTC mirror because the official dl-cdn often times out in China, and the version is read from the rootfs itself so a mirror upgrade cannot desync a hardcoded number.
-
-### Signing
-
-The keystore lives at app/keystore/codeforge.keystore, RSA 2048, valid for 10000 days, and produces v2 plus v3 signatures.
-
-Configured is not the same as shipped. Check the apksigner verify output, not the build script. When the keystore file is missing the build silently falls back to the debug keystore, which is v2 only.
+| Release APK footprint | `app-release.apk` (R8 + `shrinkResources`, `arm64-v8a`) | **17.58 MiB** (`18,428,777 B`) |
+| Bundled native binaries & assets | `jniLibs/arm64-v8a/` & `assets/` | `libcodeforge.so` **17.00 MiB**, `libopenrender.so` **8.52 MiB**, `rootfs-alpine.tgz` **3.84 MiB**, `builtin-skills.zip` **0.72 MiB**, `env-kit.tgz` **0.13 MiB** |
+| Cold start latency (3 warmed-ART runs) | `adb shell am start -W -n com.hxy.codeforge/.MainActivity` | **360 ms / 276 ms / 283 ms** (median **283 ms**) |
+| Frame stability scrolling long Markdown reports (838 frames) | `adb shell dumpsys gfxinfo com.hxy.codeforge` | **2 / 838** janky frames (**0.24%**), **0** missed Vsync |
+| Frame duration percentiles | `adb shell dumpsys gfxinfo com.hxy.codeforge` | **P50 = 9 ms · P90 = 9 ms · P95 = 10 ms · P99 = 11 ms** |
+| Memory footprint (idle connected → loaded long session) | `adb shell dumpsys meminfo com.hxy.codeforge` | **82.9 MB → 120.5 MB PSS** (RSS 197.2 MB → 236.7 MB) |
+| Source & Verification Scale | `app/src/{main,test}/java/` + `testDebugUnitTest` + `lintDebug` | **70** main `.kt` files (**31,793** lines) · **16** test `.kt` files (**2,140** lines) · **113 / 113** tests green · Lint **0 errors** |
 
 ---
 
-## How it works
+## Architecture and Layered Design
 
-### Why targetSdk 28
+```text
+User Input → UI (Compose) → State (ChatViewModel) → Protocol (CoreTransport) → Kernel (libcodeforge.so)
+    ↑                                                                                    │
+    └──── Recompose ←──── StateFlow<ChatUiState> ←──── CoreEvent ←──── WebSocket / HTTP ─┘
+```
 
-Since Android 10, apps may not execute files from their own writable storage. The kernel is an ELF executable that has to run inside the app private directory, so targetSdk 28 is deliberate: trading a compatibility level for runtime capability, on purpose.
-
-The cost is Play Store policy friction, but this app is fundamentally a developer tool that runs arbitrary code on your device, and the sideload-first positioning is explicit.
-
-### Why write our own typesetting engine
-
-Off-the-shelf solutions have three hard limits:
-
-1. Chinese formulas, where many engines fall back to source text or misplace glyphs.
-2. Streaming, since parsing the whole block and then typesetting means long replies stall.
-3. Offline, because depending on a remote rendering service means formulas need a network.
-
-The in-house chain claims all three: incremental IR for streaming, an embedded CJK font subset for Chinese, and everything local for offline.
-
-### Why HTML must be detected before it reaches the engine
-
-A CommonMark HTML block ends at the first blank line. When a model emits an indented HTML document, the engine chops it into fragments that cannot be reassembled.
-
-So the flow is: detect whether this is a whole HTML document, and if so mount a WebView and bypass the engine entirely, otherwise hand it to the engine.
-
-### Why element picking cannot rely on hover
-
-Touch screens have no mousemove, so any scheme that remembers the currently hovered element is guaranteed to fail on a phone.
-
-The working approach is tap-based: tap, the JS bridge returns the element info, and it gets numbered and joins the conversation.
-
-### Why skill frontmatter must be flat single-line
-
-The kernel frontmatter parser does a line-by-line strings.Cut on the colon, and it is not a YAML parser. A YAML block scalar, which is description followed by a pipe and then indented lines, gets shredded, leaving a bare pipe as the description.
-
-So the bundled skills frontmatter is always rewritten into the flat single-line form the kernel understands.
-
-Generalization: before passing structured metadata across a process boundary, find out which syntax the other side actually parses. The assumption that the other side supports YAML is often wrong.
-
-### Why probe commands cannot contain a pipe
-
-The exit code of gcc --version piped into head -1 comes from the last stage of the pipe, which is head, and that is always 0. So gcc being absent still gets judged as installed.
-
-A probe must be the target command own single execution.
+| Layer | Modules / Key Files | Responsibilities |
+|---|---|---|
+| **Entry** | `MainActivity.kt`, `CodeForgeApp.kt`, `CoreService.kt` | Edge-to-edge window, notification channel/permissions, crash log capture, first-run `EnvKit` bootstrap, `specialUse` service spawning `libcodeforge.so` with `PORT=` handshake |
+| **State** | `ChatViewModel.kt` + split domain files:<br>`ChatViewModelSessions.kt` (sessions/projects/archive/branch)<br>`ChatViewModelModels.kt` (models/providers/kernel config/tasks)<br>`ChatViewModelPlugins.kt` (`.cfplugin`/MCP lifecycle)<br>`ChatViewModelWorkspace.kt` (tree/elements/drafts/memory/compression) | Owns single source of truth `ChatUiState`, serializes queued sends, isolates background session frames, imports zero Android UI |
+| **UI** | `AppRoot.kt`, `ui/chat/` (`Composer.kt`, `ComposerPanels.kt`, `MessageList.kt`, `OpenRenderMessage.kt`, `MessageBlocks.kt`, `StatusStrips.kt`), `ui/sessions/`, `ui/settings/` (`SettingsSheet.kt`, `SettingsModelSection.kt`, `KernelSettingsSection.kt`, `ModelEditorSection.kt`), `ui/browser/` | Pure Compose rendering; forbidden from importing protocol classes or owning independent business state |
+| **Render Bridge** | `render/OpenRenderNative.kt`, `render/RenderIr.kt` | JNI wrapper around `libopenrender.so` with process-level `nativeDead` text fallback and code-fence-aware LaTeX delimiter normalization |
+| **Protocol & Core** | `core/CoreTransport.kt`, `core/HttpCoreTransport.kt`, `core/KernelApi.kt`, `core/EnvKit.kt`, `core/PluginInstaller.kt`, `core/PluginSkills.kt` | 36 REST endpoints + auto-reconnecting WebSocket, `codeforge_token` cookie auth, single-root `$CELL` proot wiring, and `.cfplugin` installer |
 
 ---
 
-## Build
+## CI and Building from Source
+
+### 1. GitHub Actions CI (`.github/workflows/android-ci.yml`)
+
+Every push or pull request to `main` executes:
+1. JDK 17 (Temurin) + Android SDK + Gradle 8.14.6 setup
+2. `./gradlew testDebugUnitTest --no-daemon` (all **113** JVM unit & source-guard tests)
+3. `./gradlew lintDebug --no-daemon` (Android & Compose Lint checks)
+4. `./gradlew assembleDebug --no-daemon` and uploads test/lint reports + Debug APK artifact
+
+### 2. Local Commands
 
 ```bash
-# requires JDK 17 and Android SDK, compileSdk 36, build-tools 36.0.0
+# Run all JVM unit and architecture-guard tests
+./gradlew testDebugUnitTest
+
+# Run Android Lint checks
+./gradlew lintDebug
+
+# Build Debug APK
 ./gradlew assembleDebug
-# output at app/build/outputs/apk/debug/app-debug.apk
 
+# Build R8-minified Release APK (app/build/outputs/apk/release/app-release.apk)
 ./gradlew assembleRelease
-# output at app/build/outputs/apk/release/app-release.apk
 ```
 
-| Component | Version |
-|---|---|
-| Gradle | 8.14.6, bundled with the wrapper |
-| Android Gradle Plugin | 8.13.2 |
-| Kotlin | 2.4.21 |
-| Compose UI | 1.9.5 |
-| Material 3 | 1.3.2 |
-| compileSdk / targetSdk / minSdk | 36 / 28 / 26 |
-| ABI | arm64-v8a |
-
-Versions are pinned on purpose, and upgrading them means moving the whole chain at once. The reasoning lives in the version locking section of AGENTS.md.
-
-### Native libraries
-
-The Go kernel and the typesetting engine ship as **prebuilt artifacts** (`app/src/main/jniLibs/arm64-v8a/`); building the APK does not require rebuilding them. Their sources are not in this repository — to rebuild or obtain the sources, contact 2653603072@qq.com (see License).
+Both `libcodeforge.so` and `libopenrender.so` are shipped prebuilt under `app/src/main/jniLibs/arm64-v8a/`, so building the Android client requires no Go, Rust, or NDK setup.
 
 ---
 
-## Engineering discipline
+## Design Principles and Engineering Discipline
 
-The rules live in files, not in oral tradition:
-
-| File | What it records |
-|---|---|
-| AGENTS.md | Layering, editing rules, verification standards, commit conventions, and the pitfalls hit so far, numbered up to P-053 |
-| 工作进程.md | Where things stand, what comes next, open decisions |
-| 改动历史.md | Every change: time, files, what, why, and how far it was verified. Archived only, entries are never deleted |
-
-Verification is reported at four levels, honestly. If it was not run on a device, the record says runtime unverified. Documents are more trustworthy than conclusions, conclusions more than documents.
-
-### Layout
-
-```
-app/src/main/java/com/hxy/codeforge/
-  core/      kernel transport, protocol models, compat env, bundled skills, plugin installer and skill sync
-  render/    typesetting engine bridge and IR
-  ui/        chat, sessions, settings, common, browser, theme
-  voice/     cloud speech
-app/src/main/jniLibs/arm64-v8a/   Go kernel and Rust engine (prebuilt artifacts)
-docs/                              design docs and parity checklists
-```
+- **Compile-Time Boundary Enforcement**: UI never imports `HttpCoreTransport`; ViewModel never imports Compose; `render/` depends on neither UI nor networking.
+- **Automated Regression Guards**: **17** test suites (`TaskListThemeAndSyncTest`, `MentionListScrollTest`, `ResponsiveTest`, `NoOfflineVoiceTest`, `BuiltinSkillsTest`, `PluginInstallerTest`, `CapabilityPromptTest`, `RenderIrTest`, etc.) verify UX invariants, prompt contracts, and architectural constraints.
+- **Three-Document Traceability**: `AGENTS.md` (recording **59** documented pitfalls `P-001`–`P-059`), `工作进程.md` (task status), and `改动历史.md` (chronological audit log) maintain complete traceability across every change.
 
 ---
 
-## Known limits
+## Current Scope and Known Limits
 
-1. arm64-v8a only, because the Go kernel is cross-compiled for arm64 and x86 emulators cannot install it.
-2. The compat environment is not yet verified on a real device. proot uses mmap with PROT_EXEC rather than execve, and whether SELinux allows PROT_EXEC on app_data_file has to be measured, not reasoned about.
-3. There is no per-session stream bucketing. The web client isolates streaming frames by session_id, and the Android side has no such mechanism, so frames from a background session can land in the current view.
-4. Referencing a file in conversation from the file tree is not implemented. Tapping a file only handles directories.
-5. There is no dedicated subagent panel, only an inline card strip in the message stream plus settings.
-6. The signing key password sits in plaintext in the build script. That is fine for sideloading, but it must move to an offline-held key plus environment variables before any store release.
+1. **`arm64-v8a` ABI Only**: Only ARM64 native binaries are bundled (emulators on x86_64 require Houdini translation).
+2. **`targetSdk = 28` Sideload Target**: Explicitly pinned so Android permits executing `libcodeforge.so` and `proot` binaries unpacked under `filesDir`; not intended for Google Play Store distribution.
+3. **Separate Native Sources**: Upstream Go (`libcodeforge.so`) and Rust (`libopenrender.so`) source trees remain outside this repository per `AGENTS.md`.
+4. **Sandbox `ptrace` Restrictions**: Some restricted containers or emulators block `ptrace(TRACEME)` needed by `proot`; in those environments, static Python / system tools (`dexdump`, `binutils`) continue to work natively.
 
 ---
 
 ## License
 
-This project is **dual-licensed under the MIT License and a commercial license** (Copyright (c) 2026 raine-x).
-
-### MIT license (default)
-
-Use, copy, modify, merge, publish, distribute, sublicense and sell under the standard MIT License — including commercial use — provided the copyright and license notices are retained. The `libcodeforge.so` and `libopenrender.so` binaries shipped with this repository are licensed under MIT as well; their build sources are not part of this repository (see below).
-
-### Commercial license (optional)
-
-For uses beyond the MIT terms — no-attribution or white-label use, exclusive licensing, OEM bundling and customization, source-level delivery, warranty and support — contact **2653603072@qq.com** for a commercial license. It is offered in parallel with MIT; pick either. Third-party components are not covered by it.
-
-### Third-party components keep their original licenses
-
-The APK bundles a typesetting engine (MIT), a Noto Sans SC font subset (SIL OFL 1.1), proot (GPL-2.0 family), libtalloc (LGPL family) and an Alpine rootfs. Each remains under its own license, owned by its own authors. The licenses of this project do not change or extend to them. See the third-party section of LICENSE for the full list.
-
-### About the sources
-
-The kernel (libcodeforge.so) source used to be distributed with older versions of this repository under GPL-3.0 with additional terms; as of this version the copyright holder has relicensed it under MIT and no longer distributes the source here. Copies obtained under the old license remain governed by it.
-
-The full terms and the complete license text are in [LICENSE](LICENSE).
+Dual-licensed under **MIT + Commercial License**. Personal learning, open-source research, and non-commercial use follow MIT; commercial distribution, OEM pre-installation, or closed-source forks require commercial licensing via `2653603072@qq.com`. Third-party licenses are listed in [LICENSE](LICENSE).

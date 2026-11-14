@@ -192,8 +192,8 @@ fun RotateWithDevice(content: @Composable () -> Unit) {
     // 布局又拧一下 —— 侧栏跑到上方、状态栏文字侧躺，纯属自找麻烦。
     //
     // 不提供 LocalOrientation 即可：Responsive 侧在它为 null 时回退到真实窗口尺寸。
-    val isTablet = androidx.compose.ui.platform.LocalContext.current
-        .resources.configuration.smallestScreenWidthDp >= 600
+    val isTablet = androidx.compose.ui.platform.LocalConfiguration.current
+        .smallestScreenWidthDp >= 600
     if (isTablet) {
         content()
         return

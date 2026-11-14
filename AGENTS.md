@@ -48,15 +48,15 @@ CodeForgeAPP/
 | 层 | 文件 | 职责 |
 |---|---|---|
 | 入口 | `MainActivity.kt`、`CodeForgeApp.kt` | 建窗口、edge-to-edge、状态栏显隐、通知权限、拉起 CoreService、首启流水线（§2.5） |
-| 状态 | `ui/ChatViewModel.kt` | 唯一状态源、事件折叠、发送串行队列、项目/工作区、后台任务、页面元素登记 |
+| 状态 | `ui/ChatViewModel.kt` + `ChatViewModel{Sessions,Models,Plugins,Workspace}.kt` | 唯一状态源、事件折叠、发送串行队列、项目/工作区、模型/插件配置、后台任务、页面元素登记 |
 | 界面·骨架 | `ui/AppRoot.kt` | 横屏=内容旋转接双栏（侧栏+聊天）、“环境准备中”遮罩、顶栏/横幅/问候页、弹层挂载、内置浏览器浮层 |
-| 界面·聊天 | `ui/chat/` | `MessageList`（贴底跟随、回到最新、探索分组）· `MessageBubble`（气泡/思考/操作行）· `OpenRenderMessage`（IR→Compose 排版、媒体围栏路由、HTML 块）· `MessageBlocks`（媒体与附件渲染、`LocalAttachmentRoot`）· `Composer`（悬浮输入卡、四态主按钮、双引擎语音、模型/附件弹层、@ 补全）· `ToolCard` / `ToolLabels` / `ApprovalCardView` / `ActionPanel` / `BackgroundTasksSheet` / `ModelPickerSheet` / `StatusStrips` |
+| 界面·聊天 | `ui/chat/` | `MessageList`（贴底跟随、回到最新、探索分组）· `MessageBubble`（气泡/思考/操作行）· `OpenRenderMessage`（IR→Compose 排版、媒体围栏路由、HTML 块）· `MessageBlocks`（媒体与附件渲染、`LocalAttachmentRoot`）· `Composer` + `ComposerPanels`（悬浮输入卡、附件/技能弹层、四态主按钮、双引擎语音、模型弹层、@ 补全）· `ToolCard` / `ToolLabels` / `ApprovalCardView` / `ActionPanel` / `BackgroundTasksSheet` / `ModelPickerSheet` / `StatusStrips` |
 | 界面·浏览器 | `ui/browser/` | `BrowserOverlay`（全屏页）· `PageBridge`（JS 桥 `window.__cf`）· `BrowserWebView` · `HtmlBlockView`（流内 HTML 块）· `HtmlDetection`（裸 HTML 判定/合并）· `BrowserModels` / `BrowserController` |
 | 界面·会话 | `ui/sessions/` | `SessionPane`（项目分组/侧栏）· `ProjectPanel` · `FileTreePanel` · `McpSidebarPanel`（三段插件面板）· `PluginDetailSheet` · `SessionActionsSheet` |
-| 界面·设置 | `ui/settings/` | `AppSettings`（Compose 状态 + 加密 SharedPreferences）· `SettingsSheet`（二级页）· `FileTransferSection` · `ModelEditorSection` · `KernelSettingsSection` · `EnvPackagesSection` |
+| 界面·设置 | `ui/settings/` | `AppSettings`（Compose 状态 + 加密 SharedPreferences）· `SettingsSheet` + `SettingsModelSection`（二级页、模型与供应商库）· `FileTransferSection` · `ModelEditorSection` · `KernelSettingsSection` · `EnvPackagesSection` |
 | 界面·通用 | `ui/common/` `ui/theme/` | `Responsive`（三档判定）· `Glyphs`（图标库）· `NoRipple` · `VoiceInput`（系统识别）· `DeviceRotation`（姿态 + 内容旋转）· `StatusBarVisibility`（主窗+弹层状态栏显隐同步）· `ToastHost` · `Theme.kt`（暖色配色/字体/`AppBackground`） |
 | 界面·提示词 | `ui/CapabilityPrompt.kt` | 注入给模型的「客户端渲染能力」说明与注入标记（P-042 / P-054） |
-| 协议 | `core/` | `CoreTransport`（`CoreEvent` + 接口）· `MockCoreTransport`（假内核）· `HttpCoreTransport`（HTTP+WS 自愈重连/帧解析）· `AttachmentParsers` · `EnvProbe` |
+| 协议 | `core/` | `CoreTransport`（`CoreEvent` + 接口）· `HttpCoreTransport`（HTTP+WS 自愈重连/帧解析）· `AttachmentParsers` · `EnvProbe` |
 | 服务 | `core/` | `CoreService`（specialUse 前台服务：拉起 `.so`、PORT 握手、退避重启）· `KernelApi`（REST 客户端，Cookie 同 WS）· `KernelConfig`（设置 ↔ local.yaml）· `ModelPresets`（国内外常见模型上下文规格预设与 ≥128K 默认兜底）· `EnvKit`（proot+Alpine、`$CELL` 单根、cfrun、软件包）· `BuiltinSkills` · `PluginInstaller`（`.cfplugin` 校验与原子安装）· `PluginSkills`（多工作区技能同步）· `LiveTransport`（进程级 WS holder）· `ApprovalReceiver`（通知 action） |
 | 语音 | `voice/CloudVoice.kt` | 云端识别（OpenAI 兼容 `/audio/transcriptions`）：16k PCM → WAV → multipart |
 | 模型 | `model/CoreModels.kt`、`model/PluginModels.kt` | 纯 data class / enum，无逻辑无 Android 依赖 |

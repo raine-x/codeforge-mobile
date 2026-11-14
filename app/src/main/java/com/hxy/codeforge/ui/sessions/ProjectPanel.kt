@@ -36,10 +36,13 @@ import androidx.compose.ui.unit.sp
 import com.hxy.codeforge.model.PermissionMode
 import com.hxy.codeforge.model.ProjectItem
 import com.hxy.codeforge.ui.ChatViewModel
+import com.hxy.codeforge.ui.archiveProject
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.common.SyncDialogStatusBar
 import com.hxy.codeforge.ui.common.noRippleClickable
+import com.hxy.codeforge.ui.deleteProject
+import com.hxy.codeforge.ui.renameProject
 import com.hxy.codeforge.ui.theme.Clay
 import com.hxy.codeforge.ui.theme.SerifDisplay
 

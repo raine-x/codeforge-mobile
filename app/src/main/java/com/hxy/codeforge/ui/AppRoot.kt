@@ -392,7 +392,7 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
  */
 @Composable
 private fun EnvPreparingOverlay() {
-    val env = EnvKit.status.value
+    val env by EnvKit.status.collectAsStateWithLifecycle()
     val envPrep = env as? EnvKit.Status.Preparing
     val envPct = envPrep?.percent
     val visible = envPct != null

@@ -43,11 +43,21 @@ import com.hxy.codeforge.core.KernelApi
 import com.hxy.codeforge.model.BuiltinPluginInfo
 import com.hxy.codeforge.model.InstalledPlugin
 import com.hxy.codeforge.ui.ChatViewModel
+import com.hxy.codeforge.ui.addMcpPlugin
+import com.hxy.codeforge.ui.cancelPendingPluginInstall
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.common.noRippleClickable
+import com.hxy.codeforge.ui.confirmPluginInstall
+import com.hxy.codeforge.ui.deleteMcpPlugin
+import com.hxy.codeforge.ui.installPlugin
+import com.hxy.codeforge.ui.refreshInstalledPlugins
+import com.hxy.codeforge.ui.savePluginSecrets
+import com.hxy.codeforge.ui.setMcpPlugin
+import com.hxy.codeforge.ui.setPluginEnabled
 import com.hxy.codeforge.ui.theme.Clay
 import com.hxy.codeforge.ui.theme.SerifDisplay
+import com.hxy.codeforge.ui.uninstallPlugin
 
 /**
  * 侧栏「插件」管理面板（铺满整个侧栏 / 屏幕）。
