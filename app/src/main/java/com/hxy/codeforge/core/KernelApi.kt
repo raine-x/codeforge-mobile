@@ -204,7 +204,12 @@ class KernelApi(private val host: String, private val port: Int) {
                     ),
                 )
                 .build()
-            client.newCall(Request.Builder().url("$base/api/upload_file").post(body).build())
+            // 大视频/大文件上传不吃默认 10s 写超时；newBuilder 共享连接池与 cookieJar，零额外线程开销
+            client.newBuilder()
+                .writeTimeout(120, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
+                .build()
+                .newCall(Request.Builder().url("$base/api/upload_file").post(body).build())
                 .execute().use { resp ->
                     val text = resp.body?.string().orEmpty()
                     if (!resp.isSuccessful) {

@@ -153,7 +153,7 @@ fun ChatViewModel.clearEdit() {
  * 草稿预填在任何时点都成立。
  *
  * 文本走 editText 回填通路（editBack 留空 = 不进编辑态，发送是普通发送）；
- * 图片按 EnvKit.stageUriToOutbox 同款口径复制进暂存区，再走 editAttachments。
+ * 附件按 EnvKit.stageUriToOutbox 同款口径复制进暂存区，再走 editAttachments。
  * 全部失败且有文本时仍回填文本 —— 文本是主、附件是辅。
  */
 fun ChatViewModel.onExternalContent(text: CharSequence?, uris: List<Uri>) {
@@ -161,20 +161,58 @@ fun ChatViewModel.onExternalContent(text: CharSequence?, uris: List<Uri>) {
     if (body == null && uris.isEmpty()) return
     viewModelScope.launch {
         val staged = uris.mapNotNull { uri ->
-            EnvKit.stageUriToOutbox(getApplication(), uri) {
-                _state.update { s -> s.copy(banner = Banner("附件超过 20MiB 上限", isError = true)) }
-            }
+            EnvKit.stageUriToOutbox(getApplication(), uri)
         }
         val skipped = uris.size - staged.size
         if (skipped > 0) {
             _state.update { s ->
-                s.copy(banner = Banner("已跳过 $skipped 个超限或无法读取的附件", isError = true))
+                s.copy(banner = Banner("已跳过 $skipped 个无法读取的附件", isError = true))
             }
         }
         _state.update {
             it.copy(
                 editText = body,
                 editAttachments = staged,
+                editSeq = ++editSeqCounter,
+            )
+        }
+    }
+}
+
+/** 从文件管理器引用路径到输入框，不覆盖用户已写文本或已有附件。 */
+fun ChatViewModel.quoteFileToInput(displayPath: String) {
+    val clean = displayPath.trim()
+    if (clean.isEmpty()) return
+    _state.update { it.copy(elementInsert = ElementInsert(seq = ++insertSeq, ref = clean)) }
+}
+
+/** 从文件管理器把文件装入输入卡附件槽；已在当前工作区内则直接带相对路径，避免大图/大视频二次复制。 */
+fun ChatViewModel.attachFileToInput(file: java.io.File, activeWorkspaceRoot: String) {
+    if (!file.isFile) {
+        toast("文件不存在：${file.name}", isError = true)
+        return
+    }
+    viewModelScope.launch {
+        val target = withContext(Dispatchers.IO) {
+            val rootDir = activeWorkspaceRoot.takeIf { it.isNotBlank() }?.let { java.io.File(it) }
+            val fileCanon = runCatching { file.canonicalFile }.getOrNull()
+            val rootCanon = rootDir?.let { runCatching { it.canonicalFile }.getOrNull() }
+            val prefix = rootCanon?.path?.trimEnd(java.io.File.separatorChar)?.plus(java.io.File.separator)
+            if (fileCanon != null && prefix != null && fileCanon.path.startsWith(prefix)) {
+                rootCanon.toPath().relativize(fileCanon.toPath()).toString().replace('\\', '/')
+            } else {
+                EnvKit.stageFileToOutbox(getApplication(), file)
+            }
+        }
+        if (target == null) {
+            toast("读取文件失败：${file.name}", isError = true)
+            return@launch
+        }
+        _state.update {
+            it.copy(
+                editText = null,
+                editAttachments = listOf(target),
+                editBack = null,
                 editSeq = ++editSeqCounter,
             )
         }

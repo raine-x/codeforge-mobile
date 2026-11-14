@@ -46,7 +46,10 @@ import kotlinx.coroutines.launch
  * 所有 IO 一律在 [Dispatchers.IO]：打包是遍历整棵目录树，主线程做必卡。
  */
 @Composable
-fun FileTransferSection(vm: ChatViewModel) {
+fun FileTransferSection(
+    vm: ChatViewModel,
+    onOpenFileManager: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val state by vm.state.collectAsState()
@@ -205,6 +208,23 @@ fun FileTransferSection(vm: ChatViewModel) {
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
+        if (onOpenFileManager != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Clay.copy(alpha = 0.14f))
+                    .noRippleClickable { onOpenFileManager() }
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+            ) {
+                Text(
+                    text = "打开统一文件管理器（浏览 / 预览 / 重命名 / 删除 / 清理缓存）",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = Clay,
+                )
+            }
+        }
         Text(
             text = "/sdcard 与 Download 已由兼容环境绑定，内核命令可直接读写；" +
                 "导出会把文件复制到 Download/CodeForge/，不需要额外权限（targetSdk 28 legacy 存储）。",

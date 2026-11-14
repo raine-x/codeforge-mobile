@@ -76,6 +76,7 @@ fun SessionPane(
     currentWorkspaceName: String = "",
     workspaceSwitching: Boolean = false,
     onOpenMcp: () -> Unit = {},
+    onOpenFiles: () -> Unit = {},
     onSelectProject: (ProjectItem) -> Unit = {},
     onProjectLongPress: (ProjectItem) -> Unit = {},
     onNewSessionInProject: (String) -> Unit = {},
@@ -138,8 +139,9 @@ fun SessionPane(
             }
         }
 
-        // 导航：只有「对话」是当前页；插件面板铺满侧栏（点击后由外层切换）
+        // 导航：只有「对话」是当前页；插件面板与文件管理器分别从外层打开
         NavRow(label = "对话", glyph = Glyph.ChatBubble, active = true, onClick = null)
+        NavRow(label = "文件", glyph = Glyph.Folder, active = false, onClick = onOpenFiles)
         NavRow(label = "插件", glyph = Glyph.Cube, active = false, onClick = onOpenMcp)
 
         HorizontalDivider(

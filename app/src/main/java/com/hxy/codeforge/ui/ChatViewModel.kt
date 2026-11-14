@@ -178,6 +178,19 @@ data class Banner(
     val isError: Boolean,
     /** 是否给一个「重试」按钮。内核连不上/异常退出时置 true —— 自动重连兜不住时得让用户有手动手段。 */
     val retryable: Boolean = false,
+    /** 附件/上传因内核体积限制被拒绝时置 true —— 横幅常驻并附「前往设置」直达文件传输页。 */
+    val openFileTransfer: Boolean = false,
+)
+
+internal fun isAttachmentLimitError(detail: String): Boolean =
+    listOf("413", "too large", "20mib", "20mb", "不能超过", "过大").any {
+        detail.contains(it, ignoreCase = true)
+    }
+
+internal fun attachmentLimitBanner(detail: String): Banner = Banner(
+    text = "上传受限（${detail.trim().take(80)}），请前往「设置 → 文件传输」直接将文件上传至工作区",
+    isError = true,
+    openFileTransfer = true,
 )
 
 /**
@@ -206,6 +219,23 @@ internal fun stripInjectedText(text: String): String {
     val idx = listOfNotNull(i1.takeIf { it >= 0 }, i2.takeIf { it >= 0 }).minOrNull()
         ?: return text
     return text.substring(0, idx).trimEnd()
+}
+
+/**
+ * 把自动落盘的大文件说明插到客户端注入标记（[INJECT_ELEMENT_MARKER] / [INJECT_CAPABILITY_MARKER]）
+ * 之前。这样两件事同时成立：① AI 收到明确的工作区相对路径与工具读取提示；② 会话回放跑
+ * [stripInjectedText] 时只裁掉系统标记，不会把大文件引用一起裁没。
+ */
+internal fun appendNoteBeforeInjectedMarkers(wireText: String, note: String): String {
+    if (note.isBlank()) return wireText
+    val i1 = wireText.indexOf(INJECT_CAPABILITY_MARKER)
+    val i2 = wireText.indexOf(INJECT_ELEMENT_MARKER)
+    val idx = listOfNotNull(i1.takeIf { it >= 0 }, i2.takeIf { it >= 0 }).minOrNull()
+        ?: return if (wireText.isBlank()) note else "$wireText\n\n$note"
+    val head = wireText.substring(0, idx).trimEnd()
+    val tail = wireText.substring(idx)
+    val mergedHead = if (head.isEmpty()) note else "$head\n\n$note"
+    return "$mergedHead\n\n$tail"
 }
 
 
@@ -410,6 +440,15 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         viewModelScope.launch { applySessionSpaceNow(sessionId) }
     }
 
+    internal fun resolveSessionWorkspacePath(sessionId: String): String {
+        val st = _state.value
+        val session = st.sessions.firstOrNull { it.id == sessionId }
+        // 优先级：会话元信息里的 workspace（真值）→ 当前项目 → 应用私有 inbox
+        return session?.workspace?.takeUnless { it.isBlank() }
+            ?: st.currentWorkspace.takeUnless { it.isBlank() }
+            ?: EnvKit.inboxSpace(getApplication()).absolutePath
+    }
+
     /**
      * [applySessionSpace] 的挂起版：发送附件前必须**等它完成**再上行，
      * 否则 `/api/upload_file` 会写进旧工作区，附件路径与新工作区对不上（问题 1）。
@@ -417,12 +456,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     private suspend fun applySessionSpaceNow(sessionId: String): Boolean {
         if (sessionId.isEmpty() || boundKind != BoundKind.Kernel) return false
         val a = api ?: return false
-        val st = _state.value
-        val session = st.sessions.firstOrNull { it.id == sessionId }
-        // 优先级：会话元信息里的 workspace（真值）→ 当前项目 → 应用私有 inbox
-        val target = session?.workspace?.takeUnless { it.isBlank() }
-            ?: st.currentWorkspace.takeUnless { it.isBlank() }
-            ?: EnvKit.inboxSpace(getApplication()).absolutePath
+        val target = resolveSessionWorkspacePath(sessionId)
         installBuiltinSkills(target)
         return when (val r = a.setWorkspace(target)) {
             is KernelApi.ApiResult.Ok -> true
@@ -974,11 +1008,16 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 ).any { event.message.contains(it, ignoreCase = true) }
                 // 失败没有 idle，本轮不会再有「计划书已生成」的时机，标记要作废
                 planPending = false
+                val errBanner = if (isAttachmentLimitError(event.message)) {
+                    attachmentLimitBanner(event.message)
+                } else {
+                    Banner(event.message, isError = true, retryable = retryable)
+                }
                 _state.update {
                     it.copy(
                         running = false,
                         // 失败收尾同样要清流式标记与挂着的运行中工具行
-                        banner = Banner(event.message, isError = true, retryable = retryable),
+                        banner = errBanner,
                         messages = it.messages.map { m ->
                             sweepMessage(if (m.streaming) m.copy(streaming = false) else m)
                         },
@@ -1270,13 +1309,14 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
 
         // 附件从工作区根解析，必须等工作区切好再上传；纯文本也走这一步，
         // 保证内核本轮的文件根与界面显示的会话归属一致。
+        val workspaceDir = java.io.File(resolveSessionWorkspacePath(sid))
         applySessionSpaceNow(sid)
-        val staged = uploadAttachments(req.attachments) ?: return
-        if (staged != req.attachments && staged.isNotEmpty()) {
+        val outcome = uploadAttachments(req.attachments, workspaceDir) ?: return
+        if (outcome.bubbleAttachments != req.attachments && outcome.bubbleAttachments.isNotEmpty()) {
             _state.update { s ->
                 s.copy(
                     messages = s.messages.map {
-                        if (it.id == bubbleId) it.copy(attachments = staged) else it
+                        if (it.id == bubbleId) it.copy(attachments = outcome.bubbleAttachments) else it
                     },
                 )
             }
@@ -1287,8 +1327,25 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             val f = java.io.File(p)
             if (f.isAbsolute) runCatching { f.delete() }
         }
+        val wireText = if (outcome.directImports.isEmpty()) {
+            req.text
+        } else {
+            val summary = outcome.directImports.joinToString("\n") { (rel, size) ->
+                "- $rel (${EnvKit.formatFileSize(size)})"
+            }
+            val note = "[以下大文件超过 20MiB 内核直传限制，已自动上传至工作区，请使用文件或终端工具访问：\n$summary]"
+            _state.update {
+                it.copy(
+                    banner = Banner(
+                        "${outcome.directImports.size} 个大文件已自动直传至工作区 imports/",
+                        isError = false,
+                    )
+                )
+            }
+            appendNoteBeforeInjectedMarkers(req.text, note)
+        }
         t.setCurrentSession(sid)
-        t.sendMessage(req.text, staged)
+        t.sendMessage(wireText, outcome.wireAttachments)
         // 元素已经随这条消息走了 —— 清掉待发列表，输入卡上的 chip 一并消失。
         // 序号不复用：历史里的「元素1」还得指着同一个东西。
         _state.update { s -> s.copy(attachedElements = emptyList()) }
@@ -1362,39 +1419,85 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         return gate
     }
 
+    private data class UploadOutcome(
+        val wireAttachments: List<String>,
+        val bubbleAttachments: List<String>,
+        val directImports: List<Pair<String, Long>>,
+    )
+
     /**
-     * 附件上传：本地暂存绝对路径 → 内核工作区（`/api/upload_file`）。
+     * 附件上传：本地暂存绝对路径 → 内核工作区。
      *
-     * 相对路径（历史消息重发 / 编辑重发带回来的）已经在工作区里，原样透传；
-     * 绝对路径一律走服务端原子落盘 —— 由内核决定真正的落点，壳侧不再猜目录。
-     * 返回 null = 上传失败（横幅已提示），调用方应保留气泡但不发上行帧。
+     * - 小于 20MiB 的文件走 `/api/upload_file`，返回相对路径并随 WS `attachments[]` 上行。
+     * - 达到或超过 [EnvKit.KERNEL_UPLOAD_LIMIT_BYTES]（或 `/api/upload_file` 返回 413/超限）时，
+     *   自动直写入工作区 `imports/`，气泡保留该相对路径以便预览，同时从 WS `attachments[]`
+     *   剥离并改为在上行文本说明路径 —— 绕开 prebuilt 内核 20MiB 上传与 Base64 视频上限，
+     *   仅当直接写工作区也失败时才弹出「前往设置」横幅兜底。
      */
-    private suspend fun uploadAttachments(paths: List<String>): List<String>? {
-        if (paths.isEmpty()) return emptyList()
+    private suspend fun uploadAttachments(
+        paths: List<String>,
+        workspaceDir: java.io.File,
+    ): UploadOutcome? {
+        if (paths.isEmpty()) return UploadOutcome(emptyList(), emptyList(), emptyList())
         val a = api ?: run {
             _state.update { it.copy(banner = Banner("内核未连接，附件无法发送", isError = true)) }
             return null
         }
-        val staged = ArrayList<String>(paths.size)
+        val wireAttachments = ArrayList<String>(paths.size)
+        val bubbleAttachments = ArrayList<String>(paths.size)
+        val directImports = ArrayList<Pair<String, Long>>()
+
+        suspend fun fallbackDirectImport(srcFile: java.io.File, errDetail: String): Boolean {
+            val dest = withContext(Dispatchers.IO) {
+                EnvKit.stageOutboxFileToWorkspaceImports(workspaceDir, srcFile)
+            }
+            if (dest == null) {
+                _state.update { it.copy(banner = attachmentLimitBanner(errDetail)) }
+                return false
+            }
+            val rel = "imports/${dest.name}"
+            bubbleAttachments += rel
+            directImports += rel to srcFile.length()
+            return true
+        }
+
         for (p in paths) {
             val f = java.io.File(p)
             if (!f.isAbsolute) {
-                staged += p
+                val existing = java.io.File(workspaceDir, p)
+                bubbleAttachments += p
+                if (existing.isFile && existing.length() >= EnvKit.KERNEL_UPLOAD_LIMIT_BYTES) {
+                    directImports += p to existing.length()
+                } else {
+                    wireAttachments += p
+                }
                 continue
             }
             if (!f.isFile) {
                 _state.update { it.copy(banner = Banner("附件不存在：${f.name}", isError = true)) }
                 return null
             }
+            val size = f.length()
+            if (size >= EnvKit.KERNEL_UPLOAD_LIMIT_BYTES) {
+                if (!fallbackDirectImport(f, EnvKit.formatFileSize(size))) return null
+                continue
+            }
             when (val r = a.uploadFile(f)) {
-                is KernelApi.ApiResult.Ok -> staged += r.value
+                is KernelApi.ApiResult.Ok -> {
+                    wireAttachments += r.value
+                    bubbleAttachments += r.value
+                }
                 is KernelApi.ApiResult.Err -> {
-                    _state.update { it.copy(banner = Banner("附件上传失败：${r.message}", isError = true)) }
-                    return null
+                    if (isAttachmentLimitError(r.message)) {
+                        if (!fallbackDirectImport(f, r.message)) return null
+                    } else {
+                        _state.update { it.copy(banner = Banner("附件上传失败：${r.message}", isError = true)) }
+                        return null
+                    }
                 }
             }
         }
-        return staged
+        return UploadOutcome(wireAttachments, bubbleAttachments, directImports)
     }
 
     /** 运行中转向：乐观气泡照常上屏，内核确认后追加「已并入」通知行。 */

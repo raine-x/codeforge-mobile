@@ -329,9 +329,11 @@ fun GlyphIcon(
             }
 
             Glyph.Retry -> {
+                // 顺时针从 4 点扫到 2 点（30° -> 330°），缺口留在右侧箭头前方；
+                // 箭头尖端准确落在圆弧终点 (18.5, 8.25)，避免旧版从 -60° 起笔导致弧段反向穿过箭头。
                 drawArc(
                     color = color,
-                    startAngle = -60f,
+                    startAngle = 30f,
                     sweepAngle = 300f,
                     useCenter = false,
                     topLeft = Offset(4.5f * s, 4.5f * s),
@@ -339,9 +341,9 @@ fun GlyphIcon(
                     style = stroke,
                 )
                 val head = Path().apply {
-                    moveTo(19.5f * s, 3.5f * s)
-                    lineTo(19.5f * s, 8.5f * s)
-                    lineTo(14.5f * s, 8.5f * s)
+                    moveTo(18.5f * s, 3.75f * s)
+                    lineTo(18.5f * s, 8.25f * s)
+                    lineTo(14.0f * s, 8.25f * s)
                 }
                 drawPath(head, color, style = stroke)
             }

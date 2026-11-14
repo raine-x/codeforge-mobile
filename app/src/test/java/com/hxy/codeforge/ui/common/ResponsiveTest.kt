@@ -52,22 +52,14 @@ class ResponsiveTest {
     }
 
     @Test
-    fun `requested orientation respects rotateWithDevice setting for tablet and locks portrait on phone`() {
-        assertEquals(
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
-            resolveRequestedOrientation(isTablet = false, rotateWithDevice = true),
-        )
-        assertEquals(
-            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
-            resolveRequestedOrientation(isTablet = false, rotateWithDevice = false),
-        )
+    fun `requested orientation follows system rotation when enabled and locks portrait when disabled`() {
         assertEquals(
             ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED,
-            resolveRequestedOrientation(isTablet = true, rotateWithDevice = true),
+            resolveRequestedOrientation(rotateWithDevice = true),
         )
         assertEquals(
             ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
-            resolveRequestedOrientation(isTablet = true, rotateWithDevice = false),
+            resolveRequestedOrientation(rotateWithDevice = false),
         )
     }
 

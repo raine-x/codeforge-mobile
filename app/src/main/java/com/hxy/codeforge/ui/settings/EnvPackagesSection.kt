@@ -2,14 +2,12 @@ package com.hxy.codeforge.ui.settings
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,6 +21,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hxy.codeforge.core.EnvKit
 import com.hxy.codeforge.ui.chat.ArcSpinner
@@ -40,6 +39,7 @@ import kotlinx.coroutines.launch
  * 官方仓库；装完即对内核 run_command 生效（rootfs 的 /usr/bin 已在 PATH）。
  * 按钮三态：未装（灰）/ 安装中（转圈）/ 已装（陶土描边，点击重装）。
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EnvPackagesSection() {
     val context = LocalContext.current
@@ -75,73 +75,73 @@ fun EnvPackagesSection() {
         modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
     )
 
-    // 两行胶囊：4 + 3
-    val rows = EnvKit.packages.chunked(4)
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        rows.forEach { rowPkgs ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                rowPkgs.forEach { pkg ->
-                    val state = installed.value[pkg.label]
-                    val installing = busyPkg == pkg.label
-                    val done = state == true
-                    Row(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(18.dp))
-                            .background(
-                                when {
-                                    installing -> MaterialTheme.colorScheme.surfaceVariant
-                                    done -> Clay.copy(alpha = 0.12f)
-                                    else -> MaterialTheme.colorScheme.surfaceVariant
-                                },
-                            )
-                            // 安装期间全禁用：apk 有 /var/lib/apk 全局锁，并发装必互相顶掉
-                            .noRippleClickable(enabled = busyPkg == null) {
-                                busyPkg = pkg.label
-                                log = "» ${pkg.installCmd}\n"
-                                scope.launch(Dispatchers.IO) {
-                                    val code = EnvKit.runInRootfs(context, pkg.installCmd) { line ->
-                                        log = (log + line + "\n").takeLast(1600)
-                                    }
-                                    busyPkg = null
-                                    // ⚠️ 不能只信退出码：apk 在 proot 下装完所有包后会报
-                                    // "failed to write database: Permission denied"（数据库写不进去），
-                                    // 退出码非 0，但**文件已经解压到位、命令可用**
-                                    // （真机实测 python3 能跑）。所以失败时再 probe 一次，
-                                    // 以「命令是否真的能跑」为最终判据。
-                                    val usable = code == 0 || EnvKit.isPackageInstalled(context, pkg)
-                                    installed.value = installed.value + (pkg.label to usable)
-                                    log = (
-                                        log + when {
-                                            code == 0 -> "✓ 完成"
-                                            usable -> "✓ 已装（apk 数据库状态未更新，不影响使用）"
-                                            else -> "✗ 失败（$code）"
-                                        } + "\n"
-                                        ).takeLast(1600)
-                                }
+    // 按内容自然宽度流式换行：避免固定四等分网格把较长包名（如「逆向工具 (...)」）
+    // 挤进 1/4 窄列里折成多行错乱排版，同时让短包名保持单行紧凑排列。
+    FlowRow(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        EnvKit.packages.forEach { pkg ->
+            val state = installed.value[pkg.label]
+            val installing = busyPkg == pkg.label
+            val done = state == true
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        when {
+                            installing -> MaterialTheme.colorScheme.surfaceVariant
+                            done -> Clay.copy(alpha = 0.12f)
+                            else -> MaterialTheme.colorScheme.surfaceVariant
+                        },
+                    )
+                    // 安装期间全禁用：apk 有 /var/lib/apk 全局锁，并发装必互相顶掉
+                    .noRippleClickable(enabled = busyPkg == null) {
+                        busyPkg = pkg.label
+                        log = "» ${pkg.installCmd}\n"
+                        scope.launch(Dispatchers.IO) {
+                            val code = EnvKit.runInRootfs(context, pkg.installCmd) { line ->
+                                log = (log + line + "\n").takeLast(1600)
                             }
-                            .padding(horizontal = 10.dp, vertical = 9.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        if (installing) {
-                            ArcSpinner(color = Clay, size = 12.dp)
-                        } else {
-                            GlyphIcon(
-                                glyph = if (done) Glyph.Check else Glyph.ArrowDown,
-                                size = 11.dp,
-                                color = if (done) Clay else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            busyPkg = null
+                            // ⚠️ 不能只信退出码：apk 在 proot 下装完所有包后会报
+                            // "failed to write database: Permission denied"（数据库写不进去），
+                            // 退出码非 0，但**文件已经解压到位、命令可用**
+                            // （真机实测 python3 能跑）。所以失败时再 probe 一次，
+                            // 以「命令是否真的能跑」为最终判据。
+                            val usable = code == 0 || EnvKit.isPackageInstalled(context, pkg)
+                            installed.value = installed.value + (pkg.label to usable)
+                            log = (
+                                log + when {
+                                    code == 0 -> "✓ 完成"
+                                    usable -> "✓ 已装（apk 数据库状态未更新，不影响使用）"
+                                    else -> "✗ 失败（$code）"
+                                } + "\n"
+                                ).takeLast(1600)
                         }
-                        Text(
-                            text = pkg.label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (done) Clay else MaterialTheme.colorScheme.onSurface,
-                        )
                     }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (installing) {
+                    ArcSpinner(color = Clay, size = 12.dp)
+                } else {
+                    GlyphIcon(
+                        glyph = if (done) Glyph.Check else Glyph.ArrowDown,
+                        size = 11.dp,
+                        color = if (done) Clay else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                // 补齐行内空位，保持等宽
-                repeat(4 - rowPkgs.size) { Row(modifier = Modifier.weight(1f)) {} }
+                Text(
+                    text = pkg.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (done) Clay else MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }

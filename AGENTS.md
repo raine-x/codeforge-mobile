@@ -49,12 +49,13 @@ CodeForgeAPP/
 |---|---|---|
 | 入口 | `MainActivity.kt`、`CodeForgeApp.kt` | 建窗口、edge-to-edge、状态栏显隐、通知权限、拉起 CoreService、首启流水线（§2.5） |
 | 状态 | `ui/ChatViewModel.kt` + `ChatViewModel{Sessions,Models,Plugins,Workspace}.kt` | 唯一状态源、事件折叠、发送串行队列、项目/工作区、模型/插件配置、后台任务、页面元素登记 |
-| 界面·骨架 | `ui/AppRoot.kt` | 横屏=内容旋转接双栏（侧栏+聊天）、“环境准备中”遮罩、顶栏/横幅/问候页、弹层挂载、内置浏览器浮层 |
+| 界面·骨架 | `ui/AppRoot.kt` | 竖屏单栏抽屉 / 横屏双栏（侧栏+聊天）、“环境准备中”遮罩、顶栏/横幅/问候页、弹层挂载、内置浏览器浮层 |
 | 界面·聊天 | `ui/chat/` | `MessageList`（贴底跟随、回到最新、探索分组）· `MessageBubble`（气泡/思考/操作行）· `OpenRenderMessage`（IR→Compose 排版、媒体围栏路由、HTML 块）· `MessageBlocks`（媒体与附件渲染、`LocalAttachmentRoot`）· `Composer` + `ComposerPanels`（悬浮输入卡、附件/技能弹层、四态主按钮、双引擎语音、模型弹层、@ 补全）· `ToolCard` / `ToolLabels` / `ApprovalCardView` / `ActionPanel` / `BackgroundTasksSheet` / `ModelPickerSheet` / `StatusStrips` |
 | 界面·浏览器 | `ui/browser/` | `BrowserOverlay`（全屏页）· `PageBridge`（JS 桥 `window.__cf`）· `BrowserWebView` · `HtmlBlockView`（流内 HTML 块）· `HtmlDetection`（裸 HTML 判定/合并）· `BrowserModels` / `BrowserController` |
+| 界面·文件 | `ui/files/` | `FileManagerSheet`（当前工作区/默认空间/全部工作区/手机存储/暂存缓存统一文件浏览、搜索排序、预览/播放、导入导出、重命名与安全删除、引用与装入附件） |
 | 界面·会话 | `ui/sessions/` | `SessionPane`（项目分组/侧栏）· `ProjectPanel` · `FileTreePanel` · `McpSidebarPanel`（三段插件面板）· `PluginDetailSheet` · `SessionActionsSheet` |
 | 界面·设置 | `ui/settings/` | `AppSettings`（Compose 状态 + 加密 SharedPreferences）· `SettingsSheet` + `SettingsModelSection`（二级页、模型与供应商库）· `FileTransferSection` · `ModelEditorSection` · `KernelSettingsSection` · `EnvPackagesSection` |
-| 界面·通用 | `ui/common/` `ui/theme/` | `Responsive`（三档判定）· `Glyphs`（图标库）· `NoRipple` · `VoiceInput`（系统识别）· `DeviceRotation`（姿态 + 内容旋转）· `StatusBarVisibility`（主窗+弹层状态栏显隐同步）· `ToastHost` · `Theme.kt`（暖色配色/字体/`AppBackground`） |
+| 界面·通用 | `ui/common/` `ui/theme/` | `Responsive`（三档判定）· `Glyphs`（图标库）· `NoRipple` · `VoiceInput`（系统识别）· `DeviceRotation`（已停用的旧内容旋转遗留实现）· `StatusBarVisibility`（主窗+弹层状态栏显隐同步）· `ToastHost` · `Theme.kt`（暖色配色/字体/`AppBackground`） |
 | 界面·提示词 | `ui/CapabilityPrompt.kt` | 注入给模型的「客户端渲染能力」说明与注入标记（P-042 / P-054） |
 | 协议 | `core/` | `CoreTransport`（`CoreEvent` + 接口）· `HttpCoreTransport`（HTTP+WS 自愈重连/帧解析）· `AttachmentParsers` · `EnvProbe` |
 | 服务 | `core/` | `CoreService`（specialUse 前台服务：拉起 `.so`、PORT 握手、退避重启）· `KernelApi`（REST 客户端，Cookie 同 WS）· `KernelConfig`（设置 ↔ local.yaml）· `ModelPresets`（国内外常见模型上下文规格预设与 ≥128K 默认兜底）· `EnvKit`（proot+Alpine、`$CELL` 单根、cfrun、软件包）· `BuiltinSkills` · `PluginInstaller`（`.cfplugin` 校验与原子安装）· `PluginSkills`（多工作区技能同步）· `LiveTransport`（进程级 WS holder）· `ApprovalReceiver`（通知 action） |
@@ -81,7 +82,7 @@ CodeForgeAPP/
 |---|---|
 | 气泡样式/间距/圆角 | `ui/chat/MessageBubble.kt` |
 | 横竖屏断点或分栏宽度 | `ui/common/Responsive.kt`、`ui/AppRoot.kt` |
-| 横持旋转（阈值/迟滞/动画） | `ui/common/DeviceRotation.kt`（窗口锁竖屏在 manifest，别改回系统旋转） |
+| 横竖屏旋转策略 | `AndroidManifest.xml`（不锁方向）+ `MainActivity.resolveRequestedOrientation`（跟随系统原生旋转 / 锁定竖屏） |
 | 语音输入（语言/交互/降级） | `ui/common/VoiceInput.kt` → `ui/chat/Composer.kt`（云端 → 系统 `SpeechRecognizer`） |
 | 云端语音配置 | `AppSettings.sttCloud*` + `SettingsSheet` 的 Voice 段 + `voice/CloudVoice.kt` |
 | 输入框行为（多行、发送键） | `ui/chat/Composer.kt` |
@@ -101,10 +102,10 @@ CodeForgeAPP/
 | 工具卡片 / diff 着色 | `ui/chat/ToolCard.kt`、`ToolLabels.kt` |
 | 上下文表 / 任务清单 / 子智能体卡 | `ui/chat/StatusStrips.kt` |
 | 选择模型弹层 | `ui/chat/ModelPickerSheet.kt` |
-| 设置项（旋转/灵敏度/语音/外观/内核） | `AppSettings`（存储）+ `SettingsSheet`（弹层） |
+| 设置项（旋转/语音/外观/内核） | `AppSettings`（存储）+ `SettingsSheet`（弹层） |
 | 状态栏显隐（默认隐藏） | `AppSettings.showStatusBar` + `MainActivity` + `ui/common/StatusBarVisibility.kt`（同步主窗与所有 `ModalBottomSheet` Dialog 窗） |
-| 附件选择/上传/预览 | `Composer`（stage → outbox）+ `ChatViewModel.uploadAttachments`（`/api/upload_file`）+ `MessageBlocks` 的 `LocalAttachmentRoot`（P-034） |
-| 手机文件导入/导出 | `EnvKit` 文件传输段 + `ui/settings/FileTransferSection.kt` |
+| 附件选择/上传/预览 | `Composer`（stage → outbox）+ `ChatViewModel.uploadAttachments`（<20MiB 走 `/api/upload_file`，≥20MiB 或服务端拒收自动直写 `<workspace>/imports/` 并剥离 WS `attachments[]`）+ `MessageBlocks` 的 `LocalAttachmentRoot`（P-034） |
+| 手机文件导入/导出与统一管理 | `EnvKit` 文件传输/文件管理原语 + `ui/files/FileManagerSheet.kt` + `ui/settings/FileTransferSection.kt` |
 | 内置技能 | `assets/builtin-skills.zip` + `core/BuiltinSkills.kt`；frontmatter 必须扁平单行（P-052） |
 | 动态插件包（`.cfplugin` 导入/启停/密钥/多工作区技能同步） | `model/PluginModels.kt` + `core/PluginInstaller.kt` + `core/PluginSkills.kt` + `ui/sessions/McpSidebarPanel.kt` / `PluginDetailSheet.kt` |
 | 环境软件包（增删包/探测命令） | `EnvKit` 的 `packages`；probe 不许带管道（P-051） |

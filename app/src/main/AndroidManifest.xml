@@ -31,13 +31,13 @@
         android:usesCleartextTraffic="true">
 
         <!-- launchMode 必须与 onNewIntent 的注释一致：应用在前台点通知也要走
-             onNewIntent 而不是叠一个新实例（standard 会新开，deep-link 逻辑失效） -->
+             onNewIntent 而不是叠一个新实例（standard 会新开，deep-link 逻辑失效）。
+             不锁 screenOrientation：跟随系统原生旋转，让输入法与三点菜单等独立窗口同步横竖屏。 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode"
-            android:screenOrientation="portrait"
             android:windowSoftInputMode="adjustResize"
             android:theme="@style/Theme.CodeForge">
             <intent-filter>
@@ -53,6 +53,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="text/plain" />
                 <data android:mimeType="image/*" />
+                <data android:mimeType="video/*" />
             </intent-filter>
             <!-- 长按选中文本 → 「CodeForge」：与分享同一处理通路 -->
             <intent-filter>

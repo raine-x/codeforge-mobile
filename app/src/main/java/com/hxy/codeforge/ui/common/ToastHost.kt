@@ -47,7 +47,7 @@ fun ToastHost(
     onDismiss: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shown = banner?.takeIf { !it.retryable }
+    val shown = banner?.takeIf { !it.retryable && !it.openFileTransfer }
 
     LaunchedEffect(shown) {
         if (shown != null) {

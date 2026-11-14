@@ -510,26 +510,31 @@ fun Composer(
 
     /**
      * 选择的 content URI → 应用私有暂存区。核心逻辑在
-     * [com.hxy.codeforge.core.EnvKit.stageUriToOutbox]（入站分享共用同一份口径），
-     * 这里只补本组件的 20MiB 提示。为什么落暂存区不落工作区，见 EnvKit 注释。
+     * [com.hxy.codeforge.core.EnvKit.stageUriToOutbox]（入站分享共用同一份口径）。
+     * 为什么落暂存区不落工作区，见 EnvKit 注释。
      */
     suspend fun stageAttachment(uri: Uri): String? =
-        com.hxy.codeforge.core.EnvKit.stageUriToOutbox(context, uri) {
-            voiceNotice = "附件超过 20MiB 上限"
-        }
+        com.hxy.codeforge.core.EnvKit.stageUriToOutbox(context, uri)
 
-    fun onPicked(uri: Uri?) {
+    fun onPicked(uri: Uri?, tempFileToClean: java.io.File? = null) {
         if (uri == null) return
         sheet = null // 选完即收起附件弹层
         attachScope.launch {
-            stageAttachment(uri)?.let { path ->
+            val path = stageAttachment(uri)
+            // 相机 cache 原片已复制到 outbox，立即删掉避免一份照片占双份缓存
+            if (tempFileToClean != null) {
+                runCatching { tempFileToClean.delete() }
+            }
+            if (path != null) {
                 attachments = attachments + path
                 voiceNotice = null
+            } else {
+                voiceNotice = "附件读取失败"
             }
         }
     }
 
-    // 照片：Photo Picker（旧系统自动回退系统实现）；文件：SAF 任意类型
+    // 相册（图片与视频）：Photo Picker（旧系统自动回退系统实现）；文件：SAF 任意类型
     val imagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri -> onPicked(uri) }
@@ -540,12 +545,19 @@ fun Composer(
     // 相机：TakePicture 经 FileProvider 出片到 cache，拍完走同一附件管道
     // （FileProvider URI 能查 DISPLAY_NAME/SIZE，stageAttachment 无需特判）
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
+    var cameraFile by remember { mutableStateOf<java.io.File?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.TakePicture(),
     ) { ok ->
         val uri = cameraUri
+        val file = cameraFile
         cameraUri = null
-        if (ok && uri != null) onPicked(uri) // onPicked 里已收弹层
+        cameraFile = null
+        if (ok && uri != null) {
+            onPicked(uri, file) // onPicked 里已收弹层并清理临时原片
+        } else {
+            runCatching { file?.delete() }
+        }
     }
 
     fun takePhoto() {
@@ -560,9 +572,12 @@ fun Composer(
             return
         }
         cameraUri = uri
+        cameraFile = f
         // 个别 ROM 没有相机应用：launch 抛 ActivityNotFoundException，别让它带崩界面
         if (runCatching { cameraLauncher.launch(uri) }.isFailure) {
             cameraUri = null
+            cameraFile = null
+            runCatching { f.delete() }
             voiceNotice = "此设备没有可用的相机应用"
         }
     }
@@ -745,7 +760,14 @@ fun Composer(
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         attachments.take(4).forEach { rel ->
-                            AttachmentInline(rel = rel, sessionId = sessionId, onRemove = { attachments = attachments - rel })
+                            AttachmentInline(
+                                rel = rel,
+                                sessionId = sessionId,
+                                onRemove = {
+                                    attachments = attachments - rel
+                                    com.hxy.codeforge.core.EnvKit.deleteOutboxFileIfStaged(context, rel)
+                                },
+                            )
                         }
                         if (attachments.size > 4) {
                             Text(
@@ -905,8 +927,9 @@ fun Composer(
                     attachments = if (rel in attachments) attachments - rel else attachments + rel
                 },
                 onPickImage = {
+                    // 支持从相册直接挑选图片或视频（不再限制为仅图片）
                     imagePicker.launch(
-                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo),
                     )
                 },
                 onPickFile = { filePicker.launch("*/*") },

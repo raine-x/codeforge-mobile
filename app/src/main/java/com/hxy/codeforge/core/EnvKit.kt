@@ -71,6 +71,9 @@ object EnvKit {
     private const val ROOTFS_ASSET = "rootfs-alpine.tgz"
     private const val READY_MARKER = ".env-ready"
 
+    /** 内核 /api/upload_file 与视频 Base64 编码的 20MiB 上限；超限改由壳直接写入工作区 imports/。 */
+    const val KERNEL_UPLOAD_LIMIT_BYTES = 20L * 1024 * 1024
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val status = kotlinx.coroutines.flow.MutableStateFlow<Status>(Status.Idle)
@@ -146,18 +149,93 @@ object EnvKit {
         File(cellRoot(context), "outbox").apply { mkdirs() }
 
     /**
-     * content Uri → [outboxDir] 暂存。返回绝对路径；超 20MiB 或读取失败返回 null，
-     * 超限时先在主线程回调 [onTooLarge]（调用方自行决定提示方式）。
+     * 若 [path] 是位于 [outboxDir] 内的已暂存文件则立即删除（用户撤回附件/清理草稿时用）。
+     * 绝不触碰工作区相对路径或外部文件。
+     */
+    fun deleteOutboxFileIfStaged(context: Context, path: String) {
+        deleteFileIfInDir(outboxDir(context), path)
+    }
+
+    /** 仅当 [path] 为 [dir] 直属文件时删除；抽取为纯 File 逻辑便于单测。 */
+    internal fun deleteFileIfInDir(dir: File, path: String): Boolean {
+        val f = File(path)
+        if (!f.isAbsolute || !f.isFile) return false
+        val expectedDir = runCatching { dir.canonicalFile }.getOrNull() ?: return false
+        val actualDir = runCatching { f.parentFile?.canonicalFile }.getOrNull() ?: return false
+        if (actualDir != expectedDir) return false
+        return runCatching { f.delete() }.getOrDefault(false)
+    }
+
+    /**
+     * 后台孤儿与临时缓存回收（冷启动异步执行，不阻塞主线程）。
+     */
+    fun cleanupOrphansAsync(context: Context) {
+        val files = context.filesDir
+        val cache = context.cacheDir
+        scope.launch { runCatching { cleanupOrphanDirs(files, cache) } }
+    }
+
+    /**
+     * 清理暂存孤儿与过期缓存（纯 File 逻辑便于 JVM 单测）：
+     * - `outbox/`：未完成 `.tmp` 立即清理；其余暂存文件（如取消/崩溃遗留大视频）满 24h 清理；
+     * - `cacheDir/camera/`、`cacheDir/logs/`：满 24h 清理；
+     * - 应用托管工作区 `attachments/`（默认 `workspace`、`spaces/inbox`、`workspace/p-*`）：
+     *   保留 7 天缓冲供 regenerate 重读，仅清普通文件不递归删子目录。
+     */
+    internal fun cleanupOrphanDirs(
+        filesDir: File,
+        cacheDir: File,
+        nowMs: Long = System.currentTimeMillis(),
+    ) {
+        val dayDeadline = nowMs - 24L * 3600 * 1000
+        val weekDeadline = nowMs - 7L * 24 * 3600 * 1000
+
+        File(filesDir, "outbox").takeIf { it.isDirectory }?.listFiles()?.forEach { f ->
+            if (f.isFile && (f.name.endsWith(".tmp") || f.lastModified() < dayDeadline)) {
+                runCatching { f.delete() }
+            }
+        }
+
+        listOf(File(cacheDir, "camera"), File(cacheDir, "logs")).forEach { dir ->
+            if (dir.isDirectory) {
+                dir.listFiles()?.forEach { f ->
+                    if (f.isFile && f.lastModified() < dayDeadline) {
+                        runCatching { f.delete() }
+                    }
+                }
+            }
+        }
+
+        val managedAttachmentDirs = buildList {
+            add(File(filesDir, "workspace/attachments"))
+            add(File(filesDir, "spaces/inbox/attachments"))
+            File(filesDir, "workspace").takeIf { it.isDirectory }?.listFiles()?.forEach { d ->
+                if (d.isDirectory && d.name.startsWith("p-")) {
+                    add(File(d, "attachments"))
+                }
+            }
+        }
+        managedAttachmentDirs.forEach { dir ->
+            if (dir.isDirectory) {
+                dir.listFiles()?.forEach { f ->
+                    if (f.isFile && f.lastModified() < weekDeadline) {
+                        runCatching { f.delete() }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * content Uri → [outboxDir] 暂存。返回绝对路径，读取失败返回 null。
      *
-     * 两个消费方共用一份口径：Composer 的附件选择器（voiceNotice 提示）与
-     * 入站分享（ChatViewModel.onExternalContent，banner 提示）。落盘用
-     * 「同目录临时文件 + rename」：进程被杀/写一半不会留半截附件；x 位保留，
-     * 暂存的脚本/二进制才能直接执行。
+     * 两个消费方共用一份口径：Composer 的附件选择器与入站分享
+     * （ChatViewModel.onExternalContent）。落盘用「同目录临时文件 + rename」：
+     * 进程被杀/写一半不会留半截附件；x 位保留，暂存的脚本/二进制才能直接执行。
      */
     suspend fun stageUriToOutbox(
         context: Context,
         uri: Uri,
-        onTooLarge: suspend () -> Unit = {},
     ): String? = withContext(Dispatchers.IO) {
         runCatching {
             val resolver = context.contentResolver
@@ -165,15 +243,7 @@ object EnvKit {
                 val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
                 if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
             } ?: "file"
-            name = name.replace(Regex("[/\\\u0000:]"), "_").take(80)
-            val size = resolver.query(uri, null, null, null, null)?.use { c ->
-                val idx = c.getColumnIndex(android.provider.OpenableColumns.SIZE)
-                if (idx >= 0 && c.moveToFirst()) c.getLong(idx) else -1L
-            } ?: -1L
-            if (size > 20L * 1024 * 1024) {
-                withContext(Dispatchers.Main) { onTooLarge() }
-                return@withContext null
-            }
+            name = sanitizeEntryName(name, "file")
             // 时间戳前缀防重名；落点是应用私有暂存区（与内核工作区解耦）
             val out = File(outboxDir(context), System.currentTimeMillis().toString() + "_" + name)
             val tmp = File(out.parentFile, out.name + ".tmp")
@@ -181,10 +251,6 @@ object EnvKit {
                 resolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(tmp).use { output -> input.copyTo(output) }
                 } ?: return@withContext null
-                if (tmp.length() > 20L * 1024 * 1024) {
-                    withContext(Dispatchers.Main) { onTooLarge() }
-                    return@withContext null
-                }
                 if (!tmp.renameTo(out)) {
                     return@withContext null
                 }
@@ -194,6 +260,78 @@ object EnvKit {
             out.setExecutable(true, false)
             out.absolutePath
         }.getOrNull()
+    }
+
+    /** 把已有本地文件暂存到 outbox（供文件管理器「作为附件发送」走统一发送队列）。 */
+    suspend fun stageFileToOutbox(
+        context: Context,
+        src: File,
+    ): String? = withContext(Dispatchers.IO) {
+        if (!src.isFile) return@withContext null
+        runCatching {
+            val clean = sanitizeEntryName(src.name, "file")
+            val out = File(outboxDir(context), "${System.currentTimeMillis()}_$clean")
+            val tmp = File(out.parentFile, "${out.name}.tmp")
+            try {
+                src.inputStream().use { input ->
+                    FileOutputStream(tmp).use { output -> input.copyTo(output) }
+                }
+                if (!tmp.renameTo(out)) return@withContext null
+            } finally {
+                if (tmp.exists()) tmp.delete()
+            }
+            out.setExecutable(true, false)
+            out.absolutePath
+        }.getOrNull()
+    }
+
+    /**
+     * 把超限的 outbox 暂存文件直接写入工作区 `imports/`（跳过 /api/upload_file 与 WS Base64 20MiB 上限）。
+     *
+     * 用同目录 `.tmp` + rename 保证原子落盘，去掉 outbox 时间戳前缀并在重名时追加 `-2` 等序号。
+     */
+    internal fun stageOutboxFileToWorkspaceImports(workspaceDir: File, srcFile: File): File? {
+        if (!srcFile.isFile) return null
+        val importsDir = File(workspaceDir, "imports").apply { mkdirs() }
+        val target = uniqueChildFile(importsDir, stripOutboxTimestampPrefix(srcFile.name), "file")
+        val tmp = File(importsDir, ".${target.name}.tmp")
+        return try {
+            srcFile.inputStream().use { input ->
+                FileOutputStream(tmp).use { output -> input.copyTo(output) }
+            }
+            if (!tmp.renameTo(target)) return null
+            target.setExecutable(true, false)
+            target
+        } catch (_: Throwable) {
+            null
+        } finally {
+            if (tmp.exists()) runCatching { tmp.delete() }
+        }
+    }
+
+    internal fun stripOutboxTimestampPrefix(name: String): String =
+        name.replaceFirst(Regex("^\\d{10,}_"), "").ifBlank { name }
+
+    internal fun sanitizeEntryName(rawName: String, fallbackName: String = "file"): String =
+        rawName.replace(Regex("[/\\\\\u0000:]"), "_").trim().take(80).ifEmpty { fallbackName }
+
+    internal fun uniqueChildFile(
+        dir: File,
+        rawName: String,
+        fallbackName: String = "file",
+    ): File {
+        val clean = sanitizeEntryName(rawName, fallbackName)
+        var candidate = File(dir, clean)
+        if (!candidate.exists()) return candidate
+        val stem = candidate.nameWithoutExtension.ifEmpty { clean }
+        val ext = candidate.extension
+        var n = 2
+        while (candidate.exists()) {
+            val nextName = if (ext.isEmpty()) "$stem-$n" else "$stem-$n.$ext"
+            candidate = File(dir, nextName)
+            n++
+        }
+        return candidate
     }
 
     // ---------------------------------------------------------------- 文件传输（sdcard）
@@ -222,12 +360,7 @@ object EnvKit {
     fun exportFileToDownloads(context: Context, src: File): File? {
         if (!src.isFile) return null
         val dir = File(publicDownloadsDir(context) ?: return null, "CodeForge").apply { mkdirs() }
-        var target = File(dir, src.name)
-        var n = 2
-        while (target.exists()) {
-            target = File(dir, "${src.nameWithoutExtension}-$n.${src.extension}")
-            n++
-        }
+        val target = uniqueChildFile(dir, src.name, "export")
         return runCatching {
             src.inputStream().use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
@@ -244,7 +377,7 @@ object EnvKit {
     fun exportDirectoryAsZip(context: Context, dir: File, zipName: String): File? {
         if (!dir.isDirectory || dir.walkTopDown().none { it.isFile }) return null
         val outDir = File(publicDownloadsDir(context) ?: return null, "CodeForge").apply { mkdirs() }
-        val target = File(outDir, zipName)
+        val target = uniqueChildFile(outDir, zipName, "export.zip")
         return runCatching {
             java.util.zip.ZipOutputStream(target.outputStream().buffered()).use { zip ->
                 val base = dir.toPath()
@@ -264,24 +397,18 @@ object EnvKit {
     /**
      * 从系统选择器（SAF / 相册）导入一个文件。
      *
-     * 落点：[baseDir] 非空时写到 `baseDir/subdir`（如当前项目工作区），
-     * 否则用 [inboxSpace] 的 `subdir`（默认工作区）。导入是用户显式动作，
-     * 落到工作区里重启后仍能看到。返回落地文件。
+     * 落点：[baseDir] 非空时写到 `baseDir/subdir`（`subdir` 为空则直接落进 `baseDir`），
+     * 否则用 [inboxSpace] 的 `subdir`。导入是用户显式动作，落到工作区里重启后仍能看到。
      */
     fun importFileFromUri(context: Context, uri: Uri, baseDir: File? = null, subdir: String = "imports"): File? {
         val resolver = context.contentResolver
-        var name = resolver.query(uri, null, null, null, null)?.use { c ->
+        val rawName = resolver.query(uri, null, null, null, null)?.use { c ->
             val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
             if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
         } ?: "imported"
-        name = name.replace(Regex("[/\\\\\u0000:]"), "_").take(80).ifEmpty { "imported" }
-        val dir = File(baseDir ?: inboxSpace(context), subdir).apply { mkdirs() }
-        var target = File(dir, name)
-        var n = 2
-        while (target.exists()) {
-            target = File(dir, "${target.nameWithoutExtension}-$n.${target.extension}")
-            n++
-        }
+        val base = baseDir ?: inboxSpace(context)
+        val dir = (if (subdir.isBlank()) base else File(base, subdir)).apply { mkdirs() }
+        val target = uniqueChildFile(dir, rawName, "imported")
         return runCatching {
             resolver.openInputStream(uri)?.use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
@@ -289,6 +416,64 @@ object EnvKit {
             target
         }.getOrNull()
     }
+
+    // ---------------------------------------------------------------- 文件管理原语
+
+    /** 校验新建目录 / 重命名目标名是否合法，拒绝路径穿越与特殊控制字符。 */
+    internal fun isSafeEntryName(name: String): Boolean {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty() || trimmed == "." || trimmed == "..") return false
+        return !Regex("[/\\\\\u0000:]").containsMatchIn(trimmed)
+    }
+
+    internal fun createSubdir(parentDir: File, name: String): File? {
+        if (!parentDir.isDirectory || !isSafeEntryName(name)) return null
+        val target = File(parentDir, name.trim())
+        if (target.exists()) return null
+        return if (runCatching { target.mkdir() }.getOrDefault(false)) target else null
+    }
+
+    internal fun renameEntry(entry: File, newName: String): File? {
+        if (!entry.exists() || !isSafeEntryName(newName)) return null
+        val parent = entry.parentFile ?: return null
+        val target = File(parent, newName.trim())
+        if (target.exists()) return null
+        return if (runCatching { entry.renameTo(target) }.getOrDefault(false)) target else null
+    }
+
+    /** 仅当 [entry] 严格位于 [allowedRoot] 之下（绝不删根本身）时才执行删除。 */
+    internal fun deleteRecursivelySafe(entry: File, allowedRoot: File): Boolean {
+        val entryCanon = runCatching { entry.canonicalFile }.getOrNull() ?: return false
+        val rootCanon = runCatching { allowedRoot.canonicalFile }.getOrNull() ?: return false
+        if (entryCanon == rootCanon) return false
+        val prefix = rootCanon.path.trimEnd(File.separatorChar) + File.separator
+        if (!entryCanon.path.startsWith(prefix)) return false
+        return runCatching { entryCanon.deleteRecursively() }.getOrDefault(false)
+    }
+
+    /** 清空目录内容但保留目录本身，返回成功清理的直接子项数。 */
+    internal fun clearDirectoryContents(dir: File): Int {
+        if (!dir.isDirectory) return 0
+        var removed = 0
+        dir.listFiles()?.forEach { child ->
+            if (runCatching { child.deleteRecursively() }.getOrDefault(false)) {
+                removed++
+            }
+        }
+        return removed
+    }
+
+    internal fun formatFileSize(bytes: Long): String {
+        val safe = bytes.coerceAtLeast(0L)
+        return when {
+            safe < 1024L -> "$safe B"
+            safe < 1024L * 1024L -> String.format(java.util.Locale.US, "%.1f KB", safe / 1024.0)
+            safe < 1024L * 1024L * 1024L -> String.format(java.util.Locale.US, "%.1f MB", safe / (1024.0 * 1024.0))
+            else -> String.format(java.util.Locale.US, "%.2f GB", safe / (1024.0 * 1024.0 * 1024.0))
+        }
+    }
+
+    fun deviceStorageRoot(context: Context): File? = androidStorage(context)
 
     /** 确保目录存在且 rwx（app uid 属主；x 位是脚本/二进制可执行的前提）。 */
     private fun ensureWr(dir: File): File {

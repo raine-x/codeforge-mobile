@@ -75,7 +75,15 @@ class CoreService : LifecycleService() {
         } else {
             0
         }
-        ServiceCompat.startForeground(this, NOTIF_ID, buildNotification("内核启动中…"), fgType)
+        // 每次 startForegroundService 都必须调 startForeground，但文案必须反映当前真实状态：
+        // MainActivity.onStart() 每次回前台都会再发 Intent；若硬编码「内核启动中…」，
+        // 已 Ready 的常驻通知会被覆写成「启动中」且因 _state 未变、observeState 不会再刷新。
+        ServiceCompat.startForeground(
+            this,
+            NOTIF_ID,
+            buildNotification(notificationTextFor(_state.value)),
+            fgType,
+        )
         if (intent?.action == ACTION_STOP) {
             lifecycleScope.launch(Dispatchers.IO) {
                 KernelProcess.destroy()
@@ -83,14 +91,14 @@ class CoreService : LifecycleService() {
             }
             return START_NOT_STICKY
         }
-        if (intent?.action == ACTION_RESTART) {
-            // 只杀当前进程：监督循环退避后自动按新配置重启（local.yaml 已被调用方改好）
-            lifecycleScope.launch(Dispatchers.IO) { KernelProcess.destroy() }
-            return START_STICKY
-        }
-        if (bootstrapped.compareAndSet(false, true)) {
+        val firstBootstrap = bootstrapped.compareAndSet(false, true)
+        if (firstBootstrap) {
             observeState()
             lifecycleScope.launch(Dispatchers.IO) { superviseLoop() }
+        }
+        if (intent?.action == ACTION_RESTART && !firstBootstrap) {
+            // 只杀当前进程：监督循环退避后自动按新配置重启（local.yaml 已被调用方改好）
+            lifecycleScope.launch(Dispatchers.IO) { KernelProcess.destroy() }
         }
         return START_STICKY
     }
@@ -105,9 +113,12 @@ class CoreService : LifecycleService() {
     }
 
     override fun onDestroy() {
-        // 服务被系统回收：内核进程不能变野进程，跟着收掉。
+        // 服务被系统回收或停止：内核进程不能变野进程，跟着收掉；并复位引导状态，
+        // 避免同进程再次 startForegroundService 时因 bootstrapped=true 跳过 superviseLoop。
         // 直接同步调 destroy（lifecycleScope 在 onDestroy 时已取消，协程不会执行）
         KernelProcess.destroy()
+        bootstrapped.set(false)
+        _state.value = KernelState.Starting
         super.onDestroy()
     }
 
@@ -155,13 +166,8 @@ class CoreService : LifecycleService() {
     private fun observeState() {
         lifecycleScope.launch {
             _state.collect { st ->
-                val text = when (st) {
-                    is KernelState.Starting -> "内核启动中…"
-                    is KernelState.Ready -> "内核运行中 · 127.0.0.1:${st.port}"
-                    is KernelState.Failed -> "内核异常：${st.reason.take(60)}"
-                }
                 getSystemService(NotificationManager::class.java)
-                    ?.notify(NOTIF_ID, buildNotification(text))
+                    ?.notify(NOTIF_ID, buildNotification(notificationTextFor(st)))
             }
         }
     }
@@ -501,6 +507,13 @@ class CoreService : LifecycleService() {
         }
     }
 
+}
+
+/** 前台常驻通知正文，供 onStartCommand 与状态流收集器共用同一状态映射，避免回前台覆写成「启动中」。 */
+internal fun notificationTextFor(state: KernelState): String = when (state) {
+    is KernelState.Starting -> "内核启动中…"
+    is KernelState.Ready -> "内核运行中 · 127.0.0.1:${state.port}"
+    is KernelState.Failed -> "内核异常：${state.reason.take(60)}"
 }
 
 /**

@@ -85,13 +85,12 @@ import com.hxy.codeforge.ui.browser.LocalBrowserController
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.ToastHost
 import com.hxy.codeforge.ui.common.GlyphIcon
-import com.hxy.codeforge.ui.common.LocalOrientation
-import com.hxy.codeforge.ui.common.RotateWithDevice
 import com.hxy.codeforge.ui.common.FlameMark
 import com.hxy.codeforge.ui.common.WindowMode
 import com.hxy.codeforge.ui.common.currentWindowMode
 import com.hxy.codeforge.ui.common.isLandscape
 import com.hxy.codeforge.ui.common.noRippleClickable
+import com.hxy.codeforge.ui.files.FileManagerSheet
 import com.hxy.codeforge.ui.sessions.FileTreePanel
 import com.hxy.codeforge.ui.sessions.McpSidebarPanel
 import com.hxy.codeforge.ui.sessions.NewProjectPanel
@@ -110,12 +109,11 @@ import java.util.Calendar
 /**
  * 应用根布局。
  *
- * ## 横屏策略：窗口锁竖屏，内容跟手旋转
+ * ## 横屏策略：系统原生横竖屏旋转 + 按当前窗口宽高比切分布局
  *
- * Activity 在 manifest 锁死 `portrait`，系统永不转窗口；[RotateWithDevice]
- * 用加速度传感器探测物理姿态，用户把手机横过来时把整套**竖屏布局**以弹簧
- * 动画旋转 ±90°（倒持 180°），宽高对调成铺满物理屏幕。这不是「换横版双栏」
- * —— 是同一套竖屏元素跟着手转，所有布局、动画、内边距原封不动。
+ * 不锁 Activity 方向（由设置开关在 `SCREEN_ORIENTATION_UNSPECIFIED` 与
+ * `SCREEN_ORIENTATION_PORTRAIT` 间切换），输入法、三点菜单与底部弹层随系统
+ * 窗口原生同步旋转；[currentWindowMode] 在竖屏进入单栏抽屉、在横屏切到双栏。
  *
  * ## 空态与对话态
  *
@@ -127,6 +125,22 @@ import java.util.Calendar
 fun CodeForgeApp(viewModel: ChatViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var settingsInitialPage by rememberSaveable { mutableStateOf<String?>(null) }
+    var showFileManager by rememberSaveable { mutableStateOf(false) }
+    var fileManagerInitialRoot by rememberSaveable { mutableStateOf("CURRENT") }
+    val openSettingsRoot: () -> Unit = {
+        settingsInitialPage = null
+        showSettings = true
+    }
+    val openFileTransferSettings: () -> Unit = {
+        viewModel.dismissBanner()
+        settingsInitialPage = "transfer"
+        showSettings = true
+    }
+    val openFileManager: (String) -> Unit = { rootKey ->
+        fileManagerInitialRoot = rootKey
+        showFileManager = true
+    }
     var sessionActions by remember { mutableStateOf<com.hxy.codeforge.model.SessionItem?>(null) }
     var projectActions by remember { mutableStateOf<com.hxy.codeforge.model.ProjectItem?>(null) }
     var showTodos by rememberSaveable { mutableStateOf(false) }
@@ -172,11 +186,9 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
         }
     }
 
-    // 输入卡「＋ → 当前目录的文件」：打开工作区文件树（浏览态，不做建项目回填）
+    // 输入卡「＋ → 当前目录的文件」：打开统一文件管理器（默认聚焦当前工作区）
     val openWorkspaceFiles: () -> Unit = {
-        treeForProject = false
-        sidebarPage = "tree"
-        viewModel.loadTree("")
+        openFileManager("CURRENT")
     }
 
     // 用系统浏览器打开链接（内置浏览器的「系统浏览器」入口与链接卡的默认点按共用）
@@ -198,16 +210,33 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     ) {
     com.hxy.codeforge.ui.theme.AppBackground(Modifier.fillMaxSize()) {
     Box(Modifier.fillMaxSize()) {
-        RotateWithDevice {
-            // 档位判定必须放在旋转层内：LocalOrientation 由它提供，
-            // 横持时内容盒宽高对调，自动切到网页端同款双栏布局
-            val mode = currentWindowMode()
-            Box(Modifier.fillMaxSize()) {
-                when (mode) {
-                    WindowMode.Compact -> CompactLayout(
+        // 跟随系统原生旋转：竖屏单栏，横屏切双栏（输入法与弹层随系统同步旋转）
+        val mode = currentWindowMode()
+        Box(Modifier.fillMaxSize()) {
+            when (mode) {
+                WindowMode.Compact -> CompactLayout(
+                    state,
+                    viewModel,
+                    onOpenSettings = openSettingsRoot,
+                    onOpenFileTransfer = openFileTransferSettings,
+                    onSessionLongPress = { sessionActions = it },
+                    onNewProject = openNewProject,
+                    onOpenMcp = { sidebarPage = "mcp" },
+                    onProjectLongPress = { projectActions = it },
+                    onOpenTodos = {
+                        viewModel.refreshTodos()
+                        showTodos = true
+                    },
+                    onOpenTasks = { showTasks = true },
+                    onOpenWorkspaceFiles = openWorkspaceFiles,
+                )
+                WindowMode.Medium, WindowMode.Expanded ->
+                    TwoPaneLayout(
                         state,
                         viewModel,
-                        onOpenSettings = { showSettings = true },
+                        mode,
+                        onOpenSettings = openSettingsRoot,
+                        onOpenFileTransfer = openFileTransferSettings,
                         onSessionLongPress = { sessionActions = it },
                         onNewProject = openNewProject,
                         onOpenMcp = { sidebarPage = "mcp" },
@@ -219,65 +248,46 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                         onOpenTasks = { showTasks = true },
                         onOpenWorkspaceFiles = openWorkspaceFiles,
                     )
-                    WindowMode.Medium, WindowMode.Expanded ->
-                        TwoPaneLayout(
-                            state,
-                            viewModel,
-                            mode,
-                            onOpenSettings = { showSettings = true },
-                            onSessionLongPress = { sessionActions = it },
-                            onNewProject = openNewProject,
-                            onOpenMcp = { sidebarPage = "mcp" },
-                            onProjectLongPress = { projectActions = it },
-                            onOpenTodos = {
-                            viewModel.refreshTodos()
-                            showTodos = true
-                        },
-                            onOpenTasks = { showTasks = true },
-                            onOpenWorkspaceFiles = openWorkspaceFiles,
-                        )
-                }
+            }
 
-                // 侧栏浮层放在旋转层里：横持时面板跟内容一起转（同 P-009 的边界）。
-                // 不用 fadeIn/fadeOut：整层做 alpha 渐变会在进退场帧里把底层侧栏与聊天内容透出来叠字。
-                AnimatedVisibility(
-                    visible = sidebarPage == "mcp",
-                    enter = slideInHorizontally(tween(200)) { -it },
-                    exit = slideOutHorizontally(tween(180)) { -it },
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    McpSidebarPanel(vm = viewModel, onClose = { sidebarPage = "" })
-                }
-                AnimatedVisibility(
-                    visible = sidebarPage == "tree",
-                    enter = slideInHorizontally(tween(200)) { -it },
-                    exit = slideOutHorizontally(tween(180)) { -it },
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    FileTreePanel(
-                        entries = state.treeEntries,
-                        path = state.treePath,
-                        parent = state.treeParent,
-                        error = state.treeError,
-                        onLoad = { path -> viewModel.loadTree(path) },
-                        onPick = { path ->
-                            pickedWorkspace = path
-                            sidebarPage = ""
-                            if (treeForProject) {
-                                // 「新建项目」里选目录：带着路径回到新建面板
-                                treeForProject = false
-                                showNewProject = true
-                            } else {
-                                // 浏览态（输入卡「当前目录的文件」）选中的目录直接切工作区
-                                viewModel.switchProject(path)
-                            }
-                        },
-                        onClose = {
-                            sidebarPage = ""
+            // 不用 fadeIn/fadeOut：整层做 alpha 渐变会在进退场帧里把底层侧栏与聊天内容透出来叠字。
+            AnimatedVisibility(
+                visible = sidebarPage == "mcp",
+                enter = slideInHorizontally(tween(200)) { -it },
+                exit = slideOutHorizontally(tween(180)) { -it },
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                McpSidebarPanel(vm = viewModel, onClose = { sidebarPage = "" })
+            }
+            AnimatedVisibility(
+                visible = sidebarPage == "tree",
+                enter = slideInHorizontally(tween(200)) { -it },
+                exit = slideOutHorizontally(tween(180)) { -it },
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                FileTreePanel(
+                    entries = state.treeEntries,
+                    path = state.treePath,
+                    parent = state.treeParent,
+                    error = state.treeError,
+                    onLoad = { path -> viewModel.loadTree(path) },
+                    onPick = { path ->
+                        pickedWorkspace = path
+                        sidebarPage = ""
+                        if (treeForProject) {
+                            // 「新建项目」里选目录：带着路径回到新建面板
                             treeForProject = false
-                        },
-                    )
-                }
+                            showNewProject = true
+                        } else {
+                            // 浏览态（输入卡「当前目录的文件」）选中的目录直接切工作区
+                            viewModel.switchProject(path)
+                        }
+                    },
+                    onClose = {
+                        sidebarPage = ""
+                        treeForProject = false
+                    },
+                )
             }
         }
 
@@ -292,7 +302,31 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
         EnvPreparingOverlay()
 
         if (showSettings) {
-            SettingsSheet(vm = viewModel, onDismiss = { showSettings = false })
+            SettingsSheet(
+                vm = viewModel,
+                onDismiss = {
+                    showSettings = false
+                    settingsInitialPage = null
+                },
+                initialPage = settingsInitialPage,
+                onOpenFileManager = {
+                    showSettings = false
+                    settingsInitialPage = null
+                    openFileManager("CURRENT")
+                },
+            )
+        }
+
+        if (showFileManager) {
+            FileManagerSheet(
+                activeWorkspaceRoot = attachmentRoot,
+                activeWorkspaceLabel = state.currentWorkspaceName.ifBlank { "应用私有空间" },
+                initialRoot = fileManagerInitialRoot,
+                onQuoteToChat = { pathForChat -> viewModel.quoteFileToInput(pathForChat) },
+                onAttachToChat = { file -> viewModel.attachFileToInput(file, attachmentRoot) },
+                onNotify = { text, isError -> viewModel.toast(text, isError) },
+                onDismiss = { showFileManager = false },
+            )
         }
 
         sessionActions?.let { session ->
@@ -461,6 +495,7 @@ private fun CompactLayout(
     state: ChatUiState,
     vm: ChatViewModel,
     onOpenSettings: () -> Unit,
+    onOpenFileTransfer: () -> Unit,
     onSessionLongPress: (com.hxy.codeforge.model.SessionItem) -> Unit,
     onNewProject: () -> Unit,
     onOpenMcp: () -> Unit,
@@ -628,6 +663,10 @@ private fun CompactLayout(
                         scope.launch { drawerState.close() }
                         onOpenMcp()
                     },
+                    onOpenFiles = {
+                        scope.launch { drawerState.close() }
+                        onOpenWorkspaceFiles()
+                    },
                     onSelectProject = { project ->
                         vm.switchProject(project.workspace)
                         scope.launch { drawerState.close() }
@@ -645,19 +684,11 @@ private fun CompactLayout(
             }
         },
     ) {
-        // insets 用旋转层重映射过的：横持时「内容左边缘」可能是物理底边，
-        // 直接用 safeDrawing 会垫错边（顶栏压挖孔就是这么来的）
-        val orientation = LocalOrientation.current
-        val insetMod = if (orientation != null) {
-            Modifier.padding(orientation.insets)
-        } else {
-            Modifier.windowInsetsPadding(WindowInsets.safeDrawing)
-        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.background)
-                .then(insetMod),
+                .windowInsetsPadding(WindowInsets.safeDrawing),
         ) {
             TopBar(
                 title = state.title,
@@ -684,11 +715,17 @@ private fun CompactLayout(
                 onOpenTodos = onOpenTodos,
                 taskLabel = taskMenuLabel(state.tasks),
                 onOpenTasks = onOpenTasks,
+                onOpenFiles = onOpenWorkspaceFiles,
             )
-            // 需要「重试」的内核故障才用常驻横幅（按钮得点得到）；
+            // 需要「重试」或「前往文件传输」操作的横幅用常驻横幅（按钮得点得到）；
             // 保存成功、状态变更这类一次性反馈走 ToastHost 气泡。
-            if (state.banner?.retryable == true) {
-                BannerBar(state.banner, onDismiss = vm::dismissBanner, onRetry = vm::retryKernel)
+            if (state.banner?.let { it.retryable || it.openFileTransfer } == true) {
+                BannerBar(
+                    state.banner,
+                    onDismiss = vm::dismissBanner,
+                    onRetry = vm::retryKernel,
+                    onOpenFileTransfer = onOpenFileTransfer,
+                )
             }
 
             Box(modifier = Modifier.weight(1f)) {
@@ -764,6 +801,7 @@ private fun TwoPaneLayout(
     vm: ChatViewModel,
     mode: WindowMode,
     onOpenSettings: () -> Unit,
+    onOpenFileTransfer: () -> Unit,
     onSessionLongPress: (com.hxy.codeforge.model.SessionItem) -> Unit,
     onNewProject: () -> Unit,
     onOpenMcp: () -> Unit,
@@ -883,17 +921,11 @@ private fun TwoPaneLayout(
     }
 
 
-    val orientation = LocalOrientation.current
-    val insetMod = if (orientation != null) {
-        Modifier.padding(orientation.insets)
-    } else {
-        Modifier.windowInsetsPadding(WindowInsets.safeDrawing)
-    }
     Row(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .then(insetMod),
+            .windowInsetsPadding(WindowInsets.safeDrawing),
     ) {
         // 横屏/双栏下左边那栏可以收起来。竖屏是抽屉，不需要这个。
         //
@@ -920,7 +952,8 @@ private fun TwoPaneLayout(
                 onNewProject = onNewProject,
                 onOpenSettings = onOpenSettings,
                 onOpenMcp = onOpenMcp,
-            onSelectProject = { project -> vm.switchProject(project.workspace) },
+                onOpenFiles = onOpenWorkspaceFiles,
+                onSelectProject = { project -> vm.switchProject(project.workspace) },
             onProjectLongPress = onProjectLongPress,
             onNewSessionInProject = { workspace ->
                 // 同上：切工作区与建会话串行，避免会话归属到上一个项目
@@ -969,11 +1002,17 @@ private fun TwoPaneLayout(
                 onOpenTodos = onOpenTodos,
                 taskLabel = taskMenuLabel(state.tasks),
                 onOpenTasks = onOpenTasks,
+                onOpenFiles = onOpenWorkspaceFiles,
             )
-            // 需要「重试」的内核故障才用常驻横幅（按钮得点得到）；
+            // 需要「重试」或「前往文件传输」操作的横幅用常驻横幅（按钮得点得到）；
             // 保存成功、状态变更这类一次性反馈走 ToastHost 气泡。
-            if (state.banner?.retryable == true) {
-                BannerBar(state.banner, onDismiss = vm::dismissBanner, onRetry = vm::retryKernel)
+            if (state.banner?.let { it.retryable || it.openFileTransfer } == true) {
+                BannerBar(
+                    state.banner,
+                    onDismiss = vm::dismissBanner,
+                    onRetry = vm::retryKernel,
+                    onOpenFileTransfer = onOpenFileTransfer,
+                )
             }
 
             Box(modifier = Modifier.weight(1f)) {
@@ -1179,6 +1218,7 @@ private fun TopBar(
     onOpenTodos: () -> Unit = {},
     taskLabel: String = "后台任务",
     onOpenTasks: () -> Unit = {},
+    onOpenFiles: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier
@@ -1346,6 +1386,11 @@ private fun TopBar(
                         text = { Text(taskLabel) },
                         onClick = { menuOpen = false; onOpenTasks() },
                     )
+                    // 统一文件管理器：工作区/默认空间/手机存储/暂存缓存一站浏览与收发
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("文件管理") },
+                        onClick = { menuOpen = false; onOpenFiles() },
+                    )
                     // 设置入口也放这里：平板上侧栏底部的头像按钮在部分 ROM 上
                     // 会落在系统手势区里点不到（真机实测），菜单是更可靠的一条路。
                     androidx.compose.material3.DropdownMenuItem(
@@ -1423,6 +1468,7 @@ private fun BannerBar(
     banner: Banner?,
     onDismiss: () -> Unit,
     onRetry: (() -> Unit)? = null,
+    onOpenFileTransfer: (() -> Unit)? = null,
 ) {
     AnimatedVisibility(
         visible = banner != null,
@@ -1467,6 +1513,17 @@ private fun BannerBar(
                         .padding(horizontal = 10.dp, vertical = 5.dp),
                 ) {
                     Text(text = "重试", style = MaterialTheme.typography.labelSmall, color = fg)
+                }
+            }
+            if (b.openFileTransfer && onOpenFileTransfer != null) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(fg.copy(alpha = 0.12f))
+                        .noRippleClickable(onClick = onOpenFileTransfer)
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                ) {
+                    Text(text = "前往设置", style = MaterialTheme.typography.labelSmall, color = fg)
                 }
             }
             Box(

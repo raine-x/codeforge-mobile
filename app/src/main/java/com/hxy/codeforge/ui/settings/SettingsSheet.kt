@@ -100,11 +100,16 @@ import kotlin.math.roundToInt
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
+fun SettingsSheet(
+    vm: ChatViewModel,
+    onDismiss: () -> Unit,
+    initialPage: String? = null,
+    onOpenFileManager: (() -> Unit)? = null,
+) {
     val context = LocalContext.current
 
     // null = 主列表；其余为子页 key
-    var page by rememberSaveable { mutableStateOf<String?>(null) }
+    var page by rememberSaveable(initialPage) { mutableStateOf<String?>(initialPage) }
     // 提升「模型服务」的子页层级到设置顶层：让系统返回键和顶栏返回键能逐级退回，而不是直接关掉整个设置
     var modelSub by rememberSaveable { mutableStateOf<String?>(null) }
     var modelReturnSub by rememberSaveable { mutableStateOf<String?>(null) }
@@ -252,7 +257,7 @@ fun SettingsSheet(vm: ChatViewModel, onDismiss: () -> Unit) {
                             "mcp" -> McpPluginsSection(vm)
                             "archive" -> ArchiveSection(vm)
                             "env" -> EnvSection(context)
-                            "transfer" -> FileTransferSection(vm)
+                            "transfer" -> FileTransferSection(vm, onOpenFileManager = onOpenFileManager)
                             "kernel" -> KernelSettingsSection(vm)
                             "voice" -> VoiceSection(context)
                             "diag" -> DiagnosticsSection()
@@ -555,7 +560,7 @@ private fun AppearanceSection() {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 横屏旋转（保留既有设置） ----------------
+    // ---------------- 横屏旋转 ----------------
     SectionTitle("横屏旋转")
     val rotateEnabled = AppSettings.rotateWithDevice.value
     Row(
@@ -573,7 +578,7 @@ private fun AppearanceSection() {
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = "开启后竖屏用手机布局、横屏用平板布局；关闭后锁定竖屏",
+                text = "开启后跟随系统方向自动旋转（竖屏手机布局、横屏平板布局）；关闭后锁定竖屏",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 2.dp),
@@ -584,21 +589,6 @@ private fun AppearanceSection() {
             onCheckedChange = { AppSettings.setRotateWithDevice(it) },
             colors = SwitchDefaults.colors(checkedTrackColor = Clay),
         )
-    }
-
-    Text(
-        text = "灵敏度",
-        style = MaterialTheme.typography.bodyMedium,
-        fontWeight = FontWeight.Medium,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier.padding(top = 6.dp, bottom = 6.dp),
-    )
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        RotationSensitivity.entries.forEach { level ->
-            ChoiceChip(level.label, AppSettings.rotationSensitivity.value == level) {
-                AppSettings.setRotationSensitivity(level)
-            }
-        }
     }
 }
 

@@ -43,7 +43,10 @@ import com.hxy.codeforge.ui.theme.CodeForgeTheme
 class MainActivity : ComponentActivity() {
 
     private val notificationPermission =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* 拒绝也不阻塞：通知只是状态展示，内核照常跑 */ }
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            // 首次授予通知权限后立即按当前真实状态补发一次前台通知（拒了也不阻塞，内核照常跑）
+            if (granted) startForegroundService(Intent(this, CoreService::class.java))
+        }
 
     /** 通知快捷操作要用 vm：提到字段（viewModels 委托在 onCreate 前可用）。 */
     private val vm: ChatViewModel by viewModels()
@@ -52,14 +55,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        // 手机锁竖屏由 RotateWithDevice 转内容；平板按设置里的「横持时旋转界面」开关决定
-        // 交给系统旋转（UNSPECIFIED）还是锁定竖屏（PORTRAIT），避免开关在平板上失效。
-        // 用物理短边 + smallestScreenWidthDp 判平板，不受当前横竖屏或 letterbox 窄窗影响。
-        val isTablet = isPhysicalTablet()
-        requestedOrientation = resolveRequestedOrientation(
-            isTablet = isTablet,
-            rotateWithDevice = AppSettings.rotateWithDevice.value,
-        )
+        // 恢复系统原生横竖屏旋转（手机与平板共用）：
+        // 开启「横持时旋转界面」走 SCREEN_ORIENTATION_UNSPECIFIED，让主窗、输入法与三点菜单/弹层同步随系统旋转；
+        // 关闭则锁定 SCREEN_ORIENTATION_PORTRAIT。
+        requestedOrientation = resolveRequestedOrientation(AppSettings.rotateWithDevice.value)
 
         // Android 13+ 通知要运行时申请，否则内核状态常驻通知不可见
         if (Build.VERSION.SDK_INT >= 33 &&
@@ -84,13 +83,10 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(showStatusBar) {
                     applyStatusBarVisibility(window, showStatusBar)
                 }
-                // 平板监听「横持时旋转界面」开关，实时同步窗口方向锁定状态
+                // 监听「横持时旋转界面」开关，实时同步窗口原生方向控制
                 val rotateWithDevice = AppSettings.rotateWithDevice.value
-                LaunchedEffect(isTablet, rotateWithDevice) {
-                    val target = resolveRequestedOrientation(
-                        isTablet = isTablet,
-                        rotateWithDevice = rotateWithDevice,
-                    )
+                LaunchedEffect(rotateWithDevice) {
+                    val target = resolveRequestedOrientation(rotateWithDevice)
                     if (requestedOrientation != target) {
                         requestedOrientation = target
                     }
@@ -98,18 +94,6 @@ class MainActivity : ComponentActivity() {
                 CodeForgeApp(vm)
             }
         }
-    }
-
-    @Suppress("DEPRECATION")
-    private fun isPhysicalTablet(): Boolean {
-        val dm = android.util.DisplayMetrics()
-        windowManager.defaultDisplay.getRealMetrics(dm)
-        val shortSideDp = if (dm.density > 0f) {
-            minOf(dm.widthPixels, dm.heightPixels) / dm.density
-        } else {
-            0f
-        }
-        return maxOf(resources.configuration.smallestScreenWidthDp.toFloat(), shortSideDp) >= 600f
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -168,12 +152,12 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * 窗口请求方向判定：
- * - 手机或关闭「横持时旋转界面」：锁定竖屏（手机开启时由 RotateWithDevice 做内容旋转）；
- * - 平板且开启「横持时旋转界面」：放开给系统（竖屏切手机单栏、横屏切平板双栏）。
+ * 窗口请求方向判定（手机与平板统一走原生系统旋转）：
+ * - 开启「横持时旋转界面」：`SCREEN_ORIENTATION_UNSPECIFIED`，交由系统随设备方向同步旋转主窗、输入法与弹层；
+ * - 关闭「横持时旋转界面」：`SCREEN_ORIENTATION_PORTRAIT`，锁定竖屏。
  */
-internal fun resolveRequestedOrientation(isTablet: Boolean, rotateWithDevice: Boolean): Int =
-    if (isTablet && rotateWithDevice) {
+internal fun resolveRequestedOrientation(rotateWithDevice: Boolean): Int =
+    if (rotateWithDevice) {
         ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     } else {
         ActivityInfo.SCREEN_ORIENTATION_PORTRAIT

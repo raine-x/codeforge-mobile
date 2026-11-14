@@ -29,7 +29,9 @@ class CodeForgeApp : Application() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
-            android.util.Log.i("CodeForgeApp", "onTrimMemory level=$level（内核由 memlimit 自保）")
+            // 退到后台或内存吃紧时立刻清空聊天图片位图缓存，给系统与内核进程腾内存
+            com.hxy.codeforge.ui.chat.trimMediaBitmapCache(level)
+            android.util.Log.i("CodeForgeApp", "onTrimMemory level=$level（已清理图片缓存，内核由 memlimit 自保）")
         }
     }
 
@@ -61,14 +63,8 @@ class CodeForgeApp : Application() {
             },
         )
         AppSettings.init(this)
-        // B5-10：附件孤儿清理 —— 发送完成后附件文件不再被引用（内容已进上下文），
-        // 仿内核 GCUndoSpill 的「启动清一次」策略，留 7 天缓冲供 regenerate 重读
-        java.io.File(filesDir, "workspace/attachments").let { dir ->
-            if (dir.isDirectory) {
-                val deadline = System.currentTimeMillis() - 7L * 24 * 3600 * 1000
-                dir.listFiles()?.forEach { f -> if (f.lastModified() < deadline) f.delete() }
-            }
-        }
+        // B5-10：暂存孤儿（outbox / camera / logs）与托管工作区过期附件异步清理，避免冷启动阻塞主线程
+        EnvKit.cleanupOrphansAsync(this)
         // 统一环境准备（AGENTS §2.6 第 4 步）：proot + Alpine rootfs 解压到 $CELL，
         // 完成后内核的 run_command 经 cfrun 在同一棵目录树上执行（见 EnvKit 契约）
         EnvKit.ensureReady(this)

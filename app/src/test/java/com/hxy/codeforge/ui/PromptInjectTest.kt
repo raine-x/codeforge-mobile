@@ -55,6 +55,20 @@ class PromptInjectTest {
         assertEquals("出题", stripInjectedText(wire))
     }
 
+    @Test
+    fun appendNoteBeforeInjectedMarkersKeepsNoteVisibleOnReplay() {
+        val note = "[以下大文件超过 20MiB 内核直传限制，已自动上传至工作区：\n- imports/big.mp4 (25.0 MB)]"
+        val wireWithText = "请剪辑前十秒\n\n【CodeForge 客户端渲染能力】\n本客户端支持……"
+        val mergedWithText = appendNoteBeforeInjectedMarkers(wireWithText, note)
+        assertTrue(mergedWithText.indexOf(note) < mergedWithText.indexOf(INJECT_CAPABILITY_MARKER))
+        assertEquals("请剪辑前十秒\n\n$note", stripInjectedText(mergedWithText))
+
+        val wireEmptyUser = "\n\n【CodeForge 客户端渲染能力】\n本客户端支持……"
+        val mergedEmptyUser = appendNoteBeforeInjectedMarkers(wireEmptyUser, note)
+        assertEquals(note, stripInjectedText(mergedEmptyUser))
+        assertTrue(mergedEmptyUser.endsWith("本客户端支持……"))
+    }
+
     // ------------------------------------------------------------ 供应商身份
 
     @Test

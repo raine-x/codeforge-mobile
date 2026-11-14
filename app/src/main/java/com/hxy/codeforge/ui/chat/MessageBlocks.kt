@@ -138,9 +138,37 @@ internal fun mediaDataSource(
         attachmentFile(ctx, url, root).absolutePath
     }
 
-/** 图片位图缓存：聊天列表来回滚动、内联图与块级图共用。 */
-internal val bitmapCache = object : android.util.LruCache<String, android.graphics.Bitmap>(16) {
-    override fun sizeOf(key: String, value: android.graphics.Bitmap): Int = 1
+/** 图片位图缓存：按 KiB 计量（占进程堆上限 1/8，钳位 8～32 MiB），避免原图张数上限撑爆内存。 */
+private val BITMAP_CACHE_KB = (Runtime.getRuntime().maxMemory() / 1024L / 8L)
+    .toInt()
+    .coerceIn(8 * 1024, 32 * 1024)
+
+internal val bitmapCache = object : android.util.LruCache<String, android.graphics.Bitmap>(BITMAP_CACHE_KB) {
+    override fun sizeOf(key: String, value: android.graphics.Bitmap): Int =
+        (value.allocationByteCount / 1024).coerceAtLeast(1)
+}
+
+/** 系统内存压力或界面退后台时驱逐图片缓存。 */
+internal fun trimMediaBitmapCache(level: Int) {
+    if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+        bitmapCache.evictAll()
+    }
+}
+
+private fun decodeSampledBytes(bytes: ByteArray, maxDim: Int = 2048): android.graphics.Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / (sample * 2) >= maxDim || bounds.outHeight / (sample * 2) >= maxDim) {
+        sample *= 2
+    }
+    return BitmapFactory.decodeByteArray(
+        bytes,
+        0,
+        bytes.size,
+        BitmapFactory.Options().apply { inSampleSize = sample },
+    )
 }
 
 internal val mediaHttp = OkHttpClient.Builder()
@@ -148,7 +176,7 @@ internal val mediaHttp = OkHttpClient.Builder()
     .readTimeout(30, TimeUnit.SECONDS)
     .build()
 
-/** 统一的媒体位图加载：http(s) 走 OkHttp，其余按工作区相对路径读文件。 */
+/** 统一的媒体位图加载：http(s) 走 OkHttp，其余按工作区相对路径读文件；超大原图按 2048px 降采样。 */
 internal suspend fun loadMediaBitmap(
     ctx: android.content.Context,
     url: String,
@@ -164,7 +192,7 @@ internal suspend fun loadMediaBitmap(
             } else {
                 attachmentFile(ctx, url, root).takeIf { it.exists() }?.readBytes()
             }
-            bytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            bytes?.let { decodeSampledBytes(it) }
         }.getOrNull()?.also { bitmapCache.put(url, it) }
     }
 }
