@@ -6,6 +6,8 @@
 
 [中文完整文档 (README_ZH.md)](README_ZH.md) · [English Documentation (README_EN.md)](README_EN.md)
 
+本应用的 Go 内核 · Go Runtime: [CodeForge-Go](https://github.com/raine-x/CodeForge-GO.git)
+
 </div>
 
 ---
