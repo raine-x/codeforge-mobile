@@ -16,7 +16,25 @@
 
 ---
 
+## 快速开始 · Quick Start
+
+1. 在配置好 Android SDK 的环境运行 `./gradlew assembleRelease`（Windows 用 `.\gradlew.bat assembleRelease`）。
+2. 安装 `app/build/outputs/apk/release/app-release.apk`（`arm64-v8a`，包名 `com.hxy.codeforge`）。覆盖安装需要与已安装版本相同的签名证书。
+3. 打开应用，在设置里配置模型服务后开始对话。
+
+Build with `./gradlew assembleRelease` (`.\gradlew.bat assembleRelease` on Windows), install the ARM64 APK from the path above, then configure a model provider in Settings. Updating an existing installation requires the same signing certificate.
+
+### Markdown 渲染更新 · Markdown Rendering Update
+
+表格使用透明底和完整网格。语言标签与代码正文分开，正文在浅色主题下使用白底。纯文本和日志输出透明，行内高亮贴合字体高度。
+
+Tables have transparent backgrounds and full grid lines. Language labels sit above code panels, which use white backgrounds in light mode. Plain text and logs stay transparent, and inline highlights follow the font height.
+
+---
+
 ## 实机演示 · Live Demo
+
+以下为较早版本的演示截图和录屏。 · The captures below show an earlier build.
 
 <div align="center">
   <img src="docs/media/demo.gif" alt="CodeForge APP Live Demo" width="880" />

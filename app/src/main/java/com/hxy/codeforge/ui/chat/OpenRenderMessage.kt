@@ -3,6 +3,7 @@ package com.hxy.codeforge.ui.chat
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -36,10 +37,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -50,8 +55,10 @@ import androidx.compose.ui.text.Placeholder
 import androidx.compose.ui.text.PlaceholderVerticalAlign
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -61,6 +68,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.hxy.codeforge.render.OpenRenderDocument
@@ -402,13 +411,10 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
 
 @Composable
 private fun FencedCode(lang: String, code: String) {
+    val isPlainOutput = lang in plainOutputLanguages
     Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         if (lang.isNotEmpty()) {
             Text(
@@ -417,18 +423,25 @@ private fun FencedCode(lang: String, code: String) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Text(
-            text = code,
-            style = MaterialTheme.typography.bodySmall.copy(
-                fontFamily = FontFamily.Monospace,
-                lineHeight = 19.sp,
-            ),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            softWrap = false,
-            modifier = Modifier.horizontalScroll(rememberScrollState()),
-        )
+        val codePanel = if (isPlainOutput) Modifier else Modifier
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest, RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+        Box(modifier = Modifier.fillMaxWidth().then(codePanel)) {
+            Text(
+                text = code.removeSuffix("\n"),
+                style = MaterialTheme.typography.bodySmall.copy(
+                    fontFamily = FontFamily.Monospace,
+                    lineHeight = 19.sp,
+                ),
+                color = MaterialTheme.colorScheme.onSurface,
+                softWrap = false,
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+            )
+        }
     }
 }
+
+private val plainOutputLanguages = setOf("", "text", "plain", "plaintext", "txt", "output", "log", "console")
 
 @Composable
 private fun ListItemBlock(block: RenderBlock, bodyStyle: TextStyle, caret: Boolean) {
@@ -481,20 +494,25 @@ private fun TableBlock(table: RenderTable?, bodyStyle: TextStyle) {
     val cols = maxOf(table.header.size, table.rows.maxOfOrNull { it.size } ?: 0)
     if (cols == 0) return
     val density = LocalDensity.current.density
+    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
+    val shape = RoundedCornerShape(10.dp)
 
     BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
         val widths = columnWidths(table, cols, maxWidth, density)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(8.dp),
+                .clip(shape)
+                .border(1.dp, gridColor, shape),
         ) {
-            TableRow(table.header, table.align, widths, bodyStyle, header = true)
-            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-            table.rows.forEach { row ->
-                TableRow(row, table.align, widths, bodyStyle, header = false)
+            if (table.header.isNotEmpty()) {
+                TableRow(table.header, table.align, widths, bodyStyle, gridColor, header = true)
+            }
+            table.rows.forEachIndexed { index, row ->
+                if (index > 0 || table.header.isNotEmpty()) {
+                    HorizontalDivider(color = gridColor)
+                }
+                TableRow(row, table.align, widths, bodyStyle, gridColor, header = false)
             }
         }
     }
@@ -538,8 +556,8 @@ private fun columnWidths(
         }
     }
 
-    // 卡片内边距 8dp×2，每格再扣左右各 5dp，剩下的才是文字可用宽
-    val avail = (available.value - 16f - TABLE_CELL_PADDING * 2 * cols).coerceAtLeast(1f)
+    // 每格扣除左右内边距后，剩下的才是文字可用宽。
+    val avail = (available.value - TABLE_CELL_PADDING * 2 * cols).coerceAtLeast(1f)
     val sumDesired = desired.sum()
     val sumFloor = floor.sum()
 
@@ -634,28 +652,37 @@ private fun TableRow(
     align: List<String>,
     widths: List<Dp>,
     bodyStyle: TextStyle,
+    gridColor: Color,
     header: Boolean,
 ) {
-    Row(modifier = Modifier.fillMaxWidth()) {
+    Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
         widths.forEachIndexed { c, width ->
             val cell = cells.getOrNull(c).orEmpty()
-            InlineSpans(
-                spans = cell,
-                style = bodyStyle.copy(
-                    fontSize = tableCellFontSize,
-                    lineHeight = 19.sp,
-                    fontWeight = if (header) FontWeight.Medium else FontWeight.Normal,
-                ),
-                caret = false,
-                textAlign = when (align.getOrNull(c)) {
-                    "center" -> TextAlign.Center
-                    "right" -> TextAlign.End
-                    else -> TextAlign.Start
-                },
-                modifier = Modifier
-                    .width(width)
-                    .padding(horizontal = TABLE_CELL_PADDING.dp, vertical = 3.dp),
-            )
+            val separator = if (c == 0) Modifier else Modifier.drawWithContent {
+                drawContent()
+                val stroke = 1.dp.toPx()
+                val x = if (layoutDirection == LayoutDirection.Ltr) stroke / 2 else size.width - stroke / 2
+                drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), stroke)
+            }
+            Box(modifier = Modifier.weight(width.value).fillMaxHeight().then(separator)) {
+                InlineSpans(
+                    spans = cell,
+                    style = bodyStyle.copy(
+                        fontSize = tableCellFontSize,
+                        lineHeight = 19.sp,
+                        fontWeight = if (header) FontWeight.Medium else FontWeight.Normal,
+                    ),
+                    caret = false,
+                    textAlign = when (align.getOrNull(c)) {
+                        "center" -> TextAlign.Center
+                        "right" -> TextAlign.End
+                        else -> TextAlign.Start
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = TABLE_CELL_PADDING.dp, vertical = 3.dp),
+                )
+            }
         }
     }
 }
@@ -794,6 +821,11 @@ private fun AlertFrame(block: RenderBlock, content: @Composable () -> Unit) {
 
 // ---------------------------------------------------------------- 行内 span
 
+private const val INLINE_HIGHLIGHT = "inline-highlight"
+private const val CODE_HIGHLIGHT = "code"
+private const val MARK_HIGHLIGHT = "mark"
+private val inlineCodeSize = 13.sp
+
 @Composable
 private fun InlineSpans(
     spans: List<RenderSpan>,
@@ -808,7 +840,7 @@ private fun InlineSpans(
     val caretColor = MaterialTheme.colorScheme.primary
     val density = LocalDensity.current.density
 
-    val rendered = remember(spans, caret, linkColor, codeBg, codeFg, caretColor, density) {
+    val rendered = remember(spans, caret, linkColor, codeFg, caretColor, density) {
         val inline = linkedMapOf<String, InlineTextContent>()
         var seq = 0
         val annotated = buildAnnotatedString {
@@ -821,19 +853,15 @@ private fun InlineSpans(
                         strike = span.strike,
                         url = span.url,
                         linkColor = linkColor,
-                        codeBg = codeBg,
                         codeFg = codeFg,
                     )
 
-                    "code" -> withStyle(
-                        SpanStyle(
-                            fontFamily = FontFamily.Monospace,
-                            fontSize = 13.sp,
-                            background = codeBg,
-                            color = codeFg,
-                        ),
-                    ) {
-                        append(span.text)
+                    "code" -> {
+                        val start = length
+                        withStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = inlineCodeSize, color = codeFg)) {
+                            append(span.text)
+                        }
+                        addStringAnnotation(INLINE_HIGHLIGHT, CODE_HIGHLIGHT, start, length)
                     }
 
                     "softbreak", "hardbreak" -> append('\n')
@@ -900,13 +928,47 @@ private fun InlineSpans(
         annotated to inline
     }
 
+    val highlights = remember(rendered.first) {
+        rendered.first.getStringAnnotations(INLINE_HIGHLIGHT, 0, rendered.first.length)
+            .filter { it.start < it.end }
+    }
+    var textLayout by remember(rendered.first) { mutableStateOf<TextLayoutResult?>(null) }
+    val highlightModifier = if (highlights.isEmpty()) Modifier else {
+        val measurer = rememberTextMeasurer()
+        val metricStyle = style.copy(lineHeight = TextUnit.Unspecified)
+        val proseMetrics = measurer.measure("Hg", style = metricStyle)
+        val codeMetrics = measurer.measure(
+            "Hg",
+            style = metricStyle.copy(fontFamily = FontFamily.Monospace, fontSize = inlineCodeSize),
+        )
+        Modifier.drawBehind {
+            val layout = textLayout ?: return@drawBehind
+            highlights.forEach { range ->
+                val metrics = if (range.item == CODE_HIGHLIGHT) codeMetrics else proseMetrics
+                val firstLine = layout.getLineForOffset(range.start)
+                val lastLine = layout.getLineForOffset(range.end - 1)
+                for (line in firstLine..lastLine) {
+                    val start = maxOf(range.start, layout.getLineStart(line))
+                    val end = minOf(range.end, layout.getLineEnd(line, visibleEnd = true))
+                    if (start >= end) continue
+                    val top = layout.getLineBaseline(line) - metrics.firstBaseline
+                    // 选区保留换行及双向文本的位置，纵向只画字体高度。
+                    clipRect(top = top, bottom = top + metrics.size.height) {
+                        drawPath(layout.getPathForRange(start, end), codeBg)
+                    }
+                }
+            }
+        }
+    }
+
     Text(
         text = rendered.first,
         inlineContent = rendered.second,
         style = style,
         color = MaterialTheme.colorScheme.onSurface,
         textAlign = textAlign,
-        modifier = modifier,
+        modifier = modifier.then(highlightModifier),
+        onTextLayout = { if (highlights.isNotEmpty()) textLayout = it },
     )
 }
 
@@ -924,7 +986,6 @@ private fun AnnotatedString.Builder.appendRichText(
     strike: Boolean,
     url: String,
     linkColor: Color,
-    codeBg: Color,
     codeFg: Color,
 ) {
     var isBold = bold
@@ -935,6 +996,10 @@ private fun AnnotatedString.Builder.appendRichText(
     var isSup = false
     var isMark = false
     var isCode = false
+
+    fun markHighlight(start: Int) {
+        if (isMark) addStringAnnotation(INLINE_HIGHLIGHT, MARK_HIGHLIGHT, start, length)
+    }
 
     fun styleNow(): SpanStyle {
         val deco = buildList {
@@ -951,7 +1016,6 @@ private fun AnnotatedString.Builder.appendRichText(
                 else -> null
             },
             fontFamily = if (isCode) FontFamily.Monospace else null,
-            background = if (isMark) codeBg else Color.Unspecified,
             color = if (isCode) codeFg else Color.Unspecified,
         )
     }
@@ -960,9 +1024,11 @@ private fun AnnotatedString.Builder.appendRichText(
         if (buf.isEmpty()) return
         val text = buf.toString()
         buf.clear()
+        val start = length
         withStyle(styleNow()) {
             if (url.isNotBlank()) withLink(link(url, linkColor)) { append(text) } else append(text)
         }
+        markHighlight(start)
     }
 
     val buffer = StringBuilder()
@@ -978,9 +1044,11 @@ private fun AnnotatedString.Builder.appendRichText(
                 raw[end] != ')' && raw[end] != '）'
             ) end++
             val urlText = raw.substring(i, end)
+            val start = length
             withStyle(styleNow()) {
                 withLink(link(urlText, linkColor)) { append(urlText) }
             }
+            markHighlight(start)
             i = end
             continue
         }
@@ -992,12 +1060,14 @@ private fun AnnotatedString.Builder.appendRichText(
             if (closer > i + 1 && (newline < 0 || closer < newline)) {
                 flush(buffer)
                 val inner = raw.substring(i + 1, closer)
+                val start = length
                 withStyle(
                     styleNow().copy(
                         baselineShift = if (c == '~') BaselineShift.Subscript else BaselineShift.Superscript,
                         fontSize = 11.sp,
                     ),
                 ) { append(inner) }
+                markHighlight(start)
                 i = closer + 1
                 continue
             }

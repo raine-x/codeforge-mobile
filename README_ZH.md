@@ -38,6 +38,8 @@ CodeForge-Go 的原生 Android 客户端。Go 内核作为独立进程在本地�
 
 - **项目与工作区隔离**：侧栏点「新建项目」绑定本地目录；未选择工作区时自动落到应用私有 `inbox` 空间。跨项目切换时壳侧自动校验后台运行态，防止在途工具调用落错目录。
 - **消息流与媒体渲染**：通过 `libopenrender.so` 将 Markdown 解析为增量 IR，支持公式（RaTeX + 内嵌 Noto Sans SC 子集）、实测宽度表格、diff 工具卡片、代码块、音频、视频与 SVG 渲染；裸 HTML 自动旁路挂载流内 WebView。
+  - 表格采用透明底和完整网格。代码语言标签位于正文框上方，正文在浅色主题使用白底、深色主题使用深底。
+  - 无语言标签及 `text`、`output`、`log` 等围栏使用透明底。行内代码和高亮按字体高度绘制。
 - **检查点与文件撤销**：每次文件改动均按会话记录检查点，可在操作面板回滚工作区文件或撤销最近一步写入（`/api/undo`）。
 - **内置浏览器与元素挑选**：消息内链接支持内置浏览器打开；点「选择元素」后可在页面内点选 DOM 节点并附带说明，将标签、样式与位置摘要注入当前对话。
 - **后台任务与子智能体**：支持提交长时间脚本至后台任务面板监控与终止；支持 `@goal_mode` 独立验证闭环与多子智能体并行拆解。
@@ -192,7 +194,7 @@ CodeForge APP 内置了专为移动端静态取证与二进制逆向分析设计
 ./gradlew assembleRelease
 ```
 
-> **签名说明**：`app/build.gradle.kts` 优先读取仓库外忽略的 `app/keystore/codeforge.keystore` 覆盖安装，缺失时自动回退默认 `debug` 密钥以便本地直接编译。`libcodeforge.so` 与 `libopenrender.so` 为预编译产物直接随仓库分发，构建 App 无需额外配置 Go / Rust / NDK 环境。
+> **签名说明**：默认包名为 `com.hxy.codeforge`。构建优先使用 Git 忽略的本地 `app/keystore/codeforge.keystore`，缺失时回退到调试密钥。覆盖安装需要与已安装版本相同的签名证书，可用 `apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk` 查看证书指纹。两份原生库随仓库预编译分发，构建 App 无需额外配置 Go、Rust 或 NDK。
 
 ---
 

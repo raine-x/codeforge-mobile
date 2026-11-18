@@ -38,6 +38,8 @@ Native Android client for CodeForge-Go. The Go kernel runs locally as an isolate
 
 - **Project-Scoped Workspaces**: Create projects bound to any local folder from the sidebar; unbound chats default cleanly to the private `inbox` space. Project switching validates whether any background session is busy before changing the kernel working directory.
 - **Multimodal Streaming & Formatting**: Feeds incremental Markdown IR through `libopenrender.so`, rendering LaTeX math (RaTeX with an embedded Noto Sans SC subset), measured-width tables, diff tool cards, code blocks, audio, video, and SVG, while bypassing raw HTML directly into in-stream WebViews.
+  - Tables use transparent backgrounds and full grid lines. Code language labels appear above the code panel, which uses a white background in light mode and a dark surface in dark mode.
+  - Untagged fences and plain output such as `text`, `output`, and `log` use transparent backgrounds. Inline code and highlights follow the font height.
 - **Checkpoints & Step-by-Step Undo**: Every file write is checkpointed per session, allowing workspace rollback or undo (`/api/undo`) straight from session controls.
 - **Built-in Browser & Element Picking**: Open links from messages in an embedded WebView, tap **Select Element** to inspect DOM nodes, and attach tag/style/geometry metadata plus user notes directly to the active prompt.
 - **Background Tasks & Subagents**: Launch long-running shell scripts into the background task panel to stream output or kill runs; supports `@goal_mode` verifier loops and multi-agent decomposition.
@@ -189,6 +191,8 @@ Every push or pull request to `main` executes:
 ```
 
 Both `libcodeforge.so` and `libopenrender.so` are shipped prebuilt under `app/src/main/jniLibs/arm64-v8a/`, so building the Android client requires no Go, Rust, or NDK setup.
+
+The default application ID is `com.hxy.codeforge`. Gradle uses the local, Git-ignored `app/keystore/codeforge.keystore` when present and falls back to a debug key otherwise. An in-place update requires the same signing certificate as the installed build. Check the fingerprint with `apksigner verify --verbose --print-certs app/build/outputs/apk/release/app-release.apk`.
 
 ---
 
