@@ -2,6 +2,9 @@ package com.hxy.codeforge.ui.browser
 
 import com.hxy.codeforge.render.RenderBlock
 import com.hxy.codeforge.render.RenderSpan
+import com.hxy.codeforge.ui.chat.isSvgPathOrDataUri
+import com.hxy.codeforge.ui.chat.normalizeSvgForRender
+import com.hxy.codeforge.ui.chat.svgAspect
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -335,5 +338,67 @@ class HtmlDetectionTest {
         assertEquals("普通文字，没有网页。", split.before)
         assertFalse(split.html != null)
         assertEquals("", split.after)
+    }
+
+    // ------------------------------------------------- SVG 直接显示与切分
+
+    @Test
+    fun recognisesSvgMarkupWithXmlPrologAndMultiLineBlankLines() {
+        val svg = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <svg width="400" height="200" xmlns="http://www.w3.org/2000/svg">
+
+                <rect width="100%" height="24" fill="#eee"/>
+                <circle cx="200" cy="100" r="60" fill="#d97757"/>
+            </svg>
+        """.trimIndent()
+        assertTrue(looksLikeSvgMarkup(svg))
+        // 根标签 width=400, height=200，不能被子元素 <rect width="100%" height="24"> 污染
+        val aspect = svgAspect(svg)
+        assertNotNull(aspect)
+        assertEquals(2.0f, aspect!!, 0.01f)
+        // 无 viewBox 时自动补齐 viewBox="0 0 400 200"
+        val normalized = normalizeSvgForRender(svg)
+        assertTrue(normalized.contains("""viewBox="0 0 400 200""""))
+    }
+
+    @Test
+    fun splitsProseAroundBareSvgWhilePreservingFencedAndInlineCode() {
+        val raw = """
+            下面是架构矢量图（注意行内 `<svg>` 标签不应被切开）：
+
+            <svg viewBox='0 0 300 150' xmlns="http://www.w3.org/2000/svg">
+
+                <g>
+                    <rect x="10" y="10" width="280" height="130" rx="12"/>
+                </g>
+            </svg>
+
+            以及一段代码围栏：
+            ```xml
+            <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40"/></svg>
+            ```
+        """.trimIndent()
+
+        assertTrue(hasBareSvgOutsideFences(raw))
+        val segments = splitProseAroundBareSvg(raw)
+        assertEquals(3, segments.size)
+        assertFalse(segments[0].isSvg)
+        assertTrue(segments[0].text.contains("`<svg>`"))
+        assertTrue(segments[1].isSvg)
+        assertTrue(segments[1].closed)
+        assertTrue(segments[1].text.startsWith("<svg"))
+        assertTrue(segments[1].text.endsWith("</svg>"))
+        assertFalse(segments[2].isSvg)
+        assertTrue(segments[2].text.contains("```xml"))
+    }
+
+    @Test
+    fun detectsSvgPathAndDataUri() {
+        assertTrue(isSvgPathOrDataUri("diagram.svg"))
+        assertTrue(isSvgPathOrDataUri("https://example.com/chart.SVG?v=1#top"))
+        assertTrue(isSvgPathOrDataUri("data:image/svg+xml;utf8,<svg></svg>"))
+        assertTrue(isSvgPathOrDataUri("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="))
+        assertFalse(isSvgPathOrDataUri("photo.png"))
     }
 }

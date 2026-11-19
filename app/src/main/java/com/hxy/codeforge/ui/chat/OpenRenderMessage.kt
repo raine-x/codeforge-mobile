@@ -82,9 +82,12 @@ import com.hxy.codeforge.ui.browser.BrowserTarget
 import com.hxy.codeforge.ui.browser.HtmlBlockView
 import com.hxy.codeforge.ui.browser.HtmlLoadingBlock
 import com.hxy.codeforge.ui.browser.LocalBrowserController
+import com.hxy.codeforge.ui.browser.hasBareSvgOutsideFences
 import com.hxy.codeforge.ui.browser.looksLikeHtmlDocumentLoose
+import com.hxy.codeforge.ui.browser.looksLikeSvgMarkup
 import com.hxy.codeforge.ui.browser.mergeHtmlBlocks
 import com.hxy.codeforge.ui.browser.looksLikeWholeHtmlDocument
+import com.hxy.codeforge.ui.browser.splitProseAroundBareSvg
 import com.hxy.codeforge.ui.browser.splitProseAroundHtml
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
@@ -157,6 +160,33 @@ fun OpenRenderContent(
         return
     }
 
+    // 裸 <svg>...</svg>（含解说 + 裸 SVG + 解说，或带空行/4 格缩进的多行 SVG）：
+    // 在喂给 markdown 引擎前切出，避免空行后缩进变 code_block 或混排段落被剥去标签。
+    if (hasBareSvgOutsideFences(source)) {
+        val segments = remember(source) { splitProseAroundBareSvg(source) }
+        if (segments.any { it.isSvg }) {
+            Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                segments.forEachIndexed { idx, seg ->
+                    val isLast = idx == segments.lastIndex
+                    if (seg.isSvg) {
+                        if (seg.closed) {
+                            MessageSvgBlock(svg = seg.text)
+                        } else {
+                            StreamingTailBlock(text = seg.text)
+                        }
+                    } else if (seg.text.isNotBlank()) {
+                        OpenRenderContent(
+                            source = seg.text,
+                            streaming = streaming && isLast,
+                            bodyStyle = bodyStyle,
+                        )
+                    }
+                }
+            }
+            return
+        }
+    }
+
     if (!OpenRenderNative.available) {
         Text(
             text = source,
@@ -221,6 +251,7 @@ private fun RenderBlockView(
             "audio" -> MessageAudioBlock(block.url)
             "link_preview" -> LinkPreviewCard(block)
             "html_raw" -> HtmlBlockView(html = block.text, title = "网页")
+            "svg_raw" -> MessageSvgBlock(svg = block.text)
             else -> InlineSpans(
                 spans = block.spans,
                 style = bodyStyle,
@@ -267,8 +298,8 @@ private fun ParagraphBlock(
                     MediaJumpCard(type = jump.first, url = jump.second)
                     return
                 }
-                if (single.text.trimStart().startsWith("<svg")) {
-                    if (single.text.contains("</svg>")) {
+                if (single.text.trimStart().startsWith("<svg", ignoreCase = true) || looksLikeSvgMarkup(single.text)) {
+                    if (single.text.contains("</svg>", ignoreCase = true) || looksLikeSvgMarkup(single.text)) {
                         MessageSvgBlock(single.text)
                     } else {
                         StreamingTailBlock(single.text)
@@ -280,6 +311,10 @@ private fun ParagraphBlock(
     }
 
     val fullText = block.spans.joinToString("") { it.text }
+    if (looksLikeSvgMarkup(fullText)) {
+        MessageSvgBlock(fullText)
+        return
+    }
     val fullJump = parseMediaJumpTag(fullText)
     if (fullJump != null) {
         MediaJumpCard(type = fullJump.first, url = fullJump.second)
@@ -366,9 +401,11 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
         "html", "htm" -> {
             // AI 出的整页文档（题目页、解析展开、可点开的图表）：
             // 直接挂成可交互 WebView，按钮能点、答案能展开，不用来回切 App。
-            // 流式未闭合先顶「正在生成」大框，源码不展示，避免竖屏刷屏与重建。
+            // 若 ```html 围栏里装的其实是纯 <svg>...</svg>，优先走矢量图卡片渲染。
             if (openTail) {
                 HtmlLoadingBlock(title = "网页")
+            } else if (looksLikeSvgMarkup(block.text)) {
+                MessageSvgBlock(block.text)
             } else if (block.text.isNotBlank()) {
                 HtmlBlockView(html = block.text, title = "网页")
             } else {
@@ -379,8 +416,12 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
         "svg" -> if (openTail) StreamingTailBlock(block.text) else MessageSvgBlock(block.text)
 
         "image", "img", "图片" -> {
-            val url = firstNonBlankLine(block.text)
-            if (openTail || url == null) StreamingTailBlock(block.text) else MessageImageBlock(url, "")
+            if (!openTail && looksLikeSvgMarkup(block.text)) {
+                MessageSvgBlock(block.text)
+            } else {
+                val url = firstNonBlankLine(block.text)
+                if (openTail || url == null) StreamingTailBlock(block.text) else MessageImageBlock(url, "")
+            }
         }
 
         "video", "视频" -> {
@@ -405,7 +446,13 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
             }
         }
 
-        else -> FencedCode(lang, block.text)
+        else -> {
+            if (lang in setOf("xml", "") && looksLikeSvgMarkup(block.text)) {
+                if (openTail) StreamingTailBlock(block.text) else MessageSvgBlock(block.text)
+            } else {
+                FencedCode(lang, block.text)
+            }
+        }
     }
 }
 

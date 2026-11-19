@@ -13,7 +13,7 @@ import java.io.File
 object PhoneSkillDeployer {
 
     const val SKILL_SLUG = "phone"
-    const val SKILL_VERSION = "4"
+    const val SKILL_VERSION = "5"
     private const val MARKER_FILE = "phone-skill.version"
 
     /** 严格扁平单行 frontmatter（见 P-052 与 PluginInstaller.validateSkillMarkdown）。 */
@@ -30,10 +30,11 @@ enabled: true
 
 ## 自主执行闭环
 
-1. **拆解目标与工具协作**：
-   - 先判断哪些步骤走信息检索/文件处理，哪些步骤走 `phone.*` 手机能力。
-   - 例如「查一下明天的天气，如果下雨就提醒我带伞」：先调用已有搜索工具/MCP 获取天气，再根据结果调用 `phone.calendar_reminder` 创建提醒或闹钟，并核对返回结果。
-   - 仅在用户明确需要操作或浏览某个网页时，才打开浏览器或页面进行交互。
+1. **拆解目标与工具协同优先级（系统直达 > 应用技能 + 批量动作 > 单步观察 > 视觉兜底）**：
+   - 先判断哪些步骤走信息检索/文件处理，哪些步骤走 `phone.*` 手机能力；能并发的只读查询（如搜索网页、读取本地文件、查询设备状态）在同一轮并发发起。
+   - **优先调用系统直达工具**：调音量/亮度/网络用 `phone.system_setting`，查/建日程、闹钟、倒计时用 `phone.calendar_reminder`，启动/切换应用用 `phone.app_manage(action="launch")`，拨号/短信/系统分享用 `phone.communication`——能一步直达的绝不退回桌面翻找图标。
+   - 例如「查一下明天的天气，如果下雨就提醒我带伞」：先调用已有搜索工具获取天气，再调用 `phone.calendar_reminder` 创建提醒或闹钟并核对返回结果。
+   - 仅在用户明确需要操作或浏览某个手机端网页时，才打开浏览器或页面进行交互。
 
 2. **屏幕操作循环（先观察 → 再操作 → 后核验）**：
    - 每次准备操作屏幕前，先调用 `phone.screen_observe` 获取当前前台应用、窗口信息和可见控件树（含每个控件的 `ref`、中心坐标与状态）。

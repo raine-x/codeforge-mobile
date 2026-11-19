@@ -205,51 +205,355 @@ private sealed interface ImgState {
 
 // ---------------------------------------------------------------- SVG
 
+/** 判定路径或 URI 是否为 SVG 文件或 `data:image/svg+xml` 内联矢量图。 */
+fun isSvgPathOrDataUri(url: String): Boolean {
+    val t = url.trim()
+    if (t.startsWith("data:image/svg+xml", ignoreCase = true)) return true
+    val clean = t.substringBefore('?').substringBefore('#').lowercase()
+    return clean.endsWith(".svg")
+}
+
+/** 从 data URI、http(s) 或工作区本地文件加载 SVG 源码文本；非 SVG 返回 null。 */
+internal suspend fun loadMediaSvg(
+    ctx: android.content.Context,
+    url: String,
+    root: String = "",
+): String? = withContext(Dispatchers.IO) {
+    runCatching {
+        val trimmed = url.trim()
+        val rawText: String? = when {
+            trimmed.startsWith("data:image/svg+xml", ignoreCase = true) -> {
+                val comma = trimmed.indexOf(',')
+                if (comma < 0) null
+                else {
+                    val meta = trimmed.substring(0, comma).lowercase()
+                    val payload = trimmed.substring(comma + 1)
+                    if (meta.contains(";base64")) {
+                        String(android.util.Base64.decode(payload, android.util.Base64.DEFAULT), Charsets.UTF_8)
+                    } else {
+                        Uri.decode(payload)
+                    }
+                }
+            }
+            trimmed.startsWith("http://", ignoreCase = true) || trimmed.startsWith("https://", ignoreCase = true) -> {
+                mediaHttp.newCall(Request.Builder().url(trimmed).build()).execute().use { r ->
+                    if (!r.isSuccessful) null else r.body?.bytes()?.toString(Charsets.UTF_8)
+                }
+            }
+            else -> {
+                attachmentFile(ctx, trimmed, root).takeIf { it.exists() && it.isFile }?.readText(Charsets.UTF_8)
+            }
+        }
+        rawText?.trim()?.takeIf { it.contains("<svg", ignoreCase = true) }
+    }.getOrNull()
+}
+
 /**
- * SVG 块：WebView 渲染（禁 JS，纯矢量绘制，透明背景）。
- * 容器高度由 viewBox/width/height 推算的宽高比决定 —— 不用 JS 量高。
+ * 规范化 SVG 源码以确保在响应式容器中完整等比缩放：
+ * - 截取 `<svg ...>...</svg>` 主体（剥除前置 `<?xml ...?>` 或 `<!DOCTYPE ...>`）；
+ * - 若根 `<svg>` 标签未声明 `viewBox`，但带有数值型 `width` 与 `height`，自动补齐 `viewBox="0 0 w h"`，
+ *   防止 CSS `width:100%;height:100%` 下只拉伸视口而不缩放坐标系导致图形被裁切。
+ */
+internal fun normalizeSvgForRender(rawSvg: String): String {
+    val trimmed = rawSvg.trim()
+    val startIdx = trimmed.indexOf("<svg", ignoreCase = true)
+    if (startIdx < 0) return trimmed
+    val endIdx = trimmed.lastIndexOf("</svg>", ignoreCase = true)
+    val core = if (endIdx >= startIdx) {
+        trimmed.substring(startIdx, endIdx + "</svg>".length)
+    } else {
+        trimmed.substring(startIdx)
+    }
+    val tagEnd = core.indexOf('>')
+    if (tagEnd < 0) return core
+    val openTag = core.substring(0, tagEnd + 1)
+    if (openTag.contains("viewBox", ignoreCase = true)) return core
+
+    val dims = parseSvgRootDimensions(openTag)
+    if (dims != null) {
+        val (w, h) = dims
+        val wStr = if (w % 1f == 0f) w.toInt().toString() else w.toString()
+        val hStr = if (h % 1f == 0f) h.toInt().toString() else h.toString()
+        val injectedOpenTag = openTag.substring(0, 4) + " viewBox=\"0 0 $wStr $hStr\"" + openTag.substring(4)
+        return injectedOpenTag + core.substring(tagEnd + 1)
+    }
+    return core
+}
+
+/**
+ * 从根 `<svg ...>` 开标签的 `viewBox` 或 `width`/`height` 推算宽高比；
+ * 只解析根 `<svg>` 开标签，绝不误读内部 `<rect width="100%" height="20">` 等子元素属性。
+ */
+internal fun svgAspect(svg: String): Float? {
+    val startIdx = svg.indexOf("<svg", ignoreCase = true)
+    if (startIdx < 0) return null
+    val tagEnd = svg.indexOf('>', startIdx)
+    if (tagEnd < 0) return null
+    val openTag = svg.substring(startIdx, tagEnd + 1)
+
+    val vbMatch = Regex("""viewBox\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(openTag)
+    val vbParts = vbMatch?.groupValues?.get(1)?.trim()?.split(Regex("""[,\s]+"""))
+    if (vbParts != null && vbParts.size == 4) {
+        val w = vbParts[2].toFloatOrNull()
+        val h = vbParts[3].toFloatOrNull()
+        if (w != null && h != null && w > 0f && h > 0f) return w / h
+    }
+
+    val dims = parseSvgRootDimensions(openTag)
+    return if (dims != null) dims.first / dims.second else null
+}
+
+private fun parseSvgRootDimensions(openTag: String): Pair<Float, Float>? {
+    val wRaw = Regex("""\bwidth\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        .find(openTag)?.groupValues?.get(1)?.trim() ?: return null
+    val hRaw = Regex("""\bheight\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        .find(openTag)?.groupValues?.get(1)?.trim() ?: return null
+    // 百分比宽高（如 width="100%"）无法提供固有像素比例
+    if (wRaw.endsWith("%") || hRaw.endsWith("%")) return null
+    val numRegex = Regex("""^([0-9]+(?:\.[0-9]+)?)""")
+    val w = numRegex.find(wRaw)?.groupValues?.get(1)?.toFloatOrNull() ?: return null
+    val h = numRegex.find(hRaw)?.groupValues?.get(1)?.toFloatOrNull() ?: return null
+    return if (w > 0f && h > 0f) (w to h) else null
+}
+
+private fun buildSvgHtmlDocument(svg: String, lightCanvas: Boolean): String {
+    val bg = if (lightCanvas) "#FAF8F5" else "transparent"
+    val fg = if (lightCanvas) "#1F1E1B" else "#EAE6DF"
+    return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes\">" +
+        "<style>" +
+        "html,body{margin:0;padding:0;width:100%;height:100%;background:$bg;color:$fg;overflow:hidden;" +
+        "display:flex;align-items:center;justify-content:center;}" +
+        "svg{width:100%!important;height:100%!important;max-width:100vw;max-height:100vh;display:block;object-fit:contain;}" +
+        "</style></head><body>" +
+        svg +
+        "</body></html>"
+}
+
+/**
+ * SVG 块：直接渲染矢量图，并提供底色切换（白底/透明，防深色模式下黑色线条隐形）、
+ * 源码查看/复制与全屏缩放查看。
  */
 @Composable
-fun MessageSvgBlock(svg: String, modifier: Modifier = Modifier) {
-    val aspect = remember(svg) { svgAspect(svg) ?: 1.5f }
-    AndroidView(
+fun MessageSvgBlock(
+    svg: String,
+    modifier: Modifier = Modifier,
+    title: String = "SVG 矢量图",
+) {
+    val ctx = LocalContext.current
+    val normalized = remember(svg) { normalizeSvgForRender(svg) }
+    val aspect = remember(normalized) { (svgAspect(normalized) ?: 1.5f).coerceIn(0.4f, 4f) }
+    var showSource by remember(svg) { mutableStateOf(false) }
+    var lightCanvas by remember(svg) { mutableStateOf(true) }
+    var fullscreen by remember(svg) { mutableStateOf(false) }
+
+    Column(
         modifier = modifier
             .fillMaxWidth()
-            .aspectRatio(aspect.coerceIn(0.4f, 4f))
             .clip(blockCardShape)
+            .border(0.8.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), blockCardShape)
             .background(MaterialTheme.colorScheme.surface),
-        factory = { ctx ->
-            WebView(ctx).apply {
-                settings.javaScriptEnabled = false
-                settings.allowFileAccess = false
-                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+    ) {
+        // 顶部紧凑控制栏
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Clay.copy(alpha = 0.16f))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    text = "SVG",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                    color = Clay,
+                )
             }
-        },
-        update = { wv ->
-            val html = "<html><head><meta charset=utf-8>" +
-                "<style>html,body{margin:0;padding:0;background:transparent}" +
-                "svg{width:100%;height:100%;display:block}</style></head><body>" +
-                svg + "</body></html>"
-            if (wv.tag != html) {
-                wv.tag = html
-                wv.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+            Text(
+                text = title,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (!showSource) {
+                SvgActionPill(label = if (lightCanvas) "暖白底" else "透明底") {
+                    lightCanvas = !lightCanvas
+                }
             }
-        },
+            SvgActionPill(label = if (showSource) "预览" else "源码") {
+                showSource = !showSource
+            }
+            SvgActionPill(label = "复制") {
+                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                cm?.setPrimaryClip(android.content.ClipData.newPlainText("svg", svg.trim()))
+                Toast.makeText(ctx, "已复制 SVG 源码", Toast.LENGTH_SHORT).show()
+            }
+            SvgActionPill(label = "全屏") {
+                fullscreen = true
+            }
+        }
+
+        if (showSource) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(10.dp),
+            ) {
+                Text(
+                    text = svg.trim(),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 18.sp,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        } else {
+            val canvasBg = if (lightCanvas) Color(0xFFFAF8F5) else Color.Transparent
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(aspect)
+                    .background(canvasBg)
+                    .clickable { fullscreen = true }
+                    .padding(6.dp),
+            ) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { wctx ->
+                        WebView(wctx).apply {
+                            settings.javaScriptEnabled = false
+                            settings.allowFileAccess = false
+                            settings.loadWithOverviewMode = true
+                            settings.useWideViewPort = false
+                            isVerticalScrollBarEnabled = false
+                            isHorizontalScrollBarEnabled = false
+                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        }
+                    },
+                    update = { wv ->
+                        val html = buildSvgHtmlDocument(normalized, lightCanvas)
+                        if (wv.tag != html) {
+                            wv.tag = html
+                            wv.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                        }
+                    },
+                )
+            }
+        }
+    }
+
+    if (fullscreen) {
+        FullscreenSvgViewer(
+            svg = normalized,
+            title = title,
+            initialLightCanvas = lightCanvas,
+            onClose = { fullscreen = false },
+        )
+    }
+}
+
+@Composable
+private fun SvgActionPill(label: String, onClick: () -> Unit) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.85f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 7.dp, vertical = 3.dp),
     )
 }
 
-/** 从 viewBox / width+height 推宽高比；都没有返回 null（调用方取默认）。 */
-private fun svgAspect(svg: String): Float? {
-    // 引号用 \x22 表示：raw string 里直接写引号会与三引号结束符撞车
-    val vb = Regex("""viewBox\s*=\s*\x22([^\x22]+)\x22""").find(svg)?.groupValues?.get(1)?.trim()?.split(Regex("""[,\s]+"""))
-    if (vb != null && vb.size == 4) {
-        val w = vb[2].toFloatOrNull()
-        val h = vb[3].toFloatOrNull()
-        if (w != null && h != null && w > 0 && h > 0) return w / h
+/** 全屏 SVG 查看器：支持双指缩放、底色切换与源码复制。 */
+@Composable
+internal fun FullscreenSvgViewer(
+    svg: String,
+    title: String = "SVG 矢量图",
+    initialLightCanvas: Boolean = true,
+    onClose: () -> Unit,
+) {
+    val ctx = LocalContext.current
+    val normalized = remember(svg) { normalizeSvgForRender(svg) }
+    var lightCanvas by remember(initialLightCanvas) { mutableStateOf(initialLightCanvas) }
+
+    Dialog(
+        onDismissRequest = onClose,
+        properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF141312)),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF22201E))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                SvgActionPill(label = if (lightCanvas) "暖白底" else "深色底") {
+                    lightCanvas = !lightCanvas
+                }
+                SvgActionPill(label = "复制源码") {
+                    val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                    cm?.setPrimaryClip(android.content.ClipData.newPlainText("svg", svg.trim()))
+                    Toast.makeText(ctx, "已复制 SVG 源码", Toast.LENGTH_SHORT).show()
+                }
+                SvgActionPill(label = "关闭", onClick = onClose)
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(if (lightCanvas) Color(0xFFFAF8F5) else Color(0xFF141312))
+                    .padding(12.dp),
+            ) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = { wctx ->
+                        WebView(wctx).apply {
+                            settings.javaScriptEnabled = false
+                            settings.allowFileAccess = false
+                            settings.setSupportZoom(true)
+                            settings.builtInZoomControls = true
+                            settings.displayZoomControls = false
+                            settings.useWideViewPort = true
+                            settings.loadWithOverviewMode = true
+                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        }
+                    },
+                    update = { wv ->
+                        val html = buildSvgHtmlDocument(normalized, lightCanvas)
+                        if (wv.tag != html) {
+                            wv.tag = html
+                            wv.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                        }
+                    },
+                )
+            }
+        }
     }
-    val w = Regex("""width\s*=\s*"([\d.]+)""").find(svg)?.groupValues?.get(1)?.toFloatOrNull()
-    val h = Regex("""height\s*=\s*"([\d.]+)""").find(svg)?.groupValues?.get(1)?.toFloatOrNull()
-    return if (w != null && h != null && w > 0 && h > 0) w / h else null
 }
 
 // ---------------------------------------------------------------- 图片
@@ -259,17 +563,42 @@ fun MessageImageBlock(url: String, alt: String, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
     val root = LocalAttachmentRoot.current
     var state by remember(url) { mutableStateOf<ImgState>(ImgState.Loading) }
+    var svgContent by remember(url) { mutableStateOf<String?>(null) }
     var fullscreen by remember(url) { mutableStateOf(false) }
 
     LaunchedEffect(url, ctx, root) {
+        svgContent = null
+        if (isSvgPathOrDataUri(url)) {
+            val loadedSvg = loadMediaSvg(ctx, url, root)
+            if (loadedSvg != null) {
+                svgContent = loadedSvg
+                return@LaunchedEffect
+            }
+        }
         bitmapCache.get(url)?.let { state = ImgState.Ok(it); return@LaunchedEffect }
         state = ImgState.Loading
         val bmp = loadMediaBitmap(ctx, url, root)
         if (bmp != null) {
             state = ImgState.Ok(bmp)
         } else {
-            state = ImgState.Err
+            // 兜底：部分无 .svg 后缀的徽章/图表接口实际返回 SVG XML
+            val fallbackSvg = loadMediaSvg(ctx, url, root)
+            if (fallbackSvg != null) {
+                svgContent = fallbackSvg
+            } else {
+                state = ImgState.Err
+            }
         }
+    }
+
+    val loadedSvg = svgContent
+    if (loadedSvg != null) {
+        val label = alt.ifBlank {
+            url.substringAfterLast('/').substringBefore('?').takeIf { !it.startsWith("data:") }.orEmpty()
+                .ifBlank { "SVG 矢量图" }
+        }
+        MessageSvgBlock(svg = loadedSvg, modifier = modifier, title = label)
+        return
     }
 
     when (val s = state) {
@@ -636,7 +965,7 @@ private fun MediaErrorRow(text: String) {
 fun String.isImagePath(): Boolean {
     val l = lowercase()
     return l.endsWith(".png") || l.endsWith(".jpg") || l.endsWith(".jpeg") ||
-        l.endsWith(".webp") || l.endsWith(".gif")
+        l.endsWith(".webp") || l.endsWith(".gif") || l.endsWith(".svg")
 }
 
 /**
@@ -669,14 +998,19 @@ internal fun decodeThumb(file: java.io.File, target: Int): android.graphics.Bitm
     return BitmapFactory.decodeFile(file.absolutePath, android.graphics.BitmapFactory.Options().apply { inSampleSize = sample })
 }
 
-/** 用户消息里的图片附件缩略图（120dp 方块，点击进全屏）。 */
+/** 用户消息里的图片附件缩略图（120dp 方块，点击进全屏；支持位图与 .svg 矢量图）。 */
 @Composable
 internal fun LocalAttachmentThumb(path: String, onClick: () -> Unit) {
     val ctx = LocalContext.current
     val root = LocalAttachmentRoot.current
     var bmp by remember(path, root) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var svgText by remember(path, root) { mutableStateOf<String?>(null) }
     LaunchedEffect(path, root) {
-        bmp = withContext(Dispatchers.IO) { decodeThumb(attachmentFile(ctx, path, root), 512) }
+        if (isSvgPathOrDataUri(path)) {
+            svgText = loadMediaSvg(ctx, path, root)
+        } else {
+            bmp = withContext(Dispatchers.IO) { decodeThumb(attachmentFile(ctx, path, root), 512) }
+        }
     }
     Box(
         modifier = Modifier
@@ -686,16 +1020,42 @@ internal fun LocalAttachmentThumb(path: String, onClick: () -> Unit) {
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
+        val loadedSvg = svgText
         val b = bmp
-        if (b != null) {
-            Image(
-                bitmap = b.asImageBitmap(),
-                contentDescription = path.substringAfterLast('/'),
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.size(120.dp),
-            )
-        } else {
-            CircularProgressIndicator(strokeWidth = 2.dp)
+        when {
+            loadedSvg != null -> {
+                val normalized = remember(loadedSvg) { normalizeSvgForRender(loadedSvg) }
+                AndroidView(
+                    modifier = Modifier.size(120.dp),
+                    factory = { wctx ->
+                        WebView(wctx).apply {
+                            settings.javaScriptEnabled = false
+                            settings.allowFileAccess = false
+                            isVerticalScrollBarEnabled = false
+                            isHorizontalScrollBarEnabled = false
+                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                        }
+                    },
+                    update = { wv ->
+                        val html = buildSvgHtmlDocument(normalized, lightCanvas = true)
+                        if (wv.tag != html) {
+                            wv.tag = html
+                            wv.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                        }
+                    },
+                )
+            }
+            b != null -> {
+                Image(
+                    bitmap = b.asImageBitmap(),
+                    contentDescription = path.substringAfterLast('/'),
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(120.dp),
+                )
+            }
+            else -> {
+                CircularProgressIndicator(strokeWidth = 2.dp)
+            }
         }
     }
 }
@@ -748,20 +1108,30 @@ internal fun FullscreenBitmapViewer(bitmap: android.graphics.Bitmap, onClose: ()
     }
 }
 
-/** 全屏查看本地文件（用户附件缩略图点开时用）：读取后复用位图查看器。 */
+/** 全屏查看本地文件（用户附件缩略图点开时用）：支持位图与 .svg 矢量图。 */
 @Composable
 internal fun FullscreenImageViewer(path: String, onClose: () -> Unit) {
     val ctx = LocalContext.current
     val root = LocalAttachmentRoot.current
     var bmp by remember(path, root) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var svgText by remember(path, root) { mutableStateOf<String?>(null) }
     LaunchedEffect(path, root) {
-        if (path.isImagePath()) {
+        if (isSvgPathOrDataUri(path)) {
+            svgText = loadMediaSvg(ctx, path, root)
+        } else if (path.isImagePath()) {
             bmp = withContext(Dispatchers.IO) { decodeThumb(attachmentFile(ctx, path, root), 2048) }
         }
     }
     Box(Modifier) {
+        val loadedSvg = svgText
         val b = bmp
-        if (b != null) {
+        if (loadedSvg != null) {
+            FullscreenSvgViewer(
+                svg = loadedSvg,
+                title = path.substringAfterLast('/'),
+                onClose = onClose,
+            )
+        } else if (b != null) {
             FullscreenBitmapViewer(b, onClose)
         } else {
             // 非图片或解码失败：文件片 + 关闭

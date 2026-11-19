@@ -120,6 +120,18 @@ class CapabilityPromptTest {
             "网页约束必须条件化",
             CLIENT_CAPABILITY_PROMPT.contains("仅写网页时适用"),
         )
+        assertTrue(
+            "SVG 约束必须条件化且包含 viewBox 与防重叠要求",
+            CLIENT_CAPABILITY_PROMPT.contains("仅写 SVG 时适用") &&
+                CLIENT_CAPABILITY_PROMPT.contains("viewBox") &&
+                CLIENT_CAPABILITY_PROMPT.contains("重叠"),
+        )
+        assertTrue(
+            "必须包含工具调用与执行协同规范",
+            CLIENT_CAPABILITY_PROMPT.contains("【工具调用与执行协同规范】") &&
+                CLIENT_CAPABILITY_PROMPT.contains("并发调用") &&
+                CLIENT_CAPABILITY_PROMPT.contains("精确替换"),
+        )
     }
 
     /** 否定式禁令会把模型锚定到那个失败形态；路由段用肯定句表达「X 用 Y」。 */

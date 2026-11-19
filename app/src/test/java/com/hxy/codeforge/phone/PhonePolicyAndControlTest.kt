@@ -36,7 +36,7 @@ class PhonePolicyAndControlTest {
             assertTrue("Phone SKILL.md 违反 P-052：$parsed", parsed is PluginInstaller.InstallResult.Ok)
             val ref = (parsed as PluginInstaller.InstallResult.Ok).value
             assertTrue("phone" in ref.triggers || "@phone" in ref.triggers)
-            assertEquals("4", marker.readText().trim())
+            assertEquals("5", marker.readText().trim())
             val skillBody = skillMd.readText()
             assertTrue(skillBody.contains("剪贴板"))
             assertTrue(skillBody.contains("粘贴"))

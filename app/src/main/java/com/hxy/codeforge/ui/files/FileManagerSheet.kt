@@ -67,8 +67,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.hxy.codeforge.core.EnvKit
 import com.hxy.codeforge.model.ProjectItem
+import com.hxy.codeforge.ui.chat.MessageSvgBlock
 import com.hxy.codeforge.ui.chat.isAudioPath
 import com.hxy.codeforge.ui.chat.isImagePath
+import com.hxy.codeforge.ui.chat.isSvgPathOrDataUri
 import com.hxy.codeforge.ui.chat.isVideoPath
 import com.hxy.codeforge.ui.chat.launchMediaUri
 import com.hxy.codeforge.ui.sameWorkspacePath
@@ -845,20 +847,29 @@ fun FileManagerSheet(
                 }
             },
             text = {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 120.dp, max = 380.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
-                        .verticalScroll(rememberScrollState())
-                        .padding(10.dp),
-                ) {
-                    Text(
-                        text = preview.content,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                        color = MaterialTheme.colorScheme.onSurface,
+                val isSvgPreview = isSvgPathOrDataUri(preview.file.name) &&
+                    preview.content.contains("<svg", ignoreCase = true)
+                if (isSvgPreview) {
+                    MessageSvgBlock(
+                        svg = preview.content,
+                        title = preview.file.name,
                     )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 120.dp, max = 380.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                            .verticalScroll(rememberScrollState())
+                            .padding(10.dp),
+                    ) {
+                        Text(
+                            text = preview.content,
+                            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                 }
             },
             dismissButton = {

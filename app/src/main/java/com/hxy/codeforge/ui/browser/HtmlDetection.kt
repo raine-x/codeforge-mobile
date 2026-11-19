@@ -195,6 +195,11 @@ internal fun mergeHtmlBlocks(blocks: List<RenderBlock>): List<RenderBlock> {
                 i = j
                 continue
             }
+            if (looksLikeSvgMarkup(joined)) {
+                out.add(b.copy(type = "svg_raw", text = joined, spans = emptyList()))
+                i = j
+                continue
+            }
             for (k in i until j) out.add(blocks[k])
             i = j
             continue
@@ -210,3 +215,192 @@ private fun isBareHtmlParagraph(b: RenderBlock): Boolean =
     b.spans.isNotEmpty() &&
         b.spans.all { it.type == "text" } &&
         b.spans.joinToString("") { it.text }.trimStart().startsWith("<")
+
+// ---------------------------------------------------------------- 裸 SVG 与围栏 SVG 识别
+
+/**
+ * 判定一段文本是否为完整的 SVG 矢量图源码（允许前置 `<?xml ...?>`、`<!DOCTYPE svg ...>` 或 XML 注释）。
+ */
+internal fun looksLikeSvgMarkup(raw: String): Boolean {
+    val cleaned = stripLeadingXmlProlog(raw.trim())
+    if (!cleaned.startsWith("<svg", ignoreCase = true)) return false
+    val nextChar = cleaned.getOrNull(4) ?: return false
+    if (!nextChar.isWhitespace() && nextChar != '>') return false
+    val lower = cleaned.lowercase()
+    return lower.endsWith("</svg>") || ( !lower.contains("</svg>") && lower.endsWith("/>") )
+}
+
+/** 剥除 SVG 前置的 XML 声明、DOCTYPE 与注释。 */
+internal fun stripLeadingXmlProlog(raw: String): String {
+    var s = raw.trimStart()
+    while (true) {
+        s = s.trimStart()
+        when {
+            s.startsWith("<?xml", ignoreCase = true) -> {
+                val end = s.indexOf("?>")
+                if (end < 0) break
+                s = s.substring(end + 2)
+            }
+            s.startsWith("<!doctype", ignoreCase = true) -> {
+                val end = s.indexOf('>')
+                if (end < 0) break
+                s = s.substring(end + 1)
+            }
+            s.startsWith("<!--") -> {
+                val end = s.indexOf("-->")
+                if (end < 0) break
+                s = s.substring(end + 3)
+            }
+            else -> break
+        }
+    }
+    return s.trimStart()
+}
+
+/** [splitProseAroundBareSvg] 的切分片段：[isSvg] 为 true 表示裸 SVG 段，[closed] 表示是否已闭合 `</svg>`。 */
+internal data class BareSvgSegment(
+    val text: String,
+    val isSvg: Boolean,
+    val closed: Boolean = true,
+)
+
+/**
+ * 快速检查原文在代码围栏与行内反引号之外是否包含裸 `<svg ...>` 块。
+ *
+ * 为什么要在喂给 OpenRender 引擎之前识别：
+ * 1. CommonMark 的 HTML 块在空行处断开，空行后缩进 >= 4 空格的 `<g>`/`<path>` 会变成 `code_block`；
+ * 2. 若 `<svg>` 与说明文字处在同一段落，`appendRichText` 会把未知标签剥壳只留文字。
+ */
+internal fun hasBareSvgOutsideFences(raw: String): Boolean {
+    if (!raw.contains("<svg", ignoreCase = true)) return false
+    return splitProseAroundBareSvg(raw).any { it.isSvg }
+}
+
+/**
+ * 将「解说 + 裸 `<svg>...</svg>` + 解说」（支持多段裸 SVG）安全切开，跳过 ```` ``` ```` / `~~~` 代码围栏与行内反引号。
+ */
+internal fun splitProseAroundBareSvg(raw: String): List<BareSvgSegment> {
+    if (!raw.contains("<svg", ignoreCase = true)) {
+        return listOf(BareSvgSegment(raw, isSvg = false))
+    }
+
+    val fenceRanges = findFencedAndInlineCodeRanges(raw)
+    fun inCode(pos: Int): Boolean = fenceRanges.any { pos in it.first until it.second }
+
+    val segments = ArrayList<BareSvgSegment>()
+    val lower = raw.lowercase()
+    var cursor = 0
+
+    while (cursor < raw.length) {
+        var svgStart = -1
+        var searchFrom = cursor
+        while (searchFrom < raw.length) {
+            val idx = lower.indexOf("<svg", searchFrom)
+            if (idx < 0) break
+            val afterTag = lower.getOrNull(idx + 4)
+            val validOpen = afterTag != null && (afterTag.isWhitespace() || afterTag == '>')
+            if (validOpen && !inCode(idx)) {
+                svgStart = idx
+                break
+            }
+            searchFrom = idx + 4
+        }
+
+        if (svgStart < 0) {
+            val tail = raw.substring(cursor)
+            if (tail.isNotBlank()) {
+                segments.add(BareSvgSegment(tail, isSvg = false))
+            }
+            break
+        }
+
+        // 若 <svg 前紧邻 <?xml ...?>，把 xml 声明一并划进 SVG 段，避免残留在正文里
+        var actualStart = svgStart
+        val beforeSlice = raw.substring(cursor, svgStart)
+        val xmlIdx = beforeSlice.lastIndexOf("<?xml", ignoreCase = true)
+        if (xmlIdx >= 0 && beforeSlice.substring(xmlIdx).trim().endsWith("?>")) {
+            actualStart = cursor + xmlIdx
+        }
+
+        val proseBefore = raw.substring(cursor, actualStart).trim()
+        if (proseBefore.isNotEmpty()) {
+            segments.add(BareSvgSegment(proseBefore, isSvg = false))
+        }
+
+        val closeIdx = lower.indexOf("</svg>", svgStart)
+        if (closeIdx >= 0) {
+            val endPos = closeIdx + "</svg>".length
+            val svgText = raw.substring(actualStart, endPos).trim()
+            segments.add(BareSvgSegment(svgText, isSvg = true, closed = true))
+            cursor = endPos
+        } else {
+            val unclosedSvg = raw.substring(actualStart).trim()
+            segments.add(BareSvgSegment(unclosedSvg, isSvg = true, closed = false))
+            cursor = raw.length
+        }
+    }
+
+    return if (segments.isEmpty()) listOf(BareSvgSegment(raw, isSvg = false)) else segments
+}
+
+/** 找出文本中所有代码围栏（``` / ~~~）与行内反引号（`...`）的字符区间，防止误切代码里的 `<svg>`。 */
+private fun findFencedAndInlineCodeRanges(raw: String): List<Pair<Int, Int>> {
+    val ranges = ArrayList<Pair<Int, Int>>()
+    var i = 0
+    val n = raw.length
+    var atLineStart = true
+
+    while (i < n) {
+        val ch = raw[i]
+        if (atLineStart && (raw.startsWith("```", i) || raw.startsWith("~~~", i))) {
+            val marker = raw.substring(i, i + 3)
+            val start = i
+            val lineEnd = raw.indexOf('\n', i + 3)
+            if (lineEnd < 0) {
+                ranges.add(start to n)
+                break
+            }
+            var closePos = lineEnd + 1
+            var foundClose = false
+            while (closePos < n) {
+                var p = closePos
+                while (p < n && (raw[p] == ' ' || raw[p] == '\t')) p++
+                if (raw.startsWith(marker, p)) {
+                    val endLine = raw.indexOf('\n', p + 3)
+                    val end = if (endLine < 0) n else endLine + 1
+                    ranges.add(start to end)
+                    i = end
+                    atLineStart = true
+                    foundClose = true
+                    break
+                }
+                val nextNl = raw.indexOf('\n', closePos)
+                if (nextNl < 0) break
+                closePos = nextNl + 1
+            }
+            if (!foundClose) {
+                ranges.add(start to n)
+                break
+            }
+            continue
+        }
+
+        if (ch == '`') {
+            var ticks = 1
+            while (i + ticks < n && raw[i + ticks] == '`') ticks++
+            val delimiter = "`".repeat(ticks)
+            val close = raw.indexOf(delimiter, i + ticks)
+            if (close >= 0) {
+                val end = close + ticks
+                ranges.add(i to end)
+                i = end
+                atLineStart = false
+                continue
+            }
+        }
+
+        atLineStart = (ch == '\n')
+        i++
+    }
+    return ranges
+}
