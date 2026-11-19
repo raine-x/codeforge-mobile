@@ -4,4 +4,7 @@
     <string name="notif_channel_name">内核运行状态</string>
     <string name="notif_title">CodeForge 内核运行中</string>
     <string name="notif_approval_channel">审批请求</string>
+    <string name="phone_service_label">CodeForge 手机操控</string>
+    <string name="phone_notification_service_label">CodeForge 手机通知读取</string>
+    <string name="phone_service_description">仅在你启用手机操控时，读取非黑名单应用窗口、执行点击滑动输入与截图；进入黑名单应用时自动停止。</string>
 </resources>

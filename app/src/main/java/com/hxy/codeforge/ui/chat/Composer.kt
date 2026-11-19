@@ -100,6 +100,8 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
@@ -226,6 +228,8 @@ fun Composer(
     onRemoveElement: (Int) -> Unit = {},
 ) {
     var input by rememberSaveable(sessionId) { mutableStateOf(draftText) }
+    var editor by remember(sessionId) { mutableStateOf(TextFieldValue(input, TextRange(input.length))) }
+    val fieldValue = if (editor.text == input) editor else TextFieldValue(input, TextRange(input.length))
     var sheet by rememberSaveable { mutableStateOf<String?>(null) }
     // DeepSeek 式附件面板：⊕ 展开 / ⊗ 收起；与键盘互斥（键盘弹起自动收起）。
     // 开合状态由外部持有 —— AppRoot 要在消息区盖一层遮罩，实现「点外部收起」。
@@ -611,13 +615,26 @@ fun Composer(
     // 拿它当全量候选会让「装了的技能补不出来」看起来像补全坏了。
     val mentionCandidates = remember(skills, builtinPlugins, mcpPlugins) {
         buildList {
+            val seenTokens = HashSet<String>()
+            val phoneRunning = mcpPlugins.any { it.id.equals("phone", ignoreCase = true) && it.running }
+            add(
+                MentionCandidate(
+                    token = "phone",
+                    title = "手机操控",
+                    description = if (phoneRunning) "MCP · 已接入 Agent 工具链" else "手机操控 · 请在设置中启用",
+                    kind = "插件",
+                ),
+            )
+            seenTokens.add("phone")
             skills.forEach { (slug, desc) ->
                 val token = slug.removePrefix("@")
-                if (token.isNotBlank()) add(MentionCandidate(token, token, desc, "技能"))
+                if (token.isNotBlank() && seenTokens.add(token.lowercase())) {
+                    add(MentionCandidate(token, token, desc, "技能"))
+                }
             }
             builtinPlugins.forEach { (id, name, enabled) ->
                 val token = id.removePrefix("@")
-                if (token.isNotBlank()) {
+                if (token.isNotBlank() && seenTokens.add(token.lowercase())) {
                     add(
                         MentionCandidate(
                             token = token,
@@ -632,14 +649,14 @@ fun Composer(
             // MCP 只补「已加载」的：未加载的插件工具还没注册，@ 进去内核也调不到
             mcpPlugins.filter { it.running }.forEach { p ->
                 val token = p.id.removePrefix("@")
-                if (token.isNotBlank()) {
+                if (token.isNotBlank() && seenTokens.add(token.lowercase())) {
                     add(MentionCandidate(token, p.name.ifBlank { token }, "MCP · 已启用", "MCP"))
                 }
             }
         }
     }
-    // 取行尾 token 的简化实现：光标在中间时也按行尾处理（移动端输入多在末尾）
-    val tailToken = input.takeLastWhile { !it.isWhitespace() }
+    val cursor = fieldValue.selection.min
+    val tailToken = input.take(cursor).takeLastWhile { !it.isWhitespace() }
     val mentionQuery = if (tailToken.startsWith("@")) tailToken.drop(1) else null
     val mentionMatches = if (mentionQuery == null) {
         emptyList()
@@ -656,11 +673,8 @@ fun Composer(
     }
 
     fun insertMention(token: String) {
-        val prefix = if (tailToken.startsWith("@")) input.dropLast(tailToken.length) else input
-        // 从「Skills 和技能」点进来时不一定正好停在 @ 上：前面补一个空格，
-        // 否则会粘成「你好@plan」
-        val sep = if (prefix.isEmpty() || prefix.last().isWhitespace()) "" else " "
-        input = prefix + sep + "@" + token + " "
+        editor = completeMention(fieldValue, token)
+        input = editor.text
         onDraftChange(sessionId, input)
     }
 
@@ -816,10 +830,13 @@ fun Composer(
                         .padding(horizontal = 18.dp, vertical = 14.dp),
                 ) {
                     BasicTextField(
-                        value = input,
+                        value = fieldValue,
                         onValueChange = {
-                            input = it
-                            onDraftChange(sessionId, it)
+                            editor = it
+                            if (it.text != input) {
+                                input = it.text
+                                onDraftChange(sessionId, input)
+                            }
                         },
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = inputTextStyle,
@@ -1388,6 +1405,25 @@ private fun mentionHighlight(mentionColor: Color): VisualTransformation =
     }
 
 /** 一条 @ 候选：token 是插入的字符（不含 @），title/description 是展示用。 */
+internal fun completeMention(fieldValue: TextFieldValue, token: String): TextFieldValue {
+    val input = fieldValue.text
+    val cursor = fieldValue.selection.min
+    val tailToken = input.take(cursor).takeLastWhile { !it.isWhitespace() }
+    val completing = tailToken.startsWith("@")
+    val prefix = input.take(if (completing) cursor - tailToken.length else cursor)
+    val afterSelection = input.drop(fieldValue.selection.max)
+    val tokenEnd = afterSelection.takeWhile { !it.isWhitespace() }
+    val suffix = if (completing && fieldValue.selection.collapsed && tokenEnd.isNotEmpty() &&
+        token.startsWith(tailToken.drop(1) + tokenEnd, ignoreCase = true)
+    ) afterSelection.drop(tokenEnd.length) else afterSelection
+    // 从「Skills 和技能」点进来时不一定正好停在 @ 上：前面补一个空格，
+    // 否则会粘成「你好@plan」
+    val sep = if (prefix.isEmpty() || prefix.last().isWhitespace()) "" else " "
+    val inserted = prefix + sep + "@" + token + " "
+    val text = inserted + suffix.removePrefix(" ")
+    return TextFieldValue(text, TextRange(inserted.length))
+}
+
 private data class MentionCandidate(
     val token: String,
     val title: String,

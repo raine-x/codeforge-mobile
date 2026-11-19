@@ -18,6 +18,11 @@ import com.hxy.codeforge.core.NOTICE_COMPRESS_DONE
 import com.hxy.codeforge.core.NOTICE_COMPRESS_START
 import com.hxy.codeforge.core.PluginInstaller
 import com.hxy.codeforge.core.PluginSkills
+import com.hxy.codeforge.phone.PhoneControlPrefs
+import com.hxy.codeforge.phone.PhoneRuntime
+import com.hxy.codeforge.phone.PhoneSkillDeployer
+import com.hxy.codeforge.phone.PhoneTaskController
+import com.hxy.codeforge.phone.VisionModelConfig
 import com.hxy.codeforge.model.BuiltinPluginInfo
 import com.hxy.codeforge.model.InstallVersionRelation
 import com.hxy.codeforge.model.InstalledPlugin
@@ -319,6 +324,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
      */
     private val pendingSends = ArrayDeque<PendingSend>()
     private val sendGate = Mutex()
+    internal val phoneSyncMutex = Mutex()
 
     /** new_session 已发出、尚未收到 session 帧；发送队列等它落定。 */
     internal var newSessionGate: CompletableDeferred<String>? = null
@@ -344,7 +350,18 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     private val approvalSessions = mutableMapOf<String, String>()
 
     init {
+        PhoneRuntime.onStopAgentTurn = { stop() }
         refreshInstalledPlugins()
+        viewModelScope.launch {
+            PhoneTaskController.state
+                .map { it.startupNoticeNonce to it.startupNotice }
+                .distinctUntilChanged()
+                .collect { (nonce, notice) ->
+                    if (nonce > 0L && notice.isNotBlank()) {
+                        toast(notice)
+                    }
+                }
+        }
         viewModelScope.launch {
             CoreService.state.collect { onKernelState(it) }
         }
@@ -372,11 +389,39 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 }
             }
         }
-        // currentSessionId 变化即落盘：进程重建后冷启动自动恢复
+        // currentSessionId / currentWorkspace 变化即同步持久化与手机操控工作区根
         viewModelScope.launch {
             _state.map { it.currentSessionId }.distinctUntilChanged().collect { sid ->
                 AppSettings.setLastSessionId(sid)
+                PhoneRuntime.activeWorkspace.value = resolveSessionWorkspacePath(sid)
             }
+        }
+        viewModelScope.launch {
+            _state.map { Triple(it.currentWorkspace, it.currentSessionId, it.sessions.size) }
+                .distinctUntilChanged()
+                .collect { (_, sid, _) ->
+                    PhoneRuntime.activeWorkspace.value = resolveSessionWorkspacePath(sid)
+                }
+        }
+        viewModelScope.launch {
+            _state.map { Triple(it.kernelConfig, it.libraryModels, it.providerDetails) }
+                .distinctUntilChanged()
+                .collect { (cfg, models, providers) ->
+                    val activeModel = cfg?.let { c -> models.firstOrNull { it.id == c.model } }
+                    val prov = activeModel?.let { m -> providers.firstOrNull { it.id == m.provider } }
+                    val baseUrl = activeModel?.baseUrl?.takeIf { it.isNotBlank() }
+                        ?: prov?.baseUrl?.takeIf { it.isNotBlank() }
+                        ?: ""
+                    val protocol = activeModel?.protocol?.takeIf { it.isNotBlank() }
+                        ?: prov?.protocol?.takeIf { it.isNotBlank() }
+                        ?: cfg?.provider.orEmpty()
+                    val apiKey = prov?.keyPlain?.takeIf { it.isNotBlank() } ?: ""
+                    PhoneRuntime.visionModelConfig.value = if (cfg != null && cfg.model.isNotBlank() && baseUrl.isNotBlank() && apiKey.isNotBlank()) {
+                        VisionModelConfig(baseUrl = baseUrl, protocol = protocol, model = cfg.model, apiKey = apiKey)
+                    } else {
+                        null
+                    }
+                }
         }
         // 再等 10 秒仍停在 Starting：前台服务没起来、或握手卡死。
         // 主动踢一次重启，用户不必去后台手动杀进程再打开。
@@ -481,6 +526,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         withContext(Dispatchers.IO) {
             BuiltinSkills.install(getApplication(), workspace)
             PluginSkills.sync(getApplication(), workspace)
+            PhoneSkillDeployer.sync(workspace, PhoneControlPrefs.config.value.masterEnabled)
         }
         refreshInstalledPlugins(workspace)
     }
@@ -863,6 +909,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     ).applySessions(st.sessions.map { if (it.id == event.sessionId) it.copy(busy = false) else it })
                 }
                 if (wasRunning) notifyDone("任务完成", "会话「$doneTitle」已完成", event.sessionId)
+                PhoneTaskController.markTurnCompleted()
             }
 
             is CoreEvent.Checkpoints -> _state.update {
@@ -1023,6 +1070,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                         },
                     )
                 }
+                PhoneTaskController.markTurnCompleted()
             }
 
             is CoreEvent.Warning -> _state.update {
@@ -1116,6 +1164,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             }
             s.copy(messages = msgs)
         }
+        PhoneTaskController.appendThinkingDelta(text)
     }
 
     /**
@@ -1237,6 +1286,20 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             _state.update { it.copy(banner = Banner("内核启动中，稍候再发", isError = false)) }
             return
         }
+        val mentionsPhone = trimmed.contains("@phone", ignoreCase = true) ||
+            trimmed.contains("手机操控") ||
+            trimmed.contains("操控手机")
+        if (trimmed.contains("@phone", ignoreCase = true) && !PhoneControlPrefs.config.value.masterEnabled) {
+            val msg = "请先在「设置 → 手机操控」中打开总开关以启用 @phone 工具，再发送任务"
+            _state.update { it.copy(banner = Banner(msg, isError = true)) }
+            toast(msg)
+            return
+        }
+        if (mentionsPhone && PhoneControlPrefs.config.value.masterEnabled) {
+            PhoneTaskController.activateForPhoneTurn(trimmed)
+        } else {
+            PhoneTaskController.prepareForTurn(trimmed)
+        }
         // @plan 之后本轮结束要弹计划书面板；普通回合不弹
         if (planMention.containsMatchIn(trimmed)) planPending = true
         if (_state.value.running) {
@@ -1311,6 +1374,16 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         // 保证内核本轮的文件根与界面显示的会话归属一致。
         val workspaceDir = java.io.File(resolveSessionWorkspacePath(sid))
         applySessionSpaceNow(sid)
+        if (PhoneControlPrefs.config.value.masterEnabled) {
+            withContext(Dispatchers.IO) {
+                PhoneSkillDeployer.sync(workspaceDir.absolutePath, true)
+            }
+            if (PhoneRuntime.mcpStatus.value !is com.hxy.codeforge.phone.PhoneMcpStatus.Running ||
+                req.bubbleText.contains("@phone", ignoreCase = true)
+            ) {
+                syncPhoneControlPluginNow()
+            }
+        }
         val outcome = uploadAttachments(req.attachments, workspaceDir) ?: return
         if (outcome.bubbleAttachments != req.attachments && outcome.bubbleAttachments.isNotEmpty()) {
             _state.update { s ->
@@ -1538,6 +1611,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     fun stop() {
+        PhoneTaskController.stop("用户已停止当前任务", stopAgentTurn = false)
         transport?.cancel()
         _state.update { s ->
             s.copy(
@@ -1621,6 +1695,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     override fun onCleared() {
+        if (PhoneRuntime.onStopAgentTurn != null) {
+            PhoneRuntime.onStopAgentTurn = null
+        }
         // ViewModel 死了 WS 跟着断：审批通知的按钮从此按不动，先全部撤掉
         CoreService.cancelAllApprovalNotifications(getApplication())
         LiveTransport.current = null

@@ -11,6 +11,13 @@ import com.hxy.codeforge.core.NOTICE_COMPRESS_DONE
 import com.hxy.codeforge.core.NOTICE_COMPRESS_START
 import com.hxy.codeforge.core.PluginInstaller
 import com.hxy.codeforge.core.PluginSkills
+import com.hxy.codeforge.phone.PhoneControlPrefs
+import com.hxy.codeforge.phone.PhoneMcpStatus
+import com.hxy.codeforge.phone.PhoneRuntime
+import com.hxy.codeforge.phone.PhoneSkillDeployer
+import com.hxy.codeforge.phone.PhoneToolDispatcher
+import com.hxy.codeforge.phone.PhoneToolRegistry
+import kotlinx.coroutines.sync.withLock
 import com.hxy.codeforge.model.BuiltinPluginInfo
 import com.hxy.codeforge.model.ChatMessage
 import com.hxy.codeforge.model.InstallVersionRelation
@@ -61,6 +68,10 @@ fun ChatViewModel.addMcpPlugin(
 
 /** 删除一个 MCP 插件。 */
 fun ChatViewModel.deleteMcpPlugin(name: String) {
+    if (name.equals("phone", ignoreCase = true)) {
+        setPhoneControlMasterEnabled(false)
+        return
+    }
     val a = api ?: run { bannerNoKernel(); return }
     viewModelScope.launch {
         when (val r = a.deleteMcpPlugin(name)) {
@@ -450,3 +461,115 @@ private fun resolveUriDisplayName(context: android.content.Context, uri: Uri): S
         ?: uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() }
         ?: "plugin.cfplugin"
 }
+
+// ---------------------------------------------------------------- 手机操控 MCP 自动接通
+
+/**
+ * 切换手机操控总开关并同步内置 Streamable HTTP MCP 与 `@phone` 技能。
+ */
+fun ChatViewModel.setPhoneControlMasterEnabled(enabled: Boolean) {
+    val app = getApplication<android.app.Application>()
+    PhoneControlPrefs.setMasterEnabled(app, enabled)
+    syncPhoneControlPlugin()
+    toast(if (enabled) "手机操控已开启（@phone）" else "手机操控已关闭")
+}
+
+/**
+ * 协调内置 `PhoneMcpServer` 生命周期、内核 `/api/plugins` (`phone` mcp-http) 与工作区 `.codeforge/skills/phone/`。
+ *
+ * 因本地环回服务每次启动使用随机端口与令牌，内核重启或总开关切换后需核对端点并在不一致时热重载。
+ */
+fun ChatViewModel.syncPhoneControlPlugin() {
+    viewModelScope.launch {
+        syncPhoneControlPluginNow()
+    }
+}
+
+internal suspend fun ChatViewModel.syncPhoneControlPluginNow() {
+    val app = getApplication<android.app.Application>()
+    phoneSyncMutex.withLock {
+            val enabled = PhoneControlPrefs.config.value.masterEnabled
+            val targets = buildSet {
+                val activeWs = resolveActiveWorkspace()
+                if (activeWs.isNotBlank()) add(activeWs)
+                add(EnvKit.inboxSpace(app).absolutePath)
+                _state.value.projects.forEach { p ->
+                    if (p.workspace.isNotBlank()) add(p.workspace)
+                }
+            }
+
+            if (!enabled) {
+                PhoneToolDispatcher.stopServer()
+                withContext(Dispatchers.IO) {
+                    targets.forEach { ws -> PhoneSkillDeployer.sync(ws, false) }
+                }
+                val a = api
+                if (a != null) {
+                    val existing = (a.listPlugins() as? KernelApi.ApiResult.Ok)
+                        ?.value?.firstOrNull { it.id.equals("phone", ignoreCase = true) }
+                    if (existing != null) {
+                        a.deleteMcpPlugin("phone")
+                    }
+                    loadKernelExtras()
+                    refreshConfigSummary()
+                }
+                return@withLock
+            }
+
+            val endpoint = runCatching {
+                withContext(Dispatchers.IO) { PhoneToolDispatcher.startServer() }
+            }.getOrElse { e ->
+                PhoneRuntime.mcpStatus.value = PhoneMcpStatus.Error("MCP 服务启动失败：${e.message}")
+                return@withLock
+            }
+
+            withContext(Dispatchers.IO) {
+                targets.forEach { ws -> PhoneSkillDeployer.sync(ws, true) }
+            }
+
+            val a = api ?: return@withLock
+            val existing = (a.listPlugins() as? KernelApi.ApiResult.Ok)
+                ?.value?.firstOrNull { it.id.equals("phone", ignoreCase = true) }
+
+            if (existing == null || existing.endpoint != endpoint) {
+                if (existing != null) {
+                    a.deleteMcpPlugin("phone")
+                }
+                when (
+                    val addRes = a.addMcpPlugin(
+                        name = "phone",
+                        displayName = "手机操控",
+                        type = "mcp-http",
+                        command = "",
+                        args = emptyList(),
+                        endpoint = endpoint,
+                        description = "手机屏幕观察、界面操控、应用管理、系统设置、截屏录屏录音与日程通讯 MCP",
+                    )
+                ) {
+                    is KernelApi.ApiResult.Err -> {
+                        PhoneRuntime.mcpStatus.value = PhoneMcpStatus.Error("向内核注册 @phone 失败：${addRes.message}")
+                    }
+                    is KernelApi.ApiResult.Ok -> Unit
+                }
+            } else if (!existing.configured || !existing.loaded) {
+                a.setPlugin("phone", true)
+            }
+
+            // 确认内核实际加载结果
+            val latest = (a.listPlugins() as? KernelApi.ApiResult.Ok)
+                ?.value?.firstOrNull { it.id.equals("phone", ignoreCase = true) }
+            if (latest?.loaded == true) {
+                PhoneRuntime.mcpStatus.value = PhoneMcpStatus.Running(
+                    port = endpoint.substringAfter("127.0.0.1:").substringBefore('/').toIntOrNull() ?: 0,
+                    endpoint = endpoint,
+                    toolCount = PhoneToolRegistry.tools.size,
+                )
+            } else if (latest != null && !latest.loaded) {
+                PhoneRuntime.mcpStatus.value = PhoneMcpStatus.Error("内核已登记 phone 插件，等待加载或初始化失败")
+            }
+
+            loadKernelExtras()
+            refreshConfigSummary()
+        }
+}
+

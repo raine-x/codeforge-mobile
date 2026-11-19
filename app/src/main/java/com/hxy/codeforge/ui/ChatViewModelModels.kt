@@ -82,6 +82,7 @@ internal fun ChatViewModel.refreshKernelSummaries() {
     // 供应商详情也在启动时拉一次：首次安装要在这里触发 DeepSeek 预置，
     // 不能等用户点开设置页才发生（模型弹层的供应商行一直显示「未选择」）。
     refreshProviderDetails()
+    syncPhoneControlPlugin()
     viewModelScope.launch {
         when (val r = a.getConfig()) {
             is KernelApi.ApiResult.Ok -> _state.update { st ->
@@ -343,6 +344,10 @@ fun ChatViewModel.setBuiltinPluginModify(id: String, allowModify: Boolean) {
 }
 
 fun ChatViewModel.setMcpPlugin(id: String, enabled: Boolean) {
+    if (id.equals("phone", ignoreCase = true)) {
+        setPhoneControlMasterEnabled(enabled)
+        return
+    }
     val a = api ?: return
     viewModelScope.launch {
         when (val r = a.setPlugin(id, enabled)) {

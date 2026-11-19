@@ -16,13 +16,14 @@ Native Android client for CodeForge-Go. The Go kernel runs locally as an isolate
 
 1. [Quick Start and Everyday Usage](#quick-start-and-everyday-usage)
 2. [Built-in Reverse Engineering Plugin (@reverse_analysis)](#built-in-reverse-engineering-plugin-reverse_analysis)
-3. [Plugin Packages (.cfplugin) and MCP Extensions](#plugin-packages-cfplugin-and-mcp-extensions)
-4. [Measured Performance Benchmarks](#measured-performance-benchmarks)
-5. [Architecture and Layered Design](#architecture-and-layered-design)
-6. [CI and Building from Source](#ci-and-building-from-source)
-7. [Design Principles and Engineering Discipline](#design-principles-and-engineering-discipline)
-8. [Current Scope and Known Limits](#current-scope-and-known-limits)
-9. [License](#license)
+3. [Phone Control (@phone) and App Skills Library](#phone-control-phone-and-app-skills-library)
+4. [Plugin Packages (.cfplugin) and MCP Extensions](#plugin-packages-cfplugin-and-mcp-extensions)
+5. [Measured Performance Benchmarks](#measured-performance-benchmarks)
+6. [Architecture and Layered Design](#architecture-and-layered-design)
+7. [CI and Building from Source](#ci-and-building-from-source)
+8. [Design Principles and Engineering Discipline](#design-principles-and-engineering-discipline)
+9. [Current Scope and Known Limits](#current-scope-and-known-limits)
+10. [License](#license)
 
 ---
 
@@ -100,6 +101,34 @@ Mention `@reverse_analysis` (or `@逆向分析`) in any chat to engage the speci
 
 - **Safe Default**: Out of the box, `@reverse_analysis` is strictly **read-only**—no patching, repackaging, or re-signing tools are permitted.
 - **5-Second Compliance Guard**: Enabling **"Allow Modification & Repackaging"** under **Settings → Built-in Plugins → Reverse Analysis** triggers a mandatory 5-second countdown disclaimer (`REVERSE_MODIFY_DISCLAIMER_SECONDS = 5`) keeping the confirm button disabled until read, restricting modification exclusively to software you own or have explicit written authorization / lawful CTF scope to test.
+
+---
+
+## Phone Control (`@phone`) and App Skills Library
+
+Send `@phone <natural-language task>` in chat to invoke the autonomous phone-control plugin. Backed by an embedded loopback HTTP MCP server (`20` cohesive tools in `phone/`), it collaborates seamlessly with existing search, file, and workspace tools inside the Go agent loop.
+
+<div align="center">
+  <img src="docs/media/phone-control-settings.png" alt="Phone Control Settings" width="250" />
+  <img src="docs/media/phone-app-skills.png" alt="App Skills Library" width="250" />
+  <img src="docs/media/phone-control-overlay.png" alt="Phone Control Overlay" width="250" />
+</div>
+
+### 1. Autonomous Loop, Same-Page Batching & Safety Guardrails
+
+- **Observe → Act → Verify (`ui_batch` & `observe_after`)**: `phone.screen_observe` inspects the foreground package and accessibility view tree before acting; `ui_click`, `ui_input`, and `ui_gesture` accept `observe_after=true` to return the settled snapshot in a single round-trip. Deterministic same-page sequences (e.g., "tap search → paste query → tap search" or "select 16+512G filter → tap Confirm") run locally via `phone.ui_batch` with dynamic UI settle polling, `wait_for_text`, and `expect_selected` / `expect_text` circuit-breaking so the agent never blindly taps Confirm when a filter fails to select.
+- **Anti-Drop Clicks & Random Humanized Delay**: Configurable under **Settings → Phone Control** with 3 presets (Fast `60–160ms`, Balanced `150–380ms`, Cautious `300–650ms`), `85–175ms` randomized tap hold, safe in-bounds micro-jitter, and automatic coordinate touch-gesture fallback when accessibility `ACTION_CLICK` has no effect.
+- **Live Overlay, Instant Stop & Auto-Return**: During execution, an animated **edge marquee**, a **top thinking/step banner**, and a **tap/swipe trajectory overlay** show what the agent is doing, alongside a persistent notification action to stop at any time. Upon task completion, the controller automatically stops the marquee and brings CodeForge back to the foreground (both configurable in Settings).
+- **Denylist & Confirmation Gates**: **Settings → Phone Control** lets users block sensitive apps (any foreground switch into a blocked package aborts immediately) and require explicit confirmation before sending messages, deleting files, payment/transfer actions, dialing, closing apps, or changing system settings.
+
+### 2. App Skills Library
+
+To eliminate repetitive trial-and-error exploration across unfamiliar apps, CodeForge APP ships an extensible **App Skills Library**:
+
+- **Progressive Disclosure (Zero Wasted Context)**: When `screen_observe`, `screen_wait_change`, or `app_manage` (`launch` / `switch` / `find`) matches the foreground package or app alias, only compact `matched_app_skills` summaries (`id`, `name`, `description`, `source`) are attached; the model calls `phone.app_skill(action="get", id="...")` on demand to load full instructions, and **0 extra tokens** are added when nothing matches.
+- **Dual Format (`.md` Frontmatter & Pure `.yaml`/`.yml`)**: Supports both YAML Frontmatter + Markdown and pure YAML files with `packages` (exact or `.*` wildcard), `app_names`, `tags`, `priority`, and `content`.
+- **Three-Tier Precedence & Built-in Pack**: Loaded with precedence **Workspace (`<workspace>/.codeforge/phone-skills/`) > Custom (`filesDir/phone_control/skills/custom/`) > Built-in (`assets/phone-app-skills.zip`)**. Ships with **11** built-in skills covering Android Settings, WeChat, JD, Taobao, Alipay navigation, Amap, Meituan, Bilibili, Douyin, Mobile Browser/Chrome, and Calendar & Clock.
+- **Management & Self-Learning**: Users can search, enable/disable, create, edit, or import `.md` / `.yaml` skills under **Settings → Phone Control → App Skills Library**. When "Allow model to save new skills" is enabled, the agent can persist newly discovered workflows via `phone.app_skill(action="save", ...)`.
 
 ---
 

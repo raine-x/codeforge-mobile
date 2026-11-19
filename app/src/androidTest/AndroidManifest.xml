@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application><activity android:name="com.hxy.codeforge.phone.ObservationFixtureActivity"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar" android:exported="true" /></application>
+</manifest>

@@ -95,6 +95,142 @@ fun toolLabel(name: String?, input: String?): String {
             "使用插件 目标模式：$label$rd"
         }
 
+        // 手机操控（phone.*）全部映射成中文动作描述，不暴露原始工具名
+        "screen_observe" -> "观察手机当前屏幕控件"
+        "screen_wait_change" -> {
+            val expect = jsonString(body, "expect_text").orEmpty()
+                .ifEmpty { jsonString(body, "expect_package").orEmpty() }
+            if (expect.isNotEmpty()) "等待界面出现 ${expect.take(24)}" else "等待屏幕变化"
+        }
+        "ui_click" -> {
+            val act = when (jsonString(body, "action").orEmpty().lowercase()) {
+                "double_click" -> "双击"
+                "long_press" -> "长按"
+                else -> "点击"
+            }
+            val target = jsonString(body, "text").orEmpty()
+                .ifEmpty { jsonString(body, "content_desc").orEmpty() }
+                .ifEmpty { jsonString(body, "ref").orEmpty() }
+            if (target.isNotEmpty()) "$act「${target.take(24)}」" else "${act}屏幕位置"
+        }
+        "ui_gesture" -> {
+            val act = when (jsonString(body, "action").orEmpty().lowercase()) {
+                "drag" -> "拖拽"
+                "scroll" -> "滚动"
+                else -> "滑动"
+            }
+            val dir = jsonString(body, "direction").orEmpty()
+            if (dir.isNotEmpty()) "向 $dir $act" else "${act}屏幕"
+        }
+        "ui_input" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "clear" -> "清空输入框"
+            "select_all" -> "全选输入内容"
+            "select_range" -> "选择部分文本"
+            "copy" -> "复制文本"
+            "paste" -> "粘贴文本"
+            "submit" -> "提交输入"
+            "append" -> "追加输入文本"
+            else -> "输入文本"
+        }
+        "ui_batch" -> "连贯执行同页多步手机操作"
+        "ui_global_action" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "back" -> "执行系统返回"
+            "home" -> "回到手机桌面"
+            "recents" -> "打开最近任务"
+            "notifications" -> "展开通知栏"
+            "quick_settings" -> "展开快捷设置"
+            "power_dialog" -> "打开电源菜单"
+            "lock_screen" -> "锁定屏幕"
+            else -> "执行系统按键"
+        }
+        "app_manage" -> {
+            val app = jsonString(body, "app_name").orEmpty()
+                .ifEmpty { jsonString(body, "package_name").orEmpty() }
+            when (jsonString(body, "action").orEmpty().lowercase()) {
+                "list", "find" -> if (app.isNotEmpty()) "查找应用 $app" else "读取已安装应用"
+                "close" -> if (app.isNotEmpty()) "关闭应用 $app" else "关闭当前应用"
+                "switch" -> if (app.isNotEmpty()) "切换到 $app" else "切换应用"
+                else -> if (app.isNotEmpty()) "打开应用 $app" else "打开应用"
+            }
+        }
+        "system_setting" -> {
+            val item = when (jsonString(body, "setting").orEmpty().lowercase()) {
+                "volume" -> "音量"
+                "brightness" -> "屏幕亮度"
+                "rotation" -> "自动旋转"
+                "dnd" -> "勿扰模式"
+                "wifi", "wi-fi" -> "Wi-Fi"
+                "bluetooth" -> "蓝牙"
+                "hotspot" -> "个人热点"
+                "location" -> "定位服务"
+                else -> "系统设置"
+            }
+            when (jsonString(body, "action").orEmpty().lowercase()) {
+                "set" -> "调整$item"
+                "open_panel" -> "打开${item}设置面板"
+                else -> "查询$item"
+            }
+        }
+        "screenshot" -> "截取手机屏幕"
+        "screen_analyze" -> "识别屏幕画面"
+        "screen_record" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "start" -> "开始手机录屏"
+            "stop" -> "停止并保存录屏"
+            else -> "查询录屏状态"
+        }
+        "audio_record" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "start" -> "开始麦克风录音"
+            "pause" -> "暂停录音"
+            "resume" -> "继续录音"
+            "stop" -> "停止并保存录音"
+            else -> "查询录音状态"
+        }
+        "notifications" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "expand_shade" -> "展开通知栏"
+            "open" -> "打开通知"
+            "clear" -> "清除通知"
+            "click_action" -> "操作通知按钮"
+            else -> "读取可见通知"
+        }
+        "file_media" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "save_to_downloads" -> "导出文件到手机下载目录"
+            "import_to_workspace" -> "导入文件到工作区"
+            "pick" -> "调用系统选择器选文件"
+            "move" -> "移动文件"
+            "rename" -> "重命名文件"
+            "delete" -> "删除文件"
+            "open" -> "打开手机文件"
+            "share" -> "分享手机文件"
+            else -> "查看手机文件"
+        }
+        "calendar_reminder" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "list_events" -> "查询日程安排"
+            "create_event" -> "创建日历日程提醒"
+            "set_alarm" -> "设置系统闹钟"
+            "set_timer" -> "设置倒计时"
+            else -> "查看系统闹钟"
+        }
+        "communication" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "find_contacts" -> "查找联系人"
+            "open_dialer" -> "打开拨号界面"
+            "draft_sms" -> "起草短信"
+            "send_sms" -> "发送短信"
+            "share_text" -> "分享文本内容"
+            "share_file" -> "分享文件"
+            else -> "执行通讯操作"
+        }
+        "device_status" -> "查询手机设备状态"
+        "task_control" -> "更新手机操控任务状态"
+        "app_skill" -> when (jsonString(body, "action").orEmpty().lowercase()) {
+            "get" -> {
+                val id = jsonString(body, "id").orEmpty()
+                if (id.isNotEmpty()) "读取应用技能「${id.take(24)}」" else "读取应用操作技能"
+            }
+            "save" -> "沉淀新的应用操作技能"
+            "match" -> "匹配当前应用操作技能"
+            else -> "检索应用技能库"
+        }
+
         // 兜底也不能吐工具 ID
         else -> "调用了外部能力"
     }

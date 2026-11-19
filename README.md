@@ -54,6 +54,18 @@ Tables have transparent backgrounds and full grid lines. Language labels sit abo
 | **竖屏单栏手机模式（高 > 宽自动切换）** | **竖屏全屏设置页** |
 | ![Mobile Portrait Layout](docs/media/mobile-portrait.png) | ![Mobile Fullscreen Settings](docs/media/mobile-settings.png) |
 
+<br />
+
+| **`@phone` 手机操控设置面** | **应用技能库（YAML / Markdown）** | **操控过程动画（跑马灯 · 思考条 · 点击轨迹）** |
+| :---: | :---: | :---: |
+| <img src="docs/media/phone-control-settings.png" alt="Phone Control Settings" width="220" /> | <img src="docs/media/phone-app-skills.png" alt="Phone App Skills Library" width="220" /> | <img src="docs/media/phone-control-overlay.png" alt="Phone Control Overlay" width="220" /> |
+
+> **`@phone` 自主操控闭环 · Autonomous Phone Control Loop**
+>
+> 1. **观察与技能命中（Observe & Match）**：调用 `screen_observe` / `app_manage` 读取前台包名与控件树时，自动匹配预置应用技能，仅向模型暴露 `matched_app_skills`（`id` / `name` / `description`），未命中零额外 Token。
+> 2. **按需读谱与安全操作（Read & Act）**：命中后模型按需调用 `phone.app_skill(action="get")` 读取完整步骤；操控期间屏幕四周亮起**流光跑马灯**、顶部展示**思考过程**与**通知栏随时停止**提示，并实时绘制点击/滑动轨迹。遇黑名单应用立即停止，高风险动作触发用户确认，无键盘场景自动回退剪贴板粘贴。
+> 3. **核验与经验沉淀（Verify & Save）**：每次动作后自动核验界面变化；探索出新 App 稳定路径后，可通过 `phone.app_skill(action="save")` 沉淀进自定义技能库（可在设置页管理或导入 `.md` / `.yaml`）。
+
 ---
 
 ## 核心功能 · Key Features
@@ -64,7 +76,14 @@ Tables have transparent backgrounds and full grid lines. Language labels sit abo
 - **沙箱逆向工具链一键安装**：在运行环境中内置 `逆向工具` 安装包（`file`、`binutils`、`patchelf`、`radare2`、`py3-capstone`、`py3-unicorn`），随兼容 Alpine rootfs 即可开展二进制分析。
 - **高风险修改 5 秒强制免责门禁**：修改与重打包能力默认**关闭**（仅允许只读分析）；在设置页开启「允许修改与重打包」前需强制阅读 5 秒合规免责声明（`REVERSE_MODIFY_DISCLAIMER_SECONDS = 5`），明确授权边界。
 
-### 2. 原生端侧 Coding Agent 宿主 · On-Device Agent Host
+### 2. 自主手机操控与按应用技能库（`@phone` / Autonomous Phone Control）
+
+- **20 个高内聚 MCP 工具**：基于 `phone/` 内嵌环回 HTTP MCP 服务，覆盖屏幕观察、界面点击/滑动/输入、**同页连贯动作链（`ui_batch` + 步间等稳与失败熔断 + `observe_after`）**、应用管理、系统设置、80% 缩放截图与视觉分析、录屏/录音、通知/日历/通讯及应用技能库。
+- **防点击失效与拟人随机延时**：按压时长提升至 `85–175ms` 并支持三档步间随机延时与控件安全边界内微偏移；无障碍 `ACTION_CLICK` 无界面响应时自动回退真实坐标触摸手势。
+- **应用技能库（YAML / Markdown 双格式渐进式披露）**：内置 **11 条**高频应用经验（系统设置、微信、京东、淘宝、支付宝导览、高德地图、美团、哔哩哔哩、抖音、浏览器、日历与时钟），按 **工作区 > 自定义 > 内置** 三层覆盖；打开应用时仅暴露名称与简介，按需再读取完整步骤，支持自学习沉淀写回。
+- **全过程可视化、自动收口与安全门控**：四周跑马灯、顶部思考过程提示、通知栏一键停止、点击轨迹动画、应用黑名单、高风险动作确认，以及**任务完成后自动停止操控并切回 CodeForge 前台**（可在设置中开关）。
+
+### 3. 原生端侧 Coding Agent 宿主 · On-Device Agent Host
 
 - **独立内核进程 + 断线自愈**：以 `specialUse` 前台服务拉起 `libcodeforge.so`，随机本地回环端口 + Cookie 鉴权，HTTP / WebSocket 断线按退避重试自动恢复。
 - **流式增量排版与多模态渲染**：基于 `libopenrender.so` 的增量 Markdown IR 渲染，支持公式（RaTeX + 内嵌中文字体子集）、按实测宽度分列的表格、diff 工具卡片、代码块、音频、视频与 SVG 预览。

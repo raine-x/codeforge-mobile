@@ -52,9 +52,9 @@ CodeForgeAPP/
 | 界面·骨架 | `ui/AppRoot.kt` | 竖屏单栏抽屉 / 横屏双栏（侧栏+聊天）、“环境准备中”遮罩、顶栏/横幅/问候页、弹层挂载、内置浏览器浮层 |
 | 界面·聊天 | `ui/chat/` | `MessageList`（贴底跟随、回到最新、探索分组）· `MessageBubble`（气泡/思考/操作行）· `OpenRenderMessage`（IR→Compose 排版、媒体围栏路由、HTML 块）· `MessageBlocks`（媒体与附件渲染、`LocalAttachmentRoot`）· `Composer` + `ComposerPanels`（悬浮输入卡、附件/技能弹层、四态主按钮、双引擎语音、模型弹层、@ 补全）· `ToolCard` / `ToolLabels` / `ApprovalCardView` / `ActionPanel` / `BackgroundTasksSheet` / `ModelPickerSheet` / `StatusStrips` |
 | 界面·浏览器 | `ui/browser/` | `BrowserOverlay`（全屏页）· `PageBridge`（JS 桥 `window.__cf`）· `BrowserWebView` · `HtmlBlockView`（流内 HTML 块）· `HtmlDetection`（裸 HTML 判定/合并）· `BrowserModels` / `BrowserController` |
-| 界面·文件 | `ui/files/` | `FileManagerSheet`（当前工作区/默认空间/全部工作区/手机存储/暂存缓存统一文件浏览、搜索排序、预览/播放、导入导出、重命名与安全删除、引用与装入附件） |
-| 界面·会话 | `ui/sessions/` | `SessionPane`（项目分组/侧栏）· `ProjectPanel` · `FileTreePanel` · `McpSidebarPanel`（三段插件面板）· `PluginDetailSheet` · `SessionActionsSheet` |
-| 界面·设置 | `ui/settings/` | `AppSettings`（Compose 状态 + 加密 SharedPreferences）· `SettingsSheet` + `SettingsModelSection`（二级页、模型与供应商库）· `FileTransferSection` · `ModelEditorSection` · `KernelSettingsSection` · `EnvPackagesSection` |
+| 界面·文件 | `ui/files/` | `FileManagerSheet`（当前工作区/默认空间/全部工作区/手机存储/暂存缓存统一文件浏览、目录选择器模式、一键设为侧栏项目、搜索排序、预览/播放、导入导出、重命名与安全删除、引用与装入附件） |
+| 界面·会话 | `ui/sessions/` | `SessionPane`（项目分组/侧栏）· `ProjectPanel` · `FileTreePanel`（旧目录树，主界面已停用改走 `FileManagerSheet`）· `McpSidebarPanel`（三段插件面板）· `PluginDetailSheet` · `SessionActionsSheet` |
+| 界面·设置 | `ui/settings/` | `AppSettings`（Compose 状态 + 加密 SharedPreferences）· `SettingsSheet` + `SettingsModelSection`（二级页、模型与供应商库）· `PhoneControlSettings` + `PhoneControlDialogs`（手机操控设置与黑名单/产物弹窗）· `FileTransferSection` · `ModelEditorSection` · `KernelSettingsSection` · `EnvPackagesSection` |
 | 界面·通用 | `ui/common/` `ui/theme/` | `Responsive`（三档判定）· `Glyphs`（图标库）· `NoRipple` · `VoiceInput`（系统识别）· `DeviceRotation`（已停用的旧内容旋转遗留实现）· `StatusBarVisibility`（主窗+弹层状态栏显隐同步）· `ToastHost` · `Theme.kt`（暖色配色/字体/`AppBackground`） |
 | 界面·提示词 | `ui/CapabilityPrompt.kt` | 注入给模型的「客户端渲染能力」说明与注入标记（P-042 / P-054） |
 | 协议 | `core/` | `CoreTransport`（`CoreEvent` + 接口）· `HttpCoreTransport`（HTTP+WS 自愈重连/帧解析）· `AttachmentParsers` · `EnvProbe` |
@@ -62,9 +62,11 @@ CodeForgeAPP/
 | 语音 | `voice/CloudVoice.kt` | 云端识别（OpenAI 兼容 `/audio/transcriptions`）：16k PCM → WAV → multipart |
 | 模型 | `model/CoreModels.kt`、`model/PluginModels.kt` | 纯 data class / enum，无逻辑无 Android 依赖 |
 | 渲染 | `render/` | `OpenRenderNative`（JNI 封装，加载失败进程级判死退纯文本）· `RenderIr`（IR 解析、delta 应用、公式定界符归一） |
+| 手机操控 | `phone/` | `PhoneModels` · `PhoneControlPrefs` · `PhoneScope` · `PhoneRuntime` · `PhoneArtifactStore` · `PhoneAppSkillStore` · `PhoneTaskController` · `PhoneConfirmationGate` · `PhoneSkillDeployer` · `PhoneToolRegistry` · `PhoneMcpServer` · `PhoneToolDispatcher` · `PhoneObservationService` · `PhoneActionOverlay` · `PhoneVisionAnalyzer` · `PhonePermissionActivity` · `PhoneMediaService` · `PhoneNotificationService` · `PhoneActionReceiver` · `PhoneSystemCapabilities` · `PhoneCommands` |
 
 `voice/` 不碰内核帧，是跨界面能力（Composer 输入 + 设置页状态），不引 Compose 之外的 Android UI。
 `render/` 只服务界面：只做 Markdown → IR，不画像素；`core/`、`ChatViewModel` 不许依赖它。
+`phone/` 承载自主手机操控环回 MCP 服务与系统能力封装，不许引入 Compose UI 依赖；界面层通过 `PhoneControlPrefs` / `PhoneTaskController` / `PhoneArtifactStore` / `PhoneConfirmationGate` 的只读 StateFlow 与控制方法交互。
 
 ### 2.3 层间规则（硬性）
 
@@ -108,6 +110,7 @@ CodeForgeAPP/
 | 手机文件导入/导出与统一管理 | `EnvKit` 文件传输/文件管理原语 + `ui/files/FileManagerSheet.kt` + `ui/settings/FileTransferSection.kt` |
 | 内置技能 | `assets/builtin-skills.zip` + `core/BuiltinSkills.kt`；frontmatter 必须扁平单行（P-052） |
 | 动态插件包（`.cfplugin` 导入/启停/密钥/多工作区技能同步） | `model/PluginModels.kt` + `core/PluginInstaller.kt` + `core/PluginSkills.kt` + `ui/sessions/McpSidebarPanel.kt` / `PluginDetailSheet.kt` |
+| 手机操控插件（`@phone` / 内嵌 MCP / 应用技能库 / 权限 / 黑名单 / 确认 / 操作动画 / 录屏录音 / 产物） | `phone/`（`PhoneMcpServer` · `PhoneToolRegistry` · `PhoneToolDispatcher` · `PhoneAppSkillStore` · `PhoneObservationService` · `PhoneActionOverlay` · `PhoneMediaService` · `PhoneNotificationService` · `PhoneSystemCapabilities`）+ `assets/phone-app-skills.zip` + `ChatViewModel{,Models,Plugins}.kt` + `ui/settings/PhoneControl{Settings,Dialogs}.kt` + `ui/AppRoot.kt` |
 | 环境软件包（增删包/探测命令） | `EnvKit` 的 `packages`；probe 不许带管道（P-051） |
 | @ 补全候选 | `Composer` 的 `mentionCandidates` / `mentionMatches`；LazyColumn + heightIn，不许 `take(n)` 截断（P-053） |
 | 后台脚本任务 | 内核 `pkg/tasks` + `/api/tasks` + `BackgroundTasksSheet` + `ChatViewModel.refreshTasks/startTask/killTask` |
@@ -125,9 +128,10 @@ CodeForgeAPP/
 
 1. 崩溃落盘（`filesDir/logs/crash-*.txt`，留 5 份）+ `ProcessLifecycleOwner` 维护前后台可见性；
 2. `AppSettings.init`（首帧前必须完成）；
-3. 附件孤儿清理（`attachments/` 下超 7 天）；
-4. `EnvKit.ensureReady`：解压 `env-kit.tgz`（proot）与 `rootfs-alpine.tgz` 到 `filesDir`，生成 `usr/bin/cfrun`；期间盖「环境准备中」遮罩，成功写 `.ready`，失败不挡屏可重试。**一切锚定 `filesDir` 单根**，内核经 `CF_EXEC_WRAPPER` 走 cfrun；
-5. 通知渠道与内核进程：`CoreService.ensureChannel()`；`MainActivity.onStart` 每次 `startForegroundService`（幂等），PORT 握手与退避重启都在 CoreService。
+3. `PhoneRuntime.init`（初始化手机操控偏好、产物元数据与执行历史并确定默认工作区）；
+4. 附件孤儿清理（`attachments/` 下超 7 天）；
+5. `EnvKit.ensureReady`：解压 `env-kit.tgz`（proot）与 `rootfs-alpine.tgz` 到 `filesDir`，生成 `usr/bin/cfrun`；期间盖「环境准备中」遮罩，成功写 `.ready`，失败不挡屏可重试。**一切锚定 `filesDir` 单根**，内核经 `CF_EXEC_WRAPPER` 走 cfrun；
+6. 通知渠道与内核进程：`CoreService.ensureChannel()`；`MainActivity.onStart` 每次 `startForegroundService`（幂等），PORT 握手与退避重启都在 CoreService。
 
 规则：任何「首启要做、之后跳过」的步骤一律走这条流水线，状态用 `EnvKit` 的 Status 模式（Idle/Preparing/Ready/Failed），**不要各自发明**。
 
@@ -428,6 +432,14 @@ Gradle 走代理必须写 `systemProp.*` 到 `~/.gradle/gradle.properties`；发
 ### P-061 · 行内高亮按字体高度绘制
 
 正文行距大于字体高度时，按文本布局的选区确定高亮横向范围，按基线和字体度量限制纵向范围，保留正文行距。
+
+### P-062 · Go 内核 MCP-HTTP 只读 text 内容、单次输出上限 32KB、readonly 拒绝远端工具
+
+`pkg/tools/plugins/driver_mcphttp.go`（HTTP 90 秒超时）仅提取 `content[].type == "text"`，忽略 `type == "image"`；`pkg/tools/executor.go` 在 32KB 处截断工具返回值；`loader.go` 的 `RemoteTool` 未实现只读元数据，因此内核处于 `readonly` 权限模式时会直接拒绝 `phone.*`。做法：内嵌 MCP 工具只返回有界 JSON 文本（≤ 22KB），截图落工作区文件并由壳侧视觉分析返回摘要；开启 `@phone` 且处于 `readonly` 时在设置页提供一键切换提示。
+
+### P-063 · Android 11+ 无障碍连续截图冷却（错误码 3）与受保护窗口（错误码 6）
+
+`AccessibilityService.takeScreenshot` / `takeScreenshotOfWindow` 在 Android 11+ 强制约 1 秒最小间隔，紧邻两次调用（如先 `screenshot` 再 `screen_analyze`）会失败并返回 `ERROR_TAKE_SCREENSHOT_INTERVAL_TIME_SHORT = 3`；遇到 `FLAG_SECURE`（银行/支付密码界面）会返回 `ERROR_TAKE_SCREENSHOT_SECURE_WINDOW = 6`。做法：在 `PhoneObservationService.captureScreenshotBitmap` 记录 `lastScreenshotElapsedMs` 主动冷却 ≥ 1.1 秒并在错误码 3 时延迟退避重试一次，同时把错误码 1..6 翻译为明确中文提示。
 
 ---
 

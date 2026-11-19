@@ -1,5 +1,9 @@
 package com.hxy.codeforge.ui.chat
 
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
+import org.junit.Assert.assertEquals
+
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,6 +23,14 @@ import java.io.File
  * 这类「手感回归」很容易在重构中被顺手改回去，所以用源码断言把它钉住。
  */
 class MentionListScrollTest {
+    @Test
+    fun completionPlacesCursorAfterSpaceAndPreservesFollowingText() {
+        for (suffix in listOf("", "请继续")) {
+            val result = completeMention(TextFieldValue("@ph" + suffix, TextRange(3)), "phone")
+            assertEquals("@phone " + suffix, result.text)
+            assertEquals(TextRange(7), result.selection)
+        }
+    }
 
     private val composer: File = File("src/main/java/com/hxy/codeforge/ui/chat/Composer.kt")
 

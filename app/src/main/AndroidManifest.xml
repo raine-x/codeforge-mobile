@@ -2,20 +2,41 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- 内核以 HTTP 监听 127.0.0.1，WebView 从这里加载 UI -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- 语音输入：系统 SpeechRecognizer 需要麦克风，运行时再申请 -->
+    <!-- 语音输入与手机操控录音：运行时再按需申请 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- 手机操控扩展权限（运行时按需申请，或用户手动在系统页授权） -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.SEND_SMS" />
+    <uses-feature
+        android:name="android.hardware.telephony"
+        android:required="false" />
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
+    <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
 
     <!-- 诊断日志导出：仅 API 26-28 直写公共下载目录用；29+ 走 MediaStore 免权限 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
-    <!-- 内核进程要在后台存活：specialUse（dataSync 在 Android 15+ 有 6 小时/天配额，见 AGENTS P-005） -->
+    <!-- 内核与媒体前台服务 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
@@ -63,6 +84,45 @@
             </intent-filter>
         </activity>
 
+        <!-- 手机操控透明授权与系统选择器桥接 -->
+        <activity
+            android:name=".phone.PhonePermissionActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- 手机操控无障碍观察与屏幕交互服务 -->
+        <service
+            android:name=".phone.PhoneObservationService"
+            android:label="@string/phone_service_label"
+            android:exported="true"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/phone_accessibility" />
+        </service>
+
+        <!-- 手机操控通知读取与动作执行服务 -->
+        <service
+            android:name=".phone.PhoneNotificationService"
+            android:label="@string/phone_notification_service_label"
+            android:exported="true"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- 手机操控媒体采集（录屏/录音）前台服务 -->
+        <service
+            android:name=".phone.PhoneMediaService"
+            android:exported="false"
+            android:foregroundServiceType="mediaProjection|microphone" />
+
         <service
             android:name=".core.CoreService"
             android:exported="false"
@@ -75,6 +135,11 @@
         <!-- 审批通知的批准/拒绝快操作：经 LiveTransport 走已连的 WS 发决定 -->
         <receiver
             android:name=".core.ApprovalReceiver"
+            android:exported="false" />
+
+        <!-- 手机操控通知栏确认与任务暂停/停止快操作 -->
+        <receiver
+            android:name=".phone.PhoneActionReceiver"
             android:exported="false" />
 
         <!-- 相机附件：TakePicture 经 FileProvider 出片 URI。

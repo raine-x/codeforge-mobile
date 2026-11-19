@@ -16,13 +16,14 @@ CodeForge-Go 的原生 Android 客户端。Go 内核作为独立进程在本地�
 
 1. [快速开始与功能用法](#快速开始与功能用法)
 2. [内置逆向分析插件（@reverse_analysis）](#内置逆向分析插件reverse_analysis)
-3. [插件包（.cfplugin）与 MCP 扩展](#插件包cfplugin与-mcp-扩展)
-4. [实测性能指标](#实测性能指标)
-5. [架构设计与分层实现](#架构设计与分层实现)
-6. [CI 与本地源码构建](#ci-与本地源码构建)
-7. [设计原则与工程纪律](#设计原则与工程纪律)
-8. [当前边界与已知限制](#当前边界与已知限制)
-9. [许可说明](#许可说明)
+3. [手机操控（@phone）与应用技能库](#手机操控phone与应用技能库)
+4. [插件包（.cfplugin）与 MCP 扩展](#插件包cfplugin与-mcp-扩展)
+5. [实测性能指标](#实测性能指标)
+6. [架构设计与分层实现](#架构设计与分层实现)
+7. [CI 与本地源码构建](#ci-与本地源码构建)
+8. [设计原则与工程纪律](#设计原则与工程纪律)
+9. [当前边界与已知限制](#当前边界与已知限制)
+10. [许可说明](#许可说明)
 
 ---
 
@@ -100,6 +101,52 @@ CodeForge APP 内置了专为移动端静态取证与二进制逆向分析设计
 
 - **只读默认策略**：首次启用或默认状态下，禁止修改目标 APK 字节码、资源文件、签名或 ELF 产物，仅提供结构取证与逆向分析结论。
 - **高风险开关保护**：在 **设置 → 内置插件 → 逆向分析** 下打开「允许修改与重打包」时，客户端会弹出强制阅读倒计时协议窗（`REVERSE_MODIFY_DISCLAIMER_SECONDS = 5`），倒计时未归零前确认按钮不可点击，明确约束仅可用于自有版权应用、明确书面授权目标或合法 CTF / 教学研究。
+
+---
+
+## 手机操控（`@phone`）与应用技能库
+
+在聊天中输入 `@phone <自然语言任务>` 即可启用手机操控插件。模块基于 `phone/` 包内嵌的环回 HTTP MCP 服务（`20` 个工具）实现，与搜索、文件等现有能力协同，由 Go 内核统一调度。
+
+<div align="center">
+  <img src="docs/media/phone-control-settings.png" alt="手机操控设置" width="250" />
+  <img src="docs/media/phone-app-skills.png" alt="应用技能库" width="250" />
+  <img src="docs/media/phone-control-overlay.png" alt="手机操控过程动画" width="250" />
+</div>
+
+### 1. 自主执行闭环、连贯提速与安全边界
+
+- **观察 → 操作 → 核验（支持 `observe_after` 与 `ui_batch` 连贯动作链）**：
+  - 每次操作前通过 `phone.screen_observe` 读取当前前台包名与控件树；单步 `ui_click` / `ui_input` / `ui_gesture` 支持 `observe_after=true` 在动作稳定后直接附带最新控件树，省去额外观察轮次。
+  - 同一页面内的连续确定性动作（如「点击搜索框 → 输入关键词 → 点击搜索」或购物筛选「勾选 16+512G → 点击确定」）可通过 `phone.ui_batch` 一次下发，内置步间动态 UI 稳定轮询、`wait_for_text` 与 `expect_selected` / `expect_text` 断言；一旦前一步未生效或意外跨应用跳页，立即熔断中止后续步骤并返回最新控件树，绝不盲点「确定」。
+- **防点击失效与随机点击延时**：在 **设置 → 手机操控** 中提供「随机点击延时与拟人按压」开关及三档节奏（快速 `60–160ms` / 稳健 `150–380ms` / 慢速 `300–650ms`），按压时长随机 `85–175ms` 并在控件安全内缩边界内微偏移；当无障碍 `ACTION_CLICK` 无界面响应时自动补发真实触摸手势。
+- **可视化反馈、随时急停与完成自动返回**：操控期间屏幕四周亮起**流光跑马灯**，顶部悬浮条实时展示**思考过程与当前步骤**，并提示**下拉通知栏可随时停止**；任务完成或回合结束时支持**自动停止操控并切回 CodeForge 前台**展示结果（可在设置页独立开关）。
+- **黑名单与高风险确认**：可在 **设置 → 手机操控** 勾选禁止操控的应用黑名单（切入黑名单前台即停），以及发送消息、删除文件、支付/转账、拨打电话、关闭应用、修改系统设置等确认门控。
+
+### 2. 应用技能库（App Skills Library）
+
+为避免模型在陌生 App 中盲目摸索消耗大量 Token，App 内置了可拓展的**应用技能库**：
+
+- **渐进式披露（零无效上下文）**：当 `screen_observe`、`screen_wait_change` 或 `app_manage`（`launch` / `switch` / `find`）命中当前前台包名或应用别名时，仅在返回体中附带紧凑的 `matched_app_skills`（只含 `id`、`name`、`description` 与 `source`），**不直接塞入正文**；模型确认需要后再调用 `phone.app_skill(action="get", id="...")` 读取完整操作步骤；未命中任何技能时增加 **0 Token**。
+- **双格式支持（Markdown Frontmatter & 纯 YAML）**：支持手写 `.md`（YAML Frontmatter + Markdown 正文）或纯 `.yaml` / `.yml`（包含 `packages`、`app_names`、`tags`、`priority` 及 `content`），支持精确包名与末尾 `.*` 通配匹配：
+
+```markdown
+---
+id: wechat
+name: 微信
+description: 微信底部四大 Tab、顶部搜索联系人/聊天、消息输入框粘贴与发送确认规范。
+packages: [com.tencent.mm]
+app_names: [微信, WeChat]
+tags: [社交, 聊天]
+priority: 95
+---
+
+# 微信操控经验
+1. 首页底部固定「微信」「通讯录」「发现」「我」四个 Tab……
+```
+
+- **三层覆盖与预置库**：加载优先级为 **工作区（`<workspace>/.codeforge/phone-skills/`） > 自定义（`filesDir/phone_control/skills/custom/`） > 内置（`assets/phone-app-skills.zip`）**。默认内置 **11 条**高频应用技能（系统设置、微信、京东、淘宝、支付宝导览、高德地图、美团、哔哩哔哩、抖音、手机浏览器、日历与时钟）。
+- **设置管理与自学习沉淀**：可在 **设置 → 手机操控 → 应用技能库** 检索、启停、查看、编辑/新建技能或通过系统文件选择器导入 `.md` / `.yaml`；开启「允许模型自动沉淀新技能」后，模型在探索完新 App 路径后可调用 `phone.app_skill(action="save", ...)` 自动保存为自定义技能。
 
 ---
 

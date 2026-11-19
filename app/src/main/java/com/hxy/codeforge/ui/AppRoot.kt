@@ -91,7 +91,6 @@ import com.hxy.codeforge.ui.common.currentWindowMode
 import com.hxy.codeforge.ui.common.isLandscape
 import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.files.FileManagerSheet
-import com.hxy.codeforge.ui.sessions.FileTreePanel
 import com.hxy.codeforge.ui.sessions.McpSidebarPanel
 import com.hxy.codeforge.ui.sessions.NewProjectPanel
 import com.hxy.codeforge.ui.sessions.ProjectActionsSheet
@@ -101,6 +100,11 @@ import com.hxy.codeforge.ui.settings.SettingsSheet
 import com.hxy.codeforge.ui.theme.Clay
 import com.hxy.codeforge.ui.theme.ClayDeep
 import com.hxy.codeforge.core.EnvKit
+import com.hxy.codeforge.phone.PendingPhoneConfirmation
+import com.hxy.codeforge.phone.PhoneConfirmationGate
+import com.hxy.codeforge.phone.PhoneTaskController
+import com.hxy.codeforge.phone.PhoneTaskState
+import com.hxy.codeforge.phone.PhoneTaskStatus
 import com.hxy.codeforge.ui.theme.SerifDisplay
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -124,10 +128,13 @@ import java.util.Calendar
 @Composable
 fun CodeForgeApp(viewModel: ChatViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val phoneTask by PhoneTaskController.state.collectAsStateWithLifecycle()
+    val pendingPhoneConfirm by PhoneConfirmationGate.pending.collectAsStateWithLifecycle()
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var settingsInitialPage by rememberSaveable { mutableStateOf<String?>(null) }
     var showFileManager by rememberSaveable { mutableStateOf(false) }
     var fileManagerInitialRoot by rememberSaveable { mutableStateOf("CURRENT") }
+    var fileManagerPickerMode by rememberSaveable { mutableStateOf(false) }
     val openSettingsRoot: () -> Unit = {
         settingsInitialPage = null
         showSettings = true
@@ -139,6 +146,7 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     }
     val openFileManager: (String) -> Unit = { rootKey ->
         fileManagerInitialRoot = rootKey
+        fileManagerPickerMode = false
         showFileManager = true
     }
     var sessionActions by remember { mutableStateOf<com.hxy.codeforge.model.SessionItem?>(null) }
@@ -146,13 +154,11 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     var showTodos by rememberSaveable { mutableStateOf(false) }
     // 后台脚本任务面板：从顶栏三点菜单进入（任务归内核进程，切会话不丢）
     var showTasks by rememberSaveable { mutableStateOf(false) }
-    // 侧栏浮层："" = 会话主侧栏，mcp = MCP 面板，tree = 文件树（均铺满侧栏）
+    // 侧栏浮层："" = 会话主侧栏，mcp = MCP 面板（铺满侧栏）
     var sidebarPage by rememberSaveable { mutableStateOf("") }
-    // 文件树是从「新建项目」里打开的：选完路径要回到新建面板
-    var treeForProject by rememberSaveable { mutableStateOf(false) }
     var showNewProject by rememberSaveable { mutableStateOf(false) }
     var pickedWorkspace by rememberSaveable { mutableStateOf("") }
-    // 本地一次性提示：「已有空的新项目」这类判断发生在 UI 侧，不往协议里加东西
+    // 本地一次性提示（如无法拉起系统浏览器）
     var notice by remember { mutableStateOf<Banner?>(null) }
 
     // 内置浏览器控制器：消息流里的 HTML 块与链接卡通过它唤起全屏浏览器。
@@ -171,19 +177,9 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     }
 
     val openNewProject: () -> Unit = {
-        // 「已有空的新项目」：刚建好的项目还没发过任何消息时再点新建，只提示不重开面板。
-        // 项目列表是按会话聚合的（没有会话就没有项目行），所以判定看
-        // 「当前项目有会话 + 当前对话还是空的」，而不是 sessionCount == 0。
-        val emptyCurrentProject = state.currentWorkspace.isNotBlank() &&
-            state.messages.isEmpty() &&
-            !state.running &&
-            state.sessions.any { it.workspace == state.currentWorkspace && !it.archived }
-        if (emptyCurrentProject) {
-            notice = Banner("已有空的新项目", isError = false)
-        } else {
-            pickedWorkspace = ""
-            showNewProject = true
-        }
+        // 总是允许打开新建/选目录面板：不能因当前项目还是空白会话就堵死去「全部工作区」或自定义目录建项目的入口
+        pickedWorkspace = ""
+        showNewProject = true
     }
 
     // 输入卡「＋ → 当前目录的文件」：打开统一文件管理器（默认聚焦当前工作区）
@@ -217,6 +213,7 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                 WindowMode.Compact -> CompactLayout(
                     state,
                     viewModel,
+                    phoneTask = phoneTask,
                     onOpenSettings = openSettingsRoot,
                     onOpenFileTransfer = openFileTransferSettings,
                     onSessionLongPress = { sessionActions = it },
@@ -235,6 +232,7 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                         state,
                         viewModel,
                         mode,
+                        phoneTask = phoneTask,
                         onOpenSettings = openSettingsRoot,
                         onOpenFileTransfer = openFileTransferSettings,
                         onSessionLongPress = { sessionActions = it },
@@ -259,42 +257,11 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
             ) {
                 McpSidebarPanel(vm = viewModel, onClose = { sidebarPage = "" })
             }
-            AnimatedVisibility(
-                visible = sidebarPage == "tree",
-                enter = slideInHorizontally(tween(200)) { -it },
-                exit = slideOutHorizontally(tween(180)) { -it },
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                FileTreePanel(
-                    entries = state.treeEntries,
-                    path = state.treePath,
-                    parent = state.treeParent,
-                    error = state.treeError,
-                    onLoad = { path -> viewModel.loadTree(path) },
-                    onPick = { path ->
-                        pickedWorkspace = path
-                        sidebarPage = ""
-                        if (treeForProject) {
-                            // 「新建项目」里选目录：带着路径回到新建面板
-                            treeForProject = false
-                            showNewProject = true
-                        } else {
-                            // 浏览态（输入卡「当前目录的文件」）选中的目录直接切工作区
-                            viewModel.switchProject(path)
-                        }
-                    },
-                    onClose = {
-                        sidebarPage = ""
-                        treeForProject = false
-                    },
-                )
-            }
         }
 
         // 浮层打开时返回键先收浮层（抽屉自己的 BackHandler 在 CompactLayout 里）
         BackHandler(enabled = sidebarPage.isNotEmpty()) {
             sidebarPage = ""
-            treeForProject = false
         }
 
         // 首启「环境准备中」遮罩：模型解压期间盖住整屏，完成自动消失。
@@ -322,10 +289,27 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                 activeWorkspaceRoot = attachmentRoot,
                 activeWorkspaceLabel = state.currentWorkspaceName.ifBlank { "应用私有空间" },
                 initialRoot = fileManagerInitialRoot,
+                projects = state.projects,
+                pickerMode = fileManagerPickerMode,
+                onPickDirectory = { dir ->
+                    pickedWorkspace = dir.absolutePath
+                    showFileManager = false
+                    fileManagerPickerMode = false
+                    showNewProject = true
+                },
+                onOpenFolderAsProject = { dir ->
+                    viewModel.openDirectoryAsProject(dir)
+                    showFileManager = false
+                },
                 onQuoteToChat = { pathForChat -> viewModel.quoteFileToInput(pathForChat) },
                 onAttachToChat = { file -> viewModel.attachFileToInput(file, attachmentRoot) },
                 onNotify = { text, isError -> viewModel.toast(text, isError) },
-                onDismiss = { showFileManager = false },
+                onDismiss = {
+                    val wasPicker = fileManagerPickerMode
+                    showFileManager = false
+                    fileManagerPickerMode = false
+                    if (wasPicker) showNewProject = true
+                },
             )
         }
 
@@ -355,11 +339,11 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                     pickedWorkspace = ""
                 },
                 onPickFolder = {
-                    // 新建面板先让位，文件树选完带着路径回来（面板会带着新路径重开）
+                    // 统一从「全部工作区（$CELL/workspace）」打开目录选择器，不再另起旧文件树从根目录兜圈子
                     showNewProject = false
-                    treeForProject = true
-                    sidebarPage = "tree"
-                    viewModel.loadTree("")
+                    fileManagerInitialRoot = "WORKSPACES"
+                    fileManagerPickerMode = true
+                    showFileManager = true
                 },
                 onDismiss = { showNewProject = false },
             )
@@ -409,6 +393,14 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                 onClose = { browserController.close() },
                 onElementAdded = { el -> viewModel.addElement(el) },
                 onOpenExternal = { url -> openInSystemBrowser(url) },
+            )
+        }
+
+        // 手机操控高风险动作确认弹窗（不透明实底，防壁纸模式下透字）
+        pendingPhoneConfirm?.let { req ->
+            PhoneConfirmationDialog(
+                request = req,
+                onDecide = { allow -> PhoneConfirmationGate.resolve(req.id, allow) },
             )
         }
     }
@@ -494,6 +486,7 @@ private fun EnvPreparingOverlay() {
 private fun CompactLayout(
     state: ChatUiState,
     vm: ChatViewModel,
+    phoneTask: PhoneTaskState,
     onOpenSettings: () -> Unit,
     onOpenFileTransfer: () -> Unit,
     onSessionLongPress: (com.hxy.codeforge.model.SessionItem) -> Unit,
@@ -745,6 +738,7 @@ private fun CompactLayout(
             // 任务清单折叠进右上角三点菜单，这里不再常驻。
             GoalStrip(state.goal)
             SubagentBar(state.subagents)
+            PhoneTaskControlStrip(phoneTask)
 
             Composer(
                 running = state.running,
@@ -800,6 +794,7 @@ private fun TwoPaneLayout(
     state: ChatUiState,
     vm: ChatViewModel,
     mode: WindowMode,
+    phoneTask: PhoneTaskState,
     onOpenSettings: () -> Unit,
     onOpenFileTransfer: () -> Unit,
     onSessionLongPress: (com.hxy.codeforge.model.SessionItem) -> Unit,
@@ -1031,6 +1026,7 @@ private fun TwoPaneLayout(
             // 上下文条删除、任务清单进右上角菜单 —— 与竖屏一致。
             GoalStrip(state.goal)
             SubagentBar(state.subagents)
+            PhoneTaskControlStrip(phoneTask)
 
             Composer(
                 running = state.running,
@@ -1547,3 +1543,138 @@ private fun BannerBar(
  */
 @Composable
 private fun maxComposerLines(): Int = if (isLandscape()) 4 else 6
+
+/**
+ * 手机操控实时执行条：仅在任务运行中或暂停中占位，支持主界面快捷暂停/继续与立即停止。
+ */
+@Composable
+private fun PhoneTaskControlStrip(task: PhoneTaskState) {
+    val visible = task.status == PhoneTaskStatus.RUNNING || task.status == PhoneTaskStatus.PAUSED
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(180)) + expandVertically(tween(200)),
+        exit = fadeOut(tween(140)) + shrinkVertically(tween(160)),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "${task.status.label} · 第 ${task.stepCount} 步",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Clay,
+                )
+                Text(
+                    text = task.currentAction.ifBlank { task.currentTask }.ifBlank { "正在操控手机" },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val subHint = when {
+                    task.thinkingPreview.isNotBlank() -> "思考：${task.thinkingPreview}"
+                    task.stepCount == 0 -> "下拉通知栏点「停止操控」可随时终止"
+                    else -> ""
+                }
+                if (subHint.isNotBlank()) {
+                    Text(
+                        text = subHint,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .noRippleClickable {
+                        if (task.status == PhoneTaskStatus.PAUSED) {
+                            PhoneTaskController.resume()
+                        } else {
+                            PhoneTaskController.pause("已在主界面暂停")
+                        }
+                    }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            ) {
+                Text(
+                    text = if (task.status == PhoneTaskStatus.PAUSED) "继续" else "暂停",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .noRippleClickable { PhoneTaskController.stop("已在主界面立即停止") }
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            ) {
+                Text(
+                    text = "停止",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhoneConfirmationDialog(
+    request: PendingPhoneConfirmation,
+    onDecide: (Boolean) -> Unit,
+) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { onDecide(false) },
+        containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f),
+        title = {
+            Text(
+                text = "手机操控确认 · ${request.rule.label}",
+                style = MaterialTheme.typography.titleMedium,
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = request.title,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                if (request.detail.isNotBlank()) {
+                    Text(
+                        text = request.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (request.targetApp.isNotBlank()) {
+                    Text(
+                        text = "目标应用：${request.targetApp}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Clay,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = { onDecide(true) }) {
+                Text("允许执行", color = Clay)
+            }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { onDecide(false) }) {
+                Text("拒绝", color = MaterialTheme.colorScheme.error)
+            }
+        },
+    )
+}

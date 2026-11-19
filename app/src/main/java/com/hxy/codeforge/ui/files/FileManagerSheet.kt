@@ -66,10 +66,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.hxy.codeforge.core.EnvKit
+import com.hxy.codeforge.model.ProjectItem
 import com.hxy.codeforge.ui.chat.isAudioPath
 import com.hxy.codeforge.ui.chat.isImagePath
 import com.hxy.codeforge.ui.chat.isVideoPath
 import com.hxy.codeforge.ui.chat.launchMediaUri
+import com.hxy.codeforge.ui.sameWorkspacePath
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.common.SyncDialogStatusBar
@@ -150,6 +152,10 @@ fun FileManagerSheet(
     activeWorkspaceRoot: String,
     activeWorkspaceLabel: String,
     initialRoot: String = FileRootKey.CURRENT.name,
+    projects: List<ProjectItem> = emptyList(),
+    pickerMode: Boolean = false,
+    onPickDirectory: ((File) -> Unit)? = null,
+    onOpenFolderAsProject: ((File) -> Unit)? = null,
     onQuoteToChat: (String) -> Unit,
     onAttachToChat: (File) -> Unit,
     onNotify: (String, Boolean) -> Unit,
@@ -159,22 +165,34 @@ fun FileManagerSheet(
     val scope = rememberCoroutineScope()
     val portraitFullScreen = !isLandscape()
 
-    val rootDirs = remember(activeWorkspaceRoot) {
-        val inbox = EnvKit.inboxSpace(context)
-        val current = activeWorkspaceRoot.takeIf { it.isNotBlank() }?.let { File(it) } ?: inbox
+    val workspacesContainerRoot = remember(context) { EnvKit.workspaceRoot(context) }
+    val inboxRoot = remember(context) { EnvKit.inboxSpace(context) }
+    val rootDirs = remember(activeWorkspaceRoot, workspacesContainerRoot, inboxRoot) {
+        val current = activeWorkspaceRoot.takeIf { it.isNotBlank() }?.let { File(it) } ?: inboxRoot
         mapOf(
             FileRootKey.CURRENT to current,
-            FileRootKey.INBOX to inbox,
-            FileRootKey.WORKSPACES to EnvKit.workspaceRoot(context),
+            FileRootKey.INBOX to inboxRoot,
+            FileRootKey.WORKSPACES to workspacesContainerRoot,
             FileRootKey.DEVICE to EnvKit.deviceStorageRoot(context),
             FileRootKey.CACHE to EnvKit.outboxDir(context),
         )
     }
+    val visibleRoots = remember(pickerMode) {
+        if (pickerMode) {
+            listOf(FileRootKey.WORKSPACES, FileRootKey.DEVICE, FileRootKey.CURRENT, FileRootKey.INBOX)
+        } else {
+            FileRootKey.entries
+        }
+    }
+    val projectNamesByPath = remember(projects) {
+        projects.associate {
+            (runCatching { File(it.workspace).canonicalPath }.getOrNull() ?: it.workspace) to it.name
+        }
+    }
 
-    var selectedRoot by rememberSaveable(initialRoot) {
-        mutableStateOf(
-            runCatching { FileRootKey.valueOf(initialRoot) }.getOrDefault(FileRootKey.CURRENT),
-        )
+    var selectedRoot by rememberSaveable(initialRoot, pickerMode) {
+        val parsed = runCatching { FileRootKey.valueOf(initialRoot) }.getOrDefault(visibleRoots.first())
+        mutableStateOf(if (parsed in visibleRoots) parsed else visibleRoots.first())
     }
     val rootDir = rootDirs[selectedRoot]
     var currentPath by rememberSaveable(selectedRoot, rootDir?.absolutePath) {
@@ -358,13 +376,23 @@ fun FileManagerSheet(
                 }
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "文件管理",
+                        text = if (pickerMode) "选择工作区目录" else "文件管理",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
-                    if (selectedRoot == FileRootKey.CURRENT && activeWorkspaceLabel.isNotBlank()) {
+                    val headerSub = when {
+                        pickerMode -> "选择现有目录或新建文件夹作为项目根"
+                        selectedRoot == FileRootKey.CURRENT && sameWorkspacePath(
+                            rootDirs[FileRootKey.CURRENT]?.absolutePath.orEmpty(),
+                            inboxRoot.absolutePath,
+                        ) -> "${activeWorkspaceLabel.ifBlank { "应用私有空间" }}（与默认空间相同）"
+                        selectedRoot == FileRootKey.CURRENT && activeWorkspaceLabel.isNotBlank() -> activeWorkspaceLabel
+                        selectedRoot == FileRootKey.WORKSPACES -> "点击文件夹进入，或点右上⋮作为项目打开"
+                        else -> ""
+                    }
+                    if (headerSub.isNotBlank()) {
                         Text(
-                            text = activeWorkspaceLabel,
+                            text = headerSub,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -410,7 +438,7 @@ fun FileManagerSheet(
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                FileRootKey.entries.forEach { key ->
+                visibleRoots.forEach { key ->
                     val available = rootDirs[key] != null
                     val selected = selectedRoot == key
                     Surface(
@@ -526,6 +554,9 @@ fun FileManagerSheet(
             }
 
             // 工具操作条
+            val canActAsProject = currentDir != null &&
+                selectedRoot != FileRootKey.CACHE &&
+                canOpenDirAsProject(currentDir, workspacesContainerRoot)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -533,12 +564,32 @@ fun FileManagerSheet(
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                if (selectedRoot == FileRootKey.CACHE) {
+                if (pickerMode) {
+                    if (canActAsProject && onPickDirectory != null) {
+                        ToolChip("选定当前目录", enabled = !busy, accent = true) {
+                            onPickDirectory(currentDir)
+                        }
+                    }
+                    ToolChip("新建文件夹", enabled = !busy && currentDir != null, accent = !canActAsProject) {
+                        newFolderInput = ""
+                        showNewFolder = true
+                    }
+                } else if (selectedRoot == FileRootKey.CACHE) {
                     ToolChip("一键清空暂存与缓存", enabled = !busy, accent = true) {
                         showClearCacheConfirm = true
                     }
                 } else {
-                    ToolChip(if (busy) "处理中…" else "导入文件", enabled = !busy && currentDir != null, accent = true) {
+                    if (canActAsProject && selectedRoot != FileRootKey.CURRENT && onOpenFolderAsProject != null) {
+                        ToolChip("设为侧栏项目", enabled = !busy, accent = true) {
+                            onOpenFolderAsProject(currentDir)
+                            onDismiss()
+                        }
+                    }
+                    ToolChip(
+                        if (busy) "处理中…" else "导入文件",
+                        enabled = !busy && currentDir != null,
+                        accent = !(canActAsProject && selectedRoot != FileRootKey.CURRENT && onOpenFolderAsProject != null),
+                    ) {
                         importFilesLauncher.launch(arrayOf("*/*"))
                     }
                     ToolChip("相册/视频", enabled = !busy && currentDir != null) {
@@ -608,13 +659,26 @@ fun FileManagerSheet(
                         }
                     }
                     items(displayedEntries, key = { it.file.absolutePath }) { entry ->
+                        val matchedProject = if (entry.isDir) {
+                            val key = runCatching { entry.file.canonicalPath }.getOrNull() ?: entry.file.absolutePath
+                            projectNamesByPath[key]
+                        } else {
+                            null
+                        }
                         FileRow(
                             entry = entry,
+                            projectLabel = matchedProject,
+                            pickActionLabel = if (pickerMode && entry.isDir && onPickDirectory != null) "选定" else null,
+                            onPickAction = if (pickerMode && entry.isDir && onPickDirectory != null) {
+                                { onPickDirectory(entry.file) }
+                            } else {
+                                null
+                            },
                             onClick = {
                                 if (entry.isDir) {
                                     currentPath = entry.file.absolutePath
                                     query = ""
-                                } else {
+                                } else if (!pickerMode) {
                                     actionTarget = entry
                                 }
                             },
@@ -654,12 +718,24 @@ fun FileManagerSheet(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (entry.isDir) {
+                        if (pickerMode && onPickDirectory != null) {
+                            DialogActionRow("选定此目录作为工作区", Glyph.Check) {
+                                actionTarget = null
+                                onPickDirectory(entry.file)
+                            }
+                        } else if (selectedRoot != FileRootKey.CACHE && onOpenFolderAsProject != null) {
+                            DialogActionRow("在侧栏作为项目打开", Glyph.ChatBubble) {
+                                actionTarget = null
+                                onOpenFolderAsProject(entry.file)
+                                onDismiss()
+                            }
+                        }
                         DialogActionRow("打开目录", Glyph.Folder) {
                             actionTarget = null
                             currentPath = entry.file.absolutePath
                             query = ""
                         }
-                        if (selectedRoot != FileRootKey.DEVICE) {
+                        if (!pickerMode && selectedRoot != FileRootKey.DEVICE) {
                             DialogActionRow("打包导出目录到 Download", Glyph.Share) {
                                 actionTarget = null
                                 busy = true
@@ -979,6 +1055,9 @@ private fun ToolChip(
 @Composable
 private fun FileRow(
     entry: FsEntry,
+    projectLabel: String? = null,
+    pickActionLabel: String? = null,
+    onPickAction: (() -> Unit)? = null,
     onClick: () -> Unit,
     onMore: () -> Unit,
 ) {
@@ -1009,16 +1088,35 @@ private fun FileRow(
                     overflow = TextOverflow.Ellipsis,
                 )
                 val meta = if (entry.isDir) {
-                    "文件夹 · ${formatTime(entry.lastModified)}"
+                    if (!projectLabel.isNullOrBlank()) {
+                        "项目：$projectLabel · ${formatTime(entry.lastModified)}"
+                    } else {
+                        "文件夹 · ${formatTime(entry.lastModified)}"
+                    }
                 } else {
                     "${EnvKit.formatFileSize(entry.sizeBytes)} · ${formatTime(entry.lastModified)}"
                 }
                 Text(
                     text = meta,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = if (!projectLabel.isNullOrBlank()) Clay else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
+            }
+            if (!pickActionLabel.isNullOrBlank() && onPickAction != null) {
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = Clay.copy(alpha = 0.14f),
+                    modifier = Modifier.noRippleClickable(onClick = onPickAction),
+                ) {
+                    Text(
+                        text = pickActionLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = Clay,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                    )
+                }
             }
             Box(
                 modifier = Modifier
@@ -1160,4 +1258,12 @@ private fun formatTime(ms: Long): String =
 private fun copyToClipboard(context: Context, label: String, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
     cm.setPrimaryClip(ClipData.newPlainText(label, text))
+}
+
+/** 禁止把所有工作区的总容器 `$CELL/workspace` 本身当成单个项目，其它目录（及其子目录）均可打开/选定。 */
+internal fun canOpenDirAsProject(dir: File, workspacesContainerRoot: File): Boolean {
+    if (!dir.isDirectory) return false
+    val d = runCatching { dir.canonicalFile }.getOrElse { dir }
+    val root = runCatching { workspacesContainerRoot.canonicalFile }.getOrElse { workspacesContainerRoot }
+    return d != root
 }

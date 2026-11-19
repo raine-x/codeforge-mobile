@@ -63,6 +63,7 @@ class CodeForgeApp : Application() {
             },
         )
         AppSettings.init(this)
+        com.hxy.codeforge.phone.PhoneRuntime.init(this)
         // B5-10：暂存孤儿（outbox / camera / logs）与托管工作区过期附件异步清理，避免冷启动阻塞主线程
         EnvKit.cleanupOrphansAsync(this)
         // 统一环境准备（AGENTS §2.6 第 4 步）：proot + Alpine rootfs 解压到 $CELL，

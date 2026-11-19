@@ -549,11 +549,22 @@ object EnvKit {
         // ffmpeg 走 rootfs 而非 so 库（ffmpeg-kit 已停更）：apk 官方构建，
         // 装完内核可直接 `ffmpeg -i ...` 处理工作区媒体
         EnvPackage("FFmpeg", "apk add --no-cache ffmpeg", "ffmpeg -version"),
-        // 逆向分析工具链：ELF/二进制段表符号（binutils/file/patchelf）、反汇编（radare2）与 Python 指令级分析库
+        // 逆向分析工具链：ELF/二进制段表符号（binutils/file/patchelf）、反汇编（radare2）、证书/ASN.1（openssl/cryptography）与 Python 指令级分析/仿真库
         EnvPackage(
             "逆向工具 (binutils/file/radare2)",
-            "apk add --no-cache file binutils patchelf radare2 py3-capstone py3-unicorn",
+            "apk add --no-cache file binutils patchelf radare2 openssl py3-capstone py3-unicorn py3-cryptography",
             "r2 -v",
+        ),
+        // APK 逆向与重签工具链：OpenJDK 17（含 keytool/jarsigner）+ zip/unzip/openssl + apktool（多源回退下载并生成 /usr/bin/apktool）
+        EnvPackage(
+            "APK 逆向 (apktool/签名)",
+            "apk add --no-cache openjdk17-jre-headless zip unzip openssl ca-certificates && " +
+                "mkdir -p /usr/local/share/apktool && " +
+                "(wget -q -T 25 -O /usr/local/share/apktool/apktool.jar https://bitbucket.org/iBotPeaches/apktool/downloads/apktool_2.11.1.jar || " +
+                "wget -q -T 25 -O /usr/local/share/apktool/apktool.jar https://github.com/iBotPeaches/Apktool/releases/download/v2.11.1/apktool_2.11.1.jar) && " +
+                "printf '#!/bin/sh\nexec java -Xmx1024m -jar /usr/local/share/apktool/apktool.jar \"$@\"\n' > /usr/bin/apktool && " +
+                "chmod +x /usr/bin/apktool",
+            "apktool -version",
         ),
     )
 

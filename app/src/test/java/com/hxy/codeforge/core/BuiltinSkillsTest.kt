@@ -52,7 +52,7 @@ class BuiltinSkillsTest {
     fun `版本一致时跳过`() {
         assertEquals(
             BuiltinSkills.Plan.SKIP,
-            BuiltinSkills.planFor(exists = true, markerVersion = "2"),
+            BuiltinSkills.planFor(exists = true, markerVersion = "3"),
         )
     }
 
@@ -64,6 +64,10 @@ class BuiltinSkillsTest {
         assertEquals(
             BuiltinSkills.Plan.INSTALL,
             BuiltinSkills.planFor(exists = true, markerVersion = "1"),
+        )
+        assertEquals(
+            BuiltinSkills.Plan.INSTALL,
+            BuiltinSkills.planFor(exists = true, markerVersion = "2"),
         )
     }
 }
@@ -127,14 +131,40 @@ class BuiltinSkillsAssetTest {
         }
         val expected = listOf(
             "apk-reverse/SKILL.md",
+            "apk-reverse/references/axml_arsc_parser.py",
+            "apk-reverse/references/apk_sig_cert.py",
             "apk-reverse/references/dex_inspector.py",
+            "apk-reverse/references/apk_patch_repack.py",
             "elf-jni-reverse/SKILL.md",
             "elf-jni-reverse/references/elf_jni_scanner.py",
+            "elf-jni-reverse/references/unicorn_arm64_harness.py",
             "crypto-unpack/SKILL.md",
             "crypto-unpack/references/crypto_constant_scan.py",
         )
         expected.forEach { rel ->
             assertTrue("builtin-skills.zip 缺少内置逆向资源 $rel", rel in entries)
+        }
+        assertFalse(
+            "builtin-skills.zip 不应包含 __pycache__ 或 .pyc 缓存文件",
+            entries.any { it.contains("__pycache__") || it.endsWith(".pyc") },
+        )
+
+        val skills = readSkills()
+        listOf("apk-reverse", "elf-jni-reverse", "crypto-unpack").forEach { slug ->
+            val (front, _) = splitFrontmatter(skills.getValue(slug))
+            val triggers = parseLikeKernel(front)["triggers"].orEmpty()
+                .split(",").map { it.trim() }
+            assertTrue("$slug 触发词需包含 reverse_analysis 以便 @reverse_analysis 联动激活", "reverse_analysis" in triggers)
+        }
+    }
+
+    @Test
+    fun `环境软件包包含APK逆向工具链且探测命令遵守P051无管道规范`() {
+        val labels = EnvKit.packages.map { it.label }
+        assertTrue("EnvKit.packages 缺少 APK 逆向包", labels.any { it.contains("APK 逆向") })
+        EnvKit.packages.forEach { pkg ->
+            assertTrue("${pkg.label} probe 为空", pkg.probe.isNotBlank())
+            assertFalse("${pkg.label} probe 不能含管道（P-051）：${pkg.probe}", pkg.probe.contains("|"))
         }
     }
 

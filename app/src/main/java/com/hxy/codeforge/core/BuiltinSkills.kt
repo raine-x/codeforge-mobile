@@ -35,7 +35,7 @@ object BuiltinSkills {
     private const val ASSET = "builtin-skills.zip"
 
     /** 内置技能版本；变更内容时 +1，铺放会据此重铺。 */
-    private const val VERSION = "2"
+    private const val VERSION = "3"
 
     /** 内置技能目录名（相对工作区）。与内核约定一致。 */
     private const val SKILLS_SUBDIR = ".codeforge/skills"
