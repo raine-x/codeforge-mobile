@@ -600,24 +600,8 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
      * History/SessionClaimed（切会话本身）与 ApprovalRequested（审批卡带来源
      * 标注、阻塞的可能是后台会话，必须显示）不在此列，照常走主分支。
      */
-    private fun isBackgroundSessionEvent(e: CoreEvent): Boolean {
-        val current = _state.value.currentSessionId
-        val sid = when (e) {
-            is CoreEvent.Delta -> e.sessionId
-            is CoreEvent.Thinking -> e.sessionId
-            is CoreEvent.ToolStart -> e.sessionId
-            is CoreEvent.ToolEnd -> e.sessionId
-            is CoreEvent.StreamReset -> e.sessionId
-            is CoreEvent.NoticeEvent -> e.sessionId ?: return false
-            is CoreEvent.Todos -> e.sessionId
-            is CoreEvent.ContextUpdate -> e.sessionId
-            is CoreEvent.SubagentUpdate -> e.sessionId
-            is CoreEvent.Busy -> e.sessionId
-            is CoreEvent.Idle -> e.sessionId
-            else -> return false
-        }
-        return sid.isNotEmpty() && current.isNotEmpty() && sid != current
-    }
+    private fun isBackgroundSessionEvent(e: CoreEvent): Boolean =
+        isBackgroundSessionEvent(e, _state.value.currentSessionId)
 
     /**
      * 后台会话事件：只更新列表 busy 标记；完成通知由壳侧在 hidden 时发（Idle 分支）。
@@ -755,56 +739,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             }
 
             is CoreEvent.SessionClaimed -> {
-                _state.update { st ->
-                    // 内核先发 session、再发 sessions。若 sessions 先到（或本帧之后
-                    // 不再补发），currentSessionId 此刻还是旧值，列表里就不会有这条
-                    // 新会话 —— 侧栏看起来「新建了但没新增」。这里就地补一次。
-                    // 默认标题按需求统一为「新建会话」（内核自己的默认名是「新会话」，
-                    // 已在解析层归一）；首条用户消息发出后会改成本地前 24 字。
-                    val newTitle = event.title.ifBlank { "新建会话" }
-                    val exists = st.sessions.any { it.id == event.sessionId }
-                    // 会话切到了另一条：新会话是空白上下文，会话级状态必须一起清掉。
-                    // 过去只改 id/title，界面还挂着上一条会话的消息与运行态 ——
-                    // 用户必须切走再切回才「刷掉历史」（问题 6）。session 帧只在
-                    // new_session 时下发，因此「id 变了」就是新建的确定信号。
-                    val isNew = event.sessionId != st.currentSessionId
-                    val patched = if (exists) {
-                        st.sessions.map {
-                            if (it.id == event.sessionId) it.copy(title = event.title.ifBlank { it.title }) else it
-                        }
-                    } else {
-                        listOf(
-                            SessionItem(
-                                id = event.sessionId,
-                                title = newTitle,
-                                updatedAt = System.currentTimeMillis(),
-                                busy = false,
-                                // 新会话归属当前项目：内核 next 帧的 sessions 会带回真值，
-                                // 这里先填上，侧栏不会把刚建的会话塞进「未选择工作区」。
-                                workspace = st.currentWorkspace,
-                                workspaceName = st.currentWorkspaceName,
-                            ),
-                        ) + st.sessions
-                    }
-                    st.copy(
-                        currentSessionId = event.sessionId,
-                        title = newTitle,
-                        messages = if (isNew) emptyList() else st.messages,
-                        running = if (isNew) false else st.running,
-                        approvals = if (isNew) emptyList() else st.approvals,
-                        todos = if (isNew) emptyList() else st.todos,
-                        subagents = if (isNew) emptyList() else st.subagents,
-                        contextUsage = if (isNew) null else st.contextUsage,
-                        goal = if (isNew) null else st.goal,
-                        checkpoints = if (isNew) emptyList() else st.checkpoints,
-                        resumeBack = if (isNew) -1 else st.resumeBack,
-                        editableAnchors = if (isNew) emptyList() else st.editableAnchors,
-                        actionPanel = if (isNew) null else st.actionPanel,
-                        editText = if (isNew) null else st.editText,
-                        editAttachments = if (isNew) emptyList() else st.editAttachments,
-                        editBack = if (isNew) null else st.editBack,
-                    ).applySessions(patched)
-                }
+                _state.update { it.foldSessionClaimed(event.sessionId, event.title, System.currentTimeMillis()) }
                 if (event.sessionId != "") planPending = false
                 transport?.setCurrentSession(event.sessionId)
                 // 说明本次 new_session 已经落定：等它的发送队列可以继续
@@ -813,26 +748,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 applySessionSpace(event.sessionId)
             }
 
-            is CoreEvent.Sessions -> _state.update { st ->
-                // 内核的会话列表可能不含「刚建好还没说话」的会话，直接覆盖会让
-                // 新建的对话在侧栏凭空消失。当前会话不在列表里就本地补一条。
-                val cur = st.currentSessionId
-                val patched = if (cur.isNotBlank() && event.items.none { it.id == cur }) {
-                    listOf(
-                        SessionItem(
-                            id = cur,
-                            title = "新建会话",
-                            updatedAt = System.currentTimeMillis(),
-                            busy = false,
-                            workspace = st.currentWorkspace,
-                            workspaceName = st.currentWorkspaceName,
-                        ),
-                    ) + event.items
-                } else {
-                    event.items
-                }
-                st.applySessions(mergeBusy(patched, st.sessions))
-            }
+            is CoreEvent.Sessions -> _state.update { it.foldSessions(event.items, System.currentTimeMillis()) }
 
             is CoreEvent.History -> {
                 // 切会话（含重连后的快照重建）视作新的回合边界：@plan 标记不能跨会话残留
@@ -877,10 +793,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
 
             // 当前会话的忙碌态也要写回会话列表：项目行的「转圈」是从 sessions 的
             // busy 聚合出来的，只改 running 的话侧栏看不到哪个项目在跑。
-            is CoreEvent.Busy -> _state.update { st ->
-                st.copy(running = true, banner = null)
-                    .applySessions(st.sessions.map { if (it.id == event.sessionId) it.copy(busy = true) else it })
-            }
+            is CoreEvent.Busy -> _state.update { it.foldBusy(event.sessionId) }
 
             is CoreEvent.Idle -> {
                 // @plan 回合结束：把最后一条助手正文装进操作面板。
@@ -890,24 +803,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 // 刚才在跑才通知：前台用户自己在看，不需要；hidden 时这条就是完成信号
                 val wasRunning = _state.value.running
                 val doneTitle = _state.value.title.ifBlank { "新建会话" }
-                _state.update { st ->
-                    val msgs = st.messages.map { m ->
-                        sweepMessage(if (m.streaming) m.copy(streaming = false) else m)
-                    }
-                    val panel = if (showPlan) {
-                        msgs.lastOrNull { it.role == MsgRole.Assistant && it.text.isNotBlank() }
-                            ?.let { ActionPanelState(content = it.text) } ?: st.actionPanel
-                    } else {
-                        st.actionPanel
-                    }
-                    st.copy(
-                        running = false,
-                        // 轮次结束：已排队的转向指令此时已被内核处理，提示状态复位
-                        steerQueued = false,
-                        messages = msgs,
-                        actionPanel = panel,
-                    ).applySessions(st.sessions.map { if (it.id == event.sessionId) it.copy(busy = false) else it })
-                }
+                _state.update { it.foldIdle(event.sessionId, showPlan) }
                 if (wasRunning) notifyDone("任务完成", "会话「$doneTitle」已完成", event.sessionId)
                 PhoneTaskController.markTurnCompleted()
             }
@@ -1060,16 +956,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 } else {
                     Banner(event.message, isError = true, retryable = retryable)
                 }
-                _state.update {
-                    it.copy(
-                        running = false,
-                        // 失败收尾同样要清流式标记与挂着的运行中工具行
-                        banner = errBanner,
-                        messages = it.messages.map { m ->
-                            sweepMessage(if (m.streaming) m.copy(streaming = false) else m)
-                        },
-                    )
-                }
+                _state.update { it.foldFailure(errBanner) }
                 PhoneTaskController.markTurnCompleted()
             }
 
@@ -1079,192 +966,26 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         }
     }
 
-    /** 正文增量并入末段（末段是正文就接着写，否则新起一段）。 */
-    private fun appendTextSegment(segs: List<MessageSegment>, text: String): List<MessageSegment> {
-        val last = segs.lastOrNull()
-        return if (last is MessageSegment.Text) {
-            segs.dropLast(1) + last.copy(text = last.text + text)
-        } else {
-            segs + MessageSegment.Text(text)
-        }
-    }
+    private fun nextMsgId(): String = "m-${seq.incrementAndGet()}"
 
-    /** 思考增量并入末段（末段是思考就接着写，否则新起一段 —— 段序即真实发生顺序）。 */
-    private fun appendThinkingSegment(segs: List<MessageSegment>, text: String): List<MessageSegment> {
-        val last = segs.lastOrNull()
-        return if (last is MessageSegment.Thinking) {
-            segs.dropLast(1) + last.copy(text = last.text + text)
-        } else {
-            segs + MessageSegment.Thinking(text)
-        }
-    }
-
-    /** 工具段按 id 就地更新；没有就追加到末尾（保证「思考-工具-正文」的真实顺序）。 */
-    private fun upsertToolSegment(segs: List<MessageSegment>, call: ToolCall): List<MessageSegment> {
-        val at = segs.indexOfFirst { it is MessageSegment.Tool && it.call.id == call.id }
-        return if (at >= 0) {
-            segs.toMutableList().also { it[at] = MessageSegment.Tool(call) }
-        } else {
-            segs + MessageSegment.Tool(call)
-        }
-    }
-
-    /** 助手正文增量：并入当前流式消息，没有就新建一条。 */
+    /** 助手正文增量：纯折叠见 [foldAssistantText]（ChatStateFold.kt）。 */
     private fun appendAssistantText(text: String) {
-        _state.update { s ->
-            val msgs = s.messages.toMutableList()
-            val last = msgs.lastOrNull()
-            if (last != null && last.role == MsgRole.Assistant && last.streaming) {
-                msgs[msgs.lastIndex] = last.copy(
-                    text = last.text + text,
-                    segments = appendTextSegment(last.segments, text),
-                )
-            } else {
-                msgs.add(
-                    ChatMessage(
-                        id = "m-${seq.incrementAndGet()}",
-                        role = MsgRole.Assistant,
-                        text = text,
-                        streaming = true,
-                        time = System.currentTimeMillis(),
-                        segments = listOf(MessageSegment.Text(text)),
-                    ),
-                )
-            }
-            s.copy(messages = msgs)
-        }
+        _state.update { it.foldAssistantText(text, ::nextMsgId, System.currentTimeMillis()) }
     }
 
-    /**
-     * 思考过程增量：与正文一致按**增量**追加（内核 reasoning 帧是流式增量，
-     * Mock 与测试模型也已统一为增量）—— 此前按「整段替换」折叠，
-     * 与契约不符会让思考区只剩最后一小块。
-     */
+    /** 思考增量：纯折叠见 [foldThinking]；同步给手机任务控制器的是副作用，留在这里。 */
     private fun appendThinking(text: String) {
-        _state.update { s ->
-            val msgs = s.messages.toMutableList()
-            val last = msgs.lastOrNull()
-            if (last != null && last.role == MsgRole.Assistant && last.streaming) {
-                msgs[msgs.lastIndex] = last.copy(
-                    thinking = (last.thinking ?: "") + text,
-                    segments = appendThinkingSegment(last.segments, text),
-                )
-            } else {
-                msgs.add(
-                    ChatMessage(
-                        id = "m-${seq.incrementAndGet()}",
-                        role = MsgRole.Assistant,
-                        text = "",
-                        thinking = text,
-                        streaming = true,
-                        time = System.currentTimeMillis(),
-                        segments = listOf(MessageSegment.Thinking(text)),
-                    ),
-                )
-            }
-            s.copy(messages = msgs)
-        }
+        _state.update { it.foldThinking(text, ::nextMsgId, System.currentTimeMillis()) }
         PhoneTaskController.appendThinkingDelta(text)
     }
 
-    /**
-     * 工具卡片挂在「当前这条助手消息」上。
-     *
-     * 只从**最后一条用户消息之后**找助手消息：之前是「找最近的助手消息」，
-     * 上一轮已经结束的助手消息也会被命中，新工具卡就被挂到旧轮正文后面 ——
-     * 界面上所有工具都堆到正文前/后的错位就是这么来的。
-     */
     private fun upsertTool(call: ToolCall) {
-        _state.update { s ->
-            val msgs = s.messages.toMutableList()
-            var idx = currentTurnAssistantIndex(msgs)
-            if (idx < 0) {
-                msgs.add(
-                    ChatMessage(
-                        id = "m-${seq.incrementAndGet()}",
-                        role = MsgRole.Assistant,
-                        text = "",
-                        streaming = true,
-                        time = System.currentTimeMillis(),
-                    ),
-                )
-                idx = msgs.lastIndex
-            }
-            val target = msgs[idx]
-            val tools = target.tools.toMutableList()
-            val at = tools.indexOfFirst { it.id == call.id }
-            if (at >= 0) tools[at] = call else tools.add(call)
-            msgs[idx] = target.copy(
-                tools = tools,
-                segments = upsertToolSegment(target.segments, call),
-            )
-            s.copy(messages = msgs)
-        }
-    }
-
-    /** 从末尾往前找助手消息，遇到用户消息即为上一轮边界（通知行跳过）；找不到返回 -1。 */
-    private fun currentTurnAssistantIndex(msgs: List<ChatMessage>): Int {
-        for (i in msgs.indices.reversed()) {
-            val m = msgs[i]
-            if (m.role == MsgRole.Assistant) return i
-            if (m.role == MsgRole.User) return -1
-        }
-        return -1
+        _state.update { it.foldToolStart(call, ::nextMsgId, System.currentTimeMillis()) }
     }
 
     private fun finishTool(event: CoreEvent.ToolEnd) {
-        _state.update { s ->
-            val msgs = s.messages.toMutableList()
-            for (i in msgs.indices.reversed()) {
-                val m = msgs[i]
-                val at = m.tools.indexOfFirst { it.id == event.toolCallId }
-                if (at >= 0) {
-                    val tools = m.tools.toMutableList()
-                    tools[at] = tools[at].copy(
-                        output = event.output,
-                        state = if (event.failed) ToolState.Failed else ToolState.Ok,
-                        diffAdded = event.diffAdded,
-                        diffRemoved = event.diffRemoved,
-                        diff = event.diff,
-                    )
-                    // 段里的工具卡是同一份数据的另一份拷贝，必须一起改，
-                    // 否则按段渲染时卡永远停在「执行中」。
-                    val segs = m.segments.map { seg ->
-                        if (seg is MessageSegment.Tool && seg.call.id == event.toolCallId) {
-                            MessageSegment.Tool(tools[at])
-                        } else {
-                            seg
-                        }
-                    }
-                    msgs[i] = m.copy(tools = tools, segments = segs)
-                    break
-                }
-            }
-            s.copy(messages = msgs)
-        }
+        _state.update { it.foldToolEnd(event) }
     }
-
-    /**
-     * 单条消息内的收尾清扫：还在「运行中」的工具调用改为 [ToolState.Interrupted]。
-     *
-     * ToolEnd 在断线/取消/异常收尾时可能被整个错过，那时工具行会永远停在
-     * 橙点扫光——历史上没有任何路径能把 Running 改掉。tools 与 segments 是
-     * 同一份数据的两份拷贝，必须一起改（同 finishTool）；迟到的 tool_result
-     * 仍会按 id 命中覆盖，真实结果不会丢。
-     */
-    private fun sweepMessage(m: ChatMessage): ChatMessage =
-        if (m.tools.none { it.state == ToolState.Running }) m else m.copy(
-            tools = m.tools.map {
-                if (it.state == ToolState.Running) it.copy(state = ToolState.Interrupted) else it
-            },
-            segments = m.segments.map { seg ->
-                if (seg is MessageSegment.Tool && seg.call.state == ToolState.Running) {
-                    MessageSegment.Tool(seg.call.copy(state = ToolState.Interrupted))
-                } else {
-                    seg
-                }
-            },
-        )
 
     // ---------- 用户动作 ----------
 

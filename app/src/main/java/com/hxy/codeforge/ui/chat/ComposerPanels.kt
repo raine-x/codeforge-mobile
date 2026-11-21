@@ -115,10 +115,7 @@ import com.hxy.codeforge.model.ContextUsage
 import com.hxy.codeforge.model.PermissionMode
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
-import com.hxy.codeforge.ui.common.ZhSpeechInput
 import com.hxy.codeforge.ui.common.noRippleClickable
-import com.hxy.codeforge.ui.common.rememberZhSpeechInput
-import com.hxy.codeforge.ui.common.zhSpeechAvailable
 import com.hxy.codeforge.ui.settings.AppSettings
 import com.hxy.codeforge.ui.theme.Clay
 import com.hxy.codeforge.ui.theme.LocalAppTextColor

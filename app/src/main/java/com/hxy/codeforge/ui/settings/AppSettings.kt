@@ -33,7 +33,6 @@ object AppSettings {
     private const val PREFS_NAME = "app_settings"
     private const val KEY_ROTATE_WITH_DEVICE = "rotate_with_device"
     private const val KEY_ROTATION_SENSITIVITY = "rotation_sensitivity"
-    private const val KEY_CONTINUOUS_DICTATION = "continuous_dictation"
     private const val KEY_DARK_MODE = "dark_mode"
     private const val KEY_PROVIDER_SEEDED = "provider_seeded_v1"
     private const val KEY_INPUT_BOX_STYLE = "input_box_style"
@@ -88,9 +87,6 @@ object AppSettings {
     /** 最近一次权限档（内核未就绪时 UI 的兜底显示）。 */
     val lastPermission = mutableStateOf("Ask")
 
-    /** 连续听写：听完一段自动续听，直到手动停止（B4 输入区）。 */
-    val continuousDictation = mutableStateOf(false)
-
     /** 深色模式手动切换：0 跟随系统 / 1 浅色 / 2 深色（B4 设置页）。 */
     val darkMode = mutableStateOf(0)
 
@@ -132,7 +128,7 @@ object AppSettings {
      * **独立于聊天模型供应商**：聊天和转写是两套计费、两把 Key，共用一份配置会让
      * 「换个聊天模型」顺手把语音链路改坏。这里单独存一套，两边互不污染。
      *
-     * 优先级：云端（已启用且填了 Key）→ 系统 SpeechRecognizer。
+     * 语音只走云端（已启用且填了 Key）；系统 SpeechRecognizer 已移除（P-060）。
      */
     val sttCloudEnabled = mutableStateOf(false)
     val sttCloudApiKey = mutableStateOf("")
@@ -207,7 +203,6 @@ object AppSettings {
         thinkingLevel.intValue = p.getInt("thinking_level", 2)
         lastPermission.value = p.getString("last_permission", "Ask") ?: "Ask"
         lastModel.value = p.getString("last_model", null) ?: ""
-        continuousDictation.value = p.getBoolean(KEY_CONTINUOUS_DICTATION, false)
         darkMode.value = p.getInt(KEY_DARK_MODE, 0)
         providerSeeded.value = p.getBoolean(KEY_PROVIDER_SEEDED, false)
         inputBoxStyle.value = p.getString(KEY_INPUT_BOX_STYLE, "default") ?: "default"
@@ -235,11 +230,6 @@ object AppSettings {
         if (providerSeeded.value) return
         providerSeeded.value = true
         prefs?.edit()?.putBoolean(KEY_PROVIDER_SEEDED, true)?.apply()
-    }
-
-    fun setContinuousDictation(enabled: Boolean) {
-        continuousDictation.value = enabled
-        prefs?.edit()?.putBoolean(KEY_CONTINUOUS_DICTATION, enabled)?.apply()
     }
 
     fun setDarkMode(mode: Int) {

@@ -44,7 +44,7 @@ Native Android client for CodeForge-Go. The Go kernel runs locally as an isolate
 - **Checkpoints & Step-by-Step Undo**: Every file write is checkpointed per session, allowing workspace rollback or undo (`/api/undo`) straight from session controls.
 - **Built-in Browser & Element Picking**: Open links from messages in an embedded WebView, tap **Select Element** to inspect DOM nodes, and attach tag/style/geometry metadata plus user notes directly to the active prompt.
 - **Background Tasks & Subagents**: Launch long-running shell scripts into the background task panel to stream output or kill runs; supports `@goal_mode` verifier loops and multi-agent decomposition.
-- **Dual-Engine Voice Input**: Prefers user-configured cloud OpenAI-compatible `/audio/transcriptions`, falling back to Android `SpeechRecognizer` with a 20-second no-result watchdog.
+- **Cloud Voice Input**: Uses a user-configured OpenAI-compatible `/audio/transcriptions` endpoint; the Android `SpeechRecognizer` path was removed, and the app prompts for setup when it is not configured.
 
 ### 3. Compatible Linux Runtime (proot + Alpine)
 

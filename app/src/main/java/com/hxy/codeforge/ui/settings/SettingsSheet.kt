@@ -780,32 +780,8 @@ private fun EnvSection(context: Context) {
 private fun VoiceSection(context: Context) {
     SectionTitle("语音输入")
 
-    val systemAvailable = com.hxy.codeforge.ui.common.zhSpeechAvailable(context)
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(7.dp)
-                .background(
-                    if (systemAvailable) Clay else MaterialTheme.colorScheme.secondary,
-                    CircleShape,
-                ),
-        )
-        Text(
-            text = if (systemAvailable) "系统语音服务：可用" else "系统语音服务：不可用",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.padding(start = 8.dp),
-        )
-    }
-
     Text(
-        text = "没有系统服务的设备无法使用语音输入。可在下方启用云端语音识别（需自备 API Key），" +
-            "由云端完成转写。",
+        text = "语音输入只走云端识别：请在下方启用并填入 API Key（需自备），由云端完成转写。",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(bottom = 10.dp),

@@ -91,7 +91,7 @@ Tables have transparent backgrounds and full grid lines. Language labels sit abo
 - **模型服务、记忆、检查点与多工作区**：支持多供应商接入、接口探测、连通性测试、自动补齐上下文窗口、分步文件撤销与检查点回滚（`/api/undo` / checkpoints）、按项目隔离的工作区与文件树浏览。
 - **`.cfplugin` 动态插件体系与 MCP 接入**：支持导入经过结构、路径遍历与大小校验的 `.cfplugin` 插件包（纯文本技能与可执行 MCP 工具），密钥经 `EncryptedSharedPreferences` 加密保存并同步至各工作区。
 - **横竖屏与手机/平板自适应**：以窗口实际纵横比判定布局——竖屏（高 > 宽）自动走单栏抽屉与全屏设置页，横屏（宽 > 高）自动切换双栏工作区，并支持单手横持传感器自适应内容旋转。
-- **后台任务、目标验证与双引擎语音**：支持自主后台脚本调度（`@goal_mode` 闭环验证与子智能体协同）、以及系统 `SpeechRecognizer` / 云端 OpenAI 兼容 `/audio/transcriptions` 双引擎语音输入。
+- **后台任务、目标验证与双引擎语音**：支持自主后台脚本调度（`@goal_mode` 闭环验证与子智能体协同）、以及云端 OpenAI 兼容 `/audio/transcriptions` 语音输入。
 
 ---
 

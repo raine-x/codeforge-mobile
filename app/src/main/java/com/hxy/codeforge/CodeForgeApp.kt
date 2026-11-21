@@ -12,8 +12,8 @@ import com.hxy.codeforge.ui.settings.AppSettings
  *  1. [AppSettings.init] —— 读出持久化设置（旋转开关/灵敏度），必须在首帧前完成；
  *  2. （待接内核）创建通知渠道 —— CoreService 启动前必须存在。
  *
- * 内置离线语音模型已移除（APK 瘦身约 52 MB）：语音改走「云端（用户填 Key）→
- * 系统 SpeechRecognizer」两档，系统没有识别服务时给出提示而不是自带模型。
+ * 内置离线语音模型已移除（APK 瘦身约 52 MB）：语音只走云端（用户填 Key），
+ * 没配置时给出提示而不是自带模型，系统 SpeechRecognizer 也已移除（P-060）。
  */
 /** 全局前后台可见性（B5-2）：ProcessLifecycleOwner 驱动，VM 订阅转发给内核。 */
 object AppVisibility {

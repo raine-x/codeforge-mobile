@@ -48,16 +48,16 @@ CodeForgeAPP/
 | 层 | 文件 | 职责 |
 |---|---|---|
 | 入口 | `MainActivity.kt`、`CodeForgeApp.kt` | 建窗口、edge-to-edge、状态栏显隐、通知权限、拉起 CoreService、首启流水线（§2.5） |
-| 状态 | `ui/ChatViewModel.kt` + `ChatViewModel{Sessions,Models,Plugins,Workspace}.kt` | 唯一状态源、事件折叠、发送串行队列、项目/工作区、模型/插件配置、后台任务、页面元素登记 |
+| 状态 | `ui/ChatViewModel.kt` + `ChatViewModel{Sessions,Models,Plugins,Workspace}.kt` + `ChatStateFold.kt`（`onEvent` 的纯折叠函数，可纯 JVM 单测） | 唯一状态源、事件折叠、发送串行队列、项目/工作区、模型/插件配置、后台任务、页面元素登记 |
 | 界面·骨架 | `ui/AppRoot.kt` | 竖屏单栏抽屉 / 横屏双栏（侧栏+聊天）、“环境准备中”遮罩、顶栏/横幅/问候页、弹层挂载、内置浏览器浮层 |
 | 界面·聊天 | `ui/chat/` | `MessageList`（贴底跟随、回到最新、探索分组）· `MessageBubble`（气泡/思考/操作行）· `OpenRenderMessage`（IR→Compose 排版、媒体围栏路由、HTML 块）· `MessageBlocks`（媒体与附件渲染、`LocalAttachmentRoot`）· `Composer` + `ComposerPanels`（悬浮输入卡、附件/技能弹层、四态主按钮、双引擎语音、模型弹层、@ 补全）· `ToolCard` / `ToolLabels` / `ApprovalCardView` / `ActionPanel` / `BackgroundTasksSheet` / `ModelPickerSheet` / `StatusStrips` |
 | 界面·浏览器 | `ui/browser/` | `BrowserOverlay`（全屏页）· `PageBridge`（JS 桥 `window.__cf`）· `BrowserWebView` · `HtmlBlockView`（流内 HTML 块）· `HtmlDetection`（裸 HTML 判定/合并）· `BrowserModels` / `BrowserController` |
 | 界面·文件 | `ui/files/` | `FileManagerSheet`（当前工作区/默认空间/全部工作区/手机存储/暂存缓存统一文件浏览、目录选择器模式、一键设为侧栏项目、搜索排序、预览/播放、导入导出、重命名与安全删除、引用与装入附件） |
-| 界面·会话 | `ui/sessions/` | `SessionPane`（项目分组/侧栏）· `ProjectPanel` · `FileTreePanel`（旧目录树，主界面已停用改走 `FileManagerSheet`）· `McpSidebarPanel`（三段插件面板）· `PluginDetailSheet` · `SessionActionsSheet` |
+| 界面·会话 | `ui/sessions/` | `SessionPane`（项目分组/侧栏）· `ProjectPanel` · `McpSidebarPanel`（三段插件面板）· `PluginDetailSheet` · `SessionActionsSheet` |
 | 界面·设置 | `ui/settings/` | `AppSettings`（Compose 状态 + 加密 SharedPreferences）· `SettingsSheet` + `SettingsModelSection`（二级页、模型与供应商库）· `PhoneControlSettings` + `PhoneControlDialogs`（手机操控设置与黑名单/产物弹窗）· `FileTransferSection` · `ModelEditorSection` · `KernelSettingsSection` · `EnvPackagesSection` |
-| 界面·通用 | `ui/common/` `ui/theme/` | `Responsive`（三档判定）· `Glyphs`（图标库）· `NoRipple` · `VoiceInput`（系统识别）· `DeviceRotation`（已停用的旧内容旋转遗留实现）· `StatusBarVisibility`（主窗+弹层状态栏显隐同步）· `ToastHost` · `Theme.kt`（暖色配色/字体/`AppBackground`） |
+| 界面·通用 | `ui/common/` `ui/theme/` | `Responsive`（三档判定）· `Glyphs`（图标库）· `NoRipple` · `DeviceRotation`（已停用的旧内容旋转遗留实现）· `StatusBarVisibility`（主窗+弹层状态栏显隐同步）· `ToastHost` · `Theme.kt`（暖色配色/字体/`AppBackground`） |
 | 界面·提示词 | `ui/CapabilityPrompt.kt` | 注入给模型的「客户端渲染能力」说明与注入标记（P-042 / P-054） |
-| 协议 | `core/` | `CoreTransport`（`CoreEvent` + 接口）· `HttpCoreTransport`（HTTP+WS 自愈重连/帧解析）· `AttachmentParsers` · `EnvProbe` |
+| 协议 | `core/` | `CoreTransport`（`CoreEvent` + 接口）· `HttpCoreTransport`（HTTP+WS 自愈重连，帧交给 `CoreFrames`）· `CoreFrames`（一种帧一个解析器的注册表，纯 org.json，可纯 JVM 单测）· `AttachmentParsers` · `EnvProbe` |
 | 服务 | `core/` | `CoreService`（specialUse 前台服务：拉起 `.so`、PORT 握手、退避重启）· `KernelApi`（REST 客户端，Cookie 同 WS）· `KernelConfig`（设置 ↔ local.yaml）· `ModelPresets`（国内外常见模型上下文规格预设与 ≥128K 默认兜底）· `EnvKit`（proot+Alpine、`$CELL` 单根、cfrun、软件包）· `BuiltinSkills` · `PluginInstaller`（`.cfplugin` 校验与原子安装）· `PluginSkills`（多工作区技能同步）· `LiveTransport`（进程级 WS holder）· `ApprovalReceiver`（通知 action） |
 | 语音 | `voice/CloudVoice.kt` | 云端识别（OpenAI 兼容 `/audio/transcriptions`）：16k PCM → WAV → multipart |
 | 模型 | `model/CoreModels.kt`、`model/PluginModels.kt` | 纯 data class / enum，无逻辑无 Android 依赖 |
@@ -117,8 +117,8 @@ CodeForgeAPP/
 | 内核运行设置（生成/重试/压缩/子智能体/通知） | `KernelSettingsSection` → `ChatViewModel` → `KernelApi` |
 | 首启「环境准备」流程 | `EnvKit` + `CodeForgeApp.kt`，并同步 §2.6 |
 | 审批卡片字段/按钮 | `CoreModels` → `ApprovalCardView` → `HttpCoreTransport` 的 `hitl_request` 分支 |
-| **新增内核事件** | ① `CoreTransport` 加 `CoreEvent` 子类 ② `ChatViewModel.onEvent` 加分支 ③ `HttpCoreTransport.handleFrame` 加解析（帧名/键名以 `pkg/agent/agent.go` 与 `pkg/server/ws_handler.go` 为准，注意 P-008） |
-| 协议字段名 / 新增字段 | `HttpCoreTransport.handleFrame` 与 `parse*` |
+| **新增内核事件** | ① `CoreTransport` 加 `CoreEvent` 子类 ② `ChatViewModel.onEvent` 加分支 ③ `CoreFrames` 登记该帧的解析器（帧名/键名以 `pkg/agent/agent.go` 与 `pkg/server/ws_handler.go` 为准，注意 P-008） |
+| 协议字段名 / 新增字段 | `CoreFrames` 对应解析器与 `parseSessions`/`parseHistory` |
 | 加新页面 | `ui/` 下新建包，在 `AppRoot` 挂入口 |
 | 加新状态字段 | `ChatUiState` + `onEvent` 对应分支 |
 
@@ -447,10 +447,14 @@ Gradle 走代理必须写 `systemProp.*` 到 `~/.gradle/gradle.properties`；发
 
 - Compose `1.9.5`；AGP `8.13.2` / Gradle `8.14.6` / Kotlin `2.4.21`（三者配套）
 - OkHttp `4.12.0` / Coroutines `1.10.2`（升级要回归重连与转写）
-- 无离线语音（Vosk 已移除，`NoOfflineVoiceTest` 守着）；语音走「云端 → 系统 `SpeechRecognizer`」两档
+- 无离线语音（Vosk 已移除，`NoOfflineVoiceTest` 守着）；语音只走云端识别（系统 `SpeechRecognizer` 已移除，见 P-060）
 - R8 已启用（release），规则在 `app/proguard-rules.pro`；反混淆用 `mapping/release/mapping.txt`
 - `targetSdk 28`（侧载定位，升前复核决策表，lint 已豁免 `ExpiredTargetSdkVersion`）；ABI 仅 `arm64-v8a`
 - `libcodeforge.so` / `libopenrender.so` 均为预编译产物，源码在仓库外（见 §1）；OpenRender 钉上游
   `6f11851722772b1a18388364b20a613a0aa2a020`、`--features jni,ratex`；重编走私有材料目录，升上游要重跑 Rust 测试并核对 IR 键名（P-027）
 - 图片附件不设像素上限（单张 20MiB、最多 4 张、单条消息总量 20MiB）
 - 包名 `com.hxy.codeforge`（五处同步，P-047）；签名密钥 `app/keystore/codeforge.keystore`（P-046）
+
+### P-060 · 事件折叠的纯逻辑放 `ChatStateFold.kt`，语音只剩云端
+① `ChatViewModel.onEvent` 里「状态怎么变」写成 `ChatUiState` 进/出的纯函数放 `ui/ChatStateFold.kt`，副作用（通知、`transport`、`PhoneTaskController`、`planPending`）留在 ViewModel；新增事件分支优先复用/新增 fold 函数并补 `ChatEventFoldTest`，该文件不许 import Android 或单例。
+② 系统 `SpeechRecognizer`（`VoiceInput.kt`）与「连续听写」已移除：语音只走云端（`CloudVoice`），没配置时提示去设置；旧目录树 `FileTreePanel.kt` 同批删除（确认无引用）。

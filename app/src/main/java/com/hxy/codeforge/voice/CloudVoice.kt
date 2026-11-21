@@ -27,8 +27,7 @@ import kotlin.math.max
 /**
  * 云端语音识别引擎（硅基流动 / OpenAI 兼容转写接口）。
  *
- * 与系统 [android.speech.SpeechRecognizer] 的接口形态一致，Composer
- * 里两台引擎可以互换；区别是云识别**没有中间结果** —— 它只能「录一整段 → 上传
+ * 接口保留 onPartial/onFinal 同构形态；云识别**没有中间结果** —— 它只能「录一整段 → 上传
  * → 回一段文本」，所以 [onPartial] 不调用，保留字段仅为接线一致。
  *
  * 流程：AudioRecord 16kHz 单声道 PCM16 → 写进 cacheDir 的临时 WAV（先占 44 字节

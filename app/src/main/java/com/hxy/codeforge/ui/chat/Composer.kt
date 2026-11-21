@@ -117,10 +117,7 @@ import com.hxy.codeforge.model.ContextUsage
 import com.hxy.codeforge.model.PermissionMode
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
-import com.hxy.codeforge.ui.common.ZhSpeechInput
 import com.hxy.codeforge.ui.common.noRippleClickable
-import com.hxy.codeforge.ui.common.rememberZhSpeechInput
-import com.hxy.codeforge.ui.common.zhSpeechAvailable
 import com.hxy.codeforge.ui.settings.AppSettings
 import com.hxy.codeforge.ui.theme.Clay
 import com.hxy.codeforge.ui.theme.LocalAppTextColor
@@ -142,8 +139,7 @@ import kotlin.math.min
  *    运行中且有输入 = 发送（steer 并入当前轮）；运行中且空输入 = 点按开始
  *    语音、**长按 1 秒打断**（按钮外圈进度环实时反馈，满圈触发 + 触觉）。
  *    四个职责同位不互斥，状态切换带缩放渐变。
- *  - 语音走系统识别服务（见 [ZhSpeechInput]）：零依赖零模型，识别的中间
- *    结果实时打进输入框，说完自动收口成可编辑文本。
+ *  - 语音走云端识别（见 [CloudVoiceEngine]）：录完整段上传转写，结果填进输入框成可编辑文本。
  *  - 模型胶囊打开「选择模型」底部弹层（模型为界面演示，权限模式是真的）；
  *    「+」打开附件面板，面板顶部另有「Skills 和技能」（上拉框点选即插入 @）与
  *    「当前目录的文件」两个二级入口。
@@ -321,36 +317,19 @@ fun Composer(
     // 听写开始时的文本快照：中间/最终结果都追加在它后面，识别失败则还原
     var listenBase by rememberSaveable { mutableStateOf<String?>(null) }
     var pendingVoice by rememberSaveable { mutableStateOf(false) }
-    // 本次聆听是否出过任何结果（partial/final）：聆听看门狗只盯「全程零结果」的会话
-    var gotVoiceThisSession by rememberSaveable { mutableStateOf(false) }
-    // 本次聆听用的是哪台引擎：看门狗收口时判定该谁背锅（系统服务 hang 直接判降级）
+    // 本次聆听所用引擎（目前只有 cloud）；转写空档判定据此区分
     var voiceEngine by rememberSaveable { mutableStateOf("") }
     // 云端「录完 → 上传 → 回文本」期间的空档：录音已停、结果还没回来。
     // 单独一个状态而不是复用 listening，是因为这期间麦克风已关、不能再显示「正在聆听」
     var transcribing by rememberSaveable { mutableStateOf(false) }
 
-    // 双引擎同构：云端优先，其次系统 SpeechRecognizer
-    fun handlePartial(p: String) {
-        gotVoiceThisSession = true
-        listenBase?.let { input = it + p }
-    }
-
-    // 连续听写（B4）：听完一段自动续听，直到手动停止或关开关。
-    // autoRestart 在 beginListening 里被赋值为「本次选定引擎的 start 闭包」
-    var autoRestart: (() -> Unit)? = null
+    // 语音只剩云端一条路：系统 SpeechRecognizer 已移除（国产 ROM 上常无识别服务，
+    // 保留它只会多出一条「点了没反应」的降级路径，见 P-060）。
     fun handleFinal(f: String) {
-        gotVoiceThisSession = true
-        // 云端「正在转写…」占位提示由这里收掉；系统/离线本来就没有，清空也无害
         voiceNotice = null
         listenBase?.let { input = (it + f).trim() }
         listenBase = null
         onDraftChange(sessionId, input)
-        // 连续听写只给系统/离线：云端每段都要上传，自动续录会让请求排队，
-        // 上一段结果回来时麦克风又被下一段占住，体验反而更差
-        if (com.hxy.codeforge.ui.settings.AppSettings.continuousDictation.value && voiceEngine != "cloud") {
-            listenBase = input
-            autoRestart?.invoke()
-        }
     }
 
     fun handleVoiceError(e: String) {
@@ -387,30 +366,9 @@ fun Composer(
 
     fun beginListening(start: () -> Unit) {
         listenBase = input
-        gotVoiceThisSession = false
         voiceNotice = null
-        autoRestart = { if (!listening) start() }
         start()
     }
-
-    val speech = rememberZhSpeechInput(
-        onPartial = ::handlePartial,
-        onFinal = ::handleFinal,
-        onError = ::handleVoiceError,
-        onListeningChanged = { listening = it },
-        // 系统引擎判死（ERROR_CLIENT）：内置离线引擎已移除，没有第二台兜底了。
-        // 云端若已配好就直接切过去，否则给出可操作的提示。
-        onEngineDead = {
-            if (cloudActive) {
-                voiceEngine = "cloud"
-                beginListening { cloudEngine.start() }
-                autoRestart = null
-            } else {
-                voiceNotice = "系统语音服务不可用；可在设置里启用云端语音识别"
-                onOpenSettings()
-            }
-        },
-    )
 
     // 回调体在 toggleVoice 声明后回填；remember 住 holder，
     // 否则 launcher 闭包捕获的是首次组合的局部变量，重组后回填会丢
@@ -427,16 +385,10 @@ fun Composer(
      */
     fun toggleVoice() {
         if (listening) {
-            // 按当前引擎收口：云端停录音后还要等上传，单独进「转写中」空档
-            when (voiceEngine) {
-                "cloud" -> {
-                    cloudEngine.stop()
-                    transcribing = true
-                    voiceNotice = "正在转写…"
-                }
-
-                else -> speech.stop()
-            }
+            // 云端停录音后还要等上传，单独进「转写中」空档
+            cloudEngine.stop()
+            transcribing = true
+            voiceNotice = "正在转写…"
             return
         }
         // 上一段还在上传：再开一轮会让请求排队，用户只会觉得「点了没反应」
@@ -449,26 +401,13 @@ fun Composer(
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-        when {
-            // 云端优先：仅在用户显式启用且填了 Key 时走（语音配置独立于聊天供应商）
-            cloudActive -> {
-                voiceEngine = "cloud"
-                beginListening { cloudEngine.start() }
-                // 云端是「录完再传」：连续听写会让请求排队，故本次不设续听回调
-                autoRestart = null
-            }
-
-            // 系统引擎：未降级优先
-            zhSpeechAvailable(context) &&
-                !com.hxy.codeforge.ui.common.VoiceHealth.systemDegraded -> {
-                voiceEngine = "system"
-                beginListening { speech.start() }
-            }
-
-            else -> {
-                voiceNotice = "没有可用的语音识别服务；可在设置里启用云端语音识别"
-                onOpenSettings()
-            }
+        if (cloudActive) {
+            // 仅在用户显式启用且填了 Key 时走（语音配置独立于聊天供应商）
+            voiceEngine = "cloud"
+            beginListening { cloudEngine.start() }
+        } else {
+            voiceNotice = "语音输入需要先在设置里启用云端语音识别"
+            onOpenSettings()
         }
     }
 
@@ -480,28 +419,6 @@ fun Composer(
             voiceNotice = "需要麦克风权限才能语音输入"
         }
         pendingVoice = false
-    }
-
-    // 聆听看门狗：全程零结果的会话 20 秒强制收口。系统识别服务 hang 时不产生
-    // 任何错误码，唯一出路是这里；离线引擎自身的看门狗兜的是采集/识别环节。
-    // 收口时顺手清 listenBase —— 迟到的引擎回调不许再改写输入框。
-    LaunchedEffect(listening, gotVoiceThisSession) {
-        if (!listening || gotVoiceThisSession) return@LaunchedEffect
-        // 云端整段录完才上传，全程没有中间结果：「零结果 20 秒」会误杀长录音，
-        // 它的录音上限由引擎自身的 120 秒兜底
-        if (voiceEngine == "cloud") return@LaunchedEffect
-        delay(20_000)
-        if (listening && !gotVoiceThisSession) {
-            speech.stop()
-            listening = false
-            listenBase = null
-            // 20 秒零回调 = 服务没响应（hang 不产生错误码），比 ERROR_CLIENT 更死：
-            // 直接判降级，下次点按不再走这台引擎，不让用户反复死等
-            if (voiceEngine == "system") {
-                com.hxy.codeforge.ui.common.VoiceHealth.systemDegraded = true
-            }
-            voiceNotice = "没有听到内容（语音服务无响应）"
-        }
     }
 
     // 错误提示只停留 2.6 秒；「正在聆听」由 listening 态常驻显示，不走这里
