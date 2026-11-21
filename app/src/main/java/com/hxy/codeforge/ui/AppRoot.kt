@@ -164,6 +164,13 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     // 内置浏览器控制器：消息流里的 HTML 块与链接卡通过它唤起全屏浏览器。
     // 用 CompositionLocal 往下传，是因为渲染树中间隔了好几层 Composable。
     val browserController = remember { BrowserController() }
+    val chatUiActions = remember(viewModel) {
+        com.hxy.codeforge.ui.chat.ChatUiActions(
+            onSend = { text -> viewModel.send(text) },
+            onPrefill = { text -> viewModel.prefillInput(text) },
+            onToast = { msg -> viewModel.toast(msg) },
+        )
+    }
 
     // 附件/媒体块的相对路径根：与 ChatViewModel.applySessionSpace 的优先级逐字一致
     //（会话元信息 workspace → 当前项目 → 应用私有 inbox）。消息里存的是内核 history
@@ -203,6 +210,7 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     CompositionLocalProvider(
         LocalAttachmentRoot provides attachmentRoot,
         LocalBrowserController provides browserController,
+        com.hxy.codeforge.ui.chat.LocalChatUiActions provides chatUiActions,
     ) {
     com.hxy.codeforge.ui.theme.AppBackground(Modifier.fillMaxSize()) {
     Box(Modifier.fillMaxSize()) {

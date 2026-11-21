@@ -458,3 +458,11 @@ Gradle 走代理必须写 `systemProp.*` 到 `~/.gradle/gradle.properties`；发
 ### P-060 · 事件折叠的纯逻辑放 `ChatStateFold.kt`，语音只剩云端
 ① `ChatViewModel.onEvent` 里「状态怎么变」写成 `ChatUiState` 进/出的纯函数放 `ui/ChatStateFold.kt`，副作用（通知、`transport`、`PhoneTaskController`、`planPending`）留在 ViewModel；新增事件分支优先复用/新增 fold 函数并补 `ChatEventFoldTest`，该文件不许 import Android 或单例。
 ② 系统 `SpeechRecognizer`（`VoiceInput.kt`）与「连续听写」已移除：语音只走云端（`CloudVoice`），没配置时提示去设置；旧目录树 `FileTreePanel.kt` 同批删除（确认无引用）。
+
+### P-061 · 手机操控技能的坐标点击与经验沉淀
+① 控件树抓不到的 App（微信、自绘画布、部分 WebView）走「截图 + 像素坐标 `ui_click(x,y,prefer_gesture)`」，坐标以 `screen_observe` 的窗口分辨率为准，技能里记录屏幕比例而非绝对像素；规则写在 `PhoneSkillDeployer.SKILL_MARKDOWN`（改动必须升 `SKILL_VERSION`，`PhonePolicyAndControlTest` 按常量断言）。
+② 应用技能的自迭代走 `phone.app_skill(action=append)`：只追加到技能末尾「自动沉淀的经验」小节（`PhoneAppSkillStore.mergeExperience`：去重、30 条/200 字/16000 字上限；内置技能追加会在自定义目录生成同 id 副本，删除副本即还原），受「允许模型自动沉淀应用技能」开关约束；`task_control` 的 `complete`/`stop` 结果带 `reflect_hint` 提醒收尾反思；经验超 20 条返回 `consolidate_hint`，由模型 `get` 后 `save` 合并。
+
+### P-062 · 双轨声明式交互 UI（原生 `ui` 围栏 + 可回传 SVG/HTML 桥）
+① 原生交互围栏 `ui`/`widget` 由 `OpenRenderMessage` 路由到 `ui/chat/InteractiveUiBlock.kt`，支持 `choices`（single/multi/quiz）、`actions`（send/prefill）、`tabs`（方案对比）与 `form`（toggle/slider/select/text）；流式未闭合显示占位，解析失败回落代码块，状态通过 `LocalChatUiActions` 缓存防 `LazyColumn` 回收丢失。
+② `PageBridge.SCRIPT` 提供 `window.__cf.send/prefill/toast` 及声明式属性 `data-cf-send` / `data-cf-prefill`（500ms 防连点 + `isTrusted` 校验）；`MessageSvgBlock` 仅在 `isInteractiveSvg` 为真时启用 JS 与桥接，静态 SVG 保持无 JS；`CapabilityPrompt.kt` 同步广告 `ui` 与 `data-cf-send`。

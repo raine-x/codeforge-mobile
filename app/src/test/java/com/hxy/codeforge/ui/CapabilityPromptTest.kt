@@ -56,6 +56,8 @@ class CapabilityPromptTest {
             "```video",   // 视频围栏
             "```audio",   // 音频围栏
             "```svg",     // 矢量图围栏
+            "```ui",      // 原生交互卡围栏
+            "data-cf-send", // 声明式点击回传
             "```html",    // 网页围栏
             "[ ▶视频",     // 音视频跳转卡片
             "[ ▶音频",

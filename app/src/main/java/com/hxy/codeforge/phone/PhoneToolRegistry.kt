@@ -379,11 +379,11 @@ object PhoneToolRegistry {
         ),
         ToolDef(
             name = "app_skill",
-            description = "检索、读取或沉淀特定 App 的操作技能库（YAML/Markdown 经验文档）。默认只返回名称与简介，调用 get 才加载完整步骤；save 可将新探索出的 App 路径写回自定义技能库。",
+            description = "检索、读取或沉淀特定 App 的操作技能库（YAML/Markdown 经验文档）。默认只返回名称与简介，调用 get 才加载完整步骤；save 整篇写入自定义技能；append 只追加一条经验到技能末尾的「自动沉淀的经验」小节（推荐，不会丢原有步骤）。",
             requiredCapability = null,
             schema = schema(
                 props = mapOf(
-                    "action" to prop("string", "动作类型", listOf("list", "match", "get", "save")),
+                    "action" to prop("string", "动作类型", listOf("list", "match", "get", "save", "append")),
                     "id" to prop("string", "技能 id 或名称（get/save 时使用）"),
                     "package_name" to prop("string", "目标应用包名（match 时可选）"),
                     "app_name" to prop("string", "目标应用名称（match 时可选）"),
@@ -395,6 +395,8 @@ object PhoneToolRegistry {
                     "tags" to arrayProp("save 时的分类标签列表"),
                     "priority" to prop("integer", "save 时的匹配优先级，默认 80"),
                     "content" to prop("string", "save 时的 Markdown 操作经验正文"),
+                    "kind" to prop("string", "append 时的经验类型：tip 通用技巧 / pitfall 踩坑 / coords 坐标点击位置 / flow 操作流程", listOf("tip", "pitfall", "coords", "flow")),
+                    "lesson" to prop("string", "append 时的一条经验（200 字内，一句话讲清；不得含账号、手机号、聊天内容等隐私）"),
                 ),
                 required = listOf("action"),
             ),

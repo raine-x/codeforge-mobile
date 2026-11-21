@@ -415,6 +415,22 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
 
         "svg" -> if (openTail) StreamingTailBlock(block.text) else MessageSvgBlock(block.text)
 
+        "ui", "widget" -> {
+            if (openTail) {
+                InteractiveUiLoadingCard()
+            } else {
+                val spec = remember(block.text) { parseInteractiveUiSpec(block.text) }
+                if (spec != null) {
+                    InteractiveUiCard(
+                        spec = spec,
+                        cardKey = "ui-${block.text.hashCode()}",
+                    )
+                } else {
+                    FencedCode(lang, block.text)
+                }
+            }
+        }
+
         "image", "img", "图片" -> {
             if (!openTail && looksLikeSvgMarkup(block.text)) {
                 MessageSvgBlock(block.text)

@@ -151,6 +151,52 @@ object PageBridge {
     try { return document.title || ''; } catch (e) { return ''; }
   };
 
+  /** 向当前对话直接发送一条消息（带 500ms 防连点保护）。 */
+  var lastSendAt = 0;
+  P.send = function (text) {
+    var s = String(text == null ? '' : text).trim();
+    if (!s) return false;
+    var now = Date.now();
+    if (now - lastSendAt < 500) return false;
+    lastSendAt = now;
+    post('send', s);
+    return true;
+  };
+
+  /** 把文本回填到对话输入框，让用户确认或补充后再发。 */
+  P.prefill = function (text) {
+    var s = String(text == null ? '' : text).trim();
+    if (!s) return false;
+    post('prefill', s);
+    return true;
+  };
+
+  /** 弹出宿主轻提示。 */
+  P.toast = function (text) {
+    var s = String(text == null ? '' : text).trim();
+    if (!s) return false;
+    post('toast', s);
+    return true;
+  };
+
+  /** 声明式交互委托：SVG 节点或 HTML 元素带 data-cf-send / data-cf-prefill 时点击即回传。 */
+  document.addEventListener('click', function (ev) {
+    if (ev && ev.isTrusted === false) return;
+    var t = ev && ev.target;
+    if (!t || !t.closest) return;
+    var el = t.closest('[data-cf-send],[data-cf-prefill]');
+    if (!el) return;
+    var sendText = el.getAttribute('data-cf-send');
+    if (sendText && sendText.trim()) {
+      P.send(sendText);
+      return;
+    }
+    var prefillText = el.getAttribute('data-cf-prefill');
+    if (prefillText && prefillText.trim()) {
+      P.prefill(prefillText);
+    }
+  }, false);
+
   /** 当前 URL（含 hash 变化）。 */
   P.url = function () {
     try { return String(location.href); } catch (e) { return ''; }

@@ -999,6 +999,20 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
      * 运行中发送走 [steer]：不新开一轮，指令并入当前上下文（对应内核 steer 帧）。
      * 内核还没就绪时不收这条消息 —— 乐观气泡会凭空消失，比等两秒更糟。
      */
+    /** 把交互卡片或网页/SVG 回传的文本填入输入卡，供用户确认或编辑后再发送。 */
+    fun prefillInput(text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        _state.update {
+            it.copy(
+                editText = trimmed,
+                editAttachments = emptyList(),
+                editSeq = ++editSeqCounter,
+                editBack = null,
+            )
+        }
+    }
+
     fun send(text: String, attachments: List<String> = emptyList()) {
         val trimmed = text.trim()
         // 内核允许「纯附件无文本」；壳同样放行

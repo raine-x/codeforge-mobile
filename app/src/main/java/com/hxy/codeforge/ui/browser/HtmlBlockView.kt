@@ -51,6 +51,9 @@ fun HtmlBlockView(
     val density = LocalDensity.current
     val context = LocalContext.current
     val controller = LocalBrowserController.current
+    val chatActions = com.hxy.codeforge.ui.chat.LocalChatUiActions.current
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    val currentActions by rememberUpdatedState(chatActions)
 
     var heightPx by remember(html) { mutableIntStateOf(0) }
     val onHeight by rememberUpdatedState { h: Int -> heightPx = h }
@@ -115,7 +118,12 @@ fun HtmlBlockView(
                     )
                     addJavascriptInterface(
                         PageBridge.AndroidBridge { ev ->
-                            if (ev.kind == "size") onHeight(ev.payload.toIntOrNull() ?: 0)
+                            when (ev.kind) {
+                                "size" -> onHeight(ev.payload.toIntOrNull() ?: 0)
+                                "send" -> mainHandler.post { currentActions?.onSend?.invoke(ev.payload) }
+                                "prefill" -> mainHandler.post { currentActions?.onPrefill?.invoke(ev.payload) }
+                                "toast" -> mainHandler.post { currentActions?.onToast?.invoke(ev.payload) }
+                            }
                         },
                         "__cfAndroid",
                     )

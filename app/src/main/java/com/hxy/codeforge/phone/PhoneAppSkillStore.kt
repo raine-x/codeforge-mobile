@@ -269,6 +269,121 @@ object PhoneAppSkillStore {
         }
     }
 
+    // ---------- 经验沉淀（append） ----------
+
+    internal const val EXPERIENCE_HEADING = "## 自动沉淀的经验"
+    internal const val MAX_EXPERIENCE_LINES = 30
+    internal const val MAX_LESSON_CHARS = 200
+    internal const val MAX_SKILL_CHARS = 16_000
+    internal val EXPERIENCE_KINDS = setOf("tip", "pitfall", "coords", "flow")
+
+    /** [mergeExperience] 的结果：新正文、是否真的新增、合并后经验条数。 */
+    internal data class ExperienceMerge(val content: String, val added: Boolean, val lessonCount: Int)
+
+    /**
+     * 把一条经验并入技能正文末尾的「自动沉淀的经验」小节（纯函数，可 JVM 单测）。
+     *
+     * 为什么用追加而不是让模型重写整篇：重写要把原文整段回传，模型一漏就丢步骤；
+     * 追加只动自己的小节，原有步骤不会被误删。同义重复（忽略空白与大小写）直接丢弃，
+     * 条数、单条长度、全文长度都有上限，避免技能越写越长污染上下文。
+     */
+    internal fun mergeExperience(content: String, kind: String, lesson: String, date: String): ExperienceMerge {
+        val k = kind.trim().lowercase().takeIf { it in EXPERIENCE_KINDS } ?: "tip"
+        val clean = lesson.replace(Regex("\\s+"), " ").trim().take(MAX_LESSON_CHARS)
+        require(clean.isNotBlank()) { "经验内容不能为空" }
+
+        val start = content.indexOf(EXPERIENCE_HEADING)
+        val head: String
+        val sectionLines: List<String>
+        val tail: String
+        if (start >= 0) {
+            val bodyStart = start + EXPERIENCE_HEADING.length
+            val next = content.indexOf("\n## ", bodyStart)
+            val sectionEnd = if (next >= 0) next else content.length
+            head = content.substring(0, start).trimEnd()
+            sectionLines = content.substring(bodyStart, sectionEnd).lines()
+                .map { it.trim() }.filter { it.startsWith("- ") }
+            tail = content.substring(sectionEnd).trim('\n')
+        } else {
+            head = content.trimEnd()
+            sectionLines = emptyList()
+            tail = ""
+        }
+
+        fun norm(line: String): String =
+            line.replace(Regex("^- \\[[^\\]]*]\\[[^\\]]*]\\s*"), "").lowercase().filter { !it.isWhitespace() }
+
+        if (sectionLines.any { norm(it) == norm("- [x][x] $clean") }) {
+            return ExperienceMerge(content, added = false, lessonCount = sectionLines.size)
+        }
+
+        var lines = (sectionLines + "- [$k][$date] $clean").takeLast(MAX_EXPERIENCE_LINES)
+        fun render(ls: List<String>): String = buildString {
+            if (head.isNotEmpty()) append(head).append("\n\n")
+            append(EXPERIENCE_HEADING).append('\n')
+            append(ls.joinToString("\n")).append('\n')
+            if (tail.isNotEmpty()) append('\n').append(tail).append('\n')
+        }
+        var out = render(lines)
+        // 全文超限：从最旧的经验开始丢，至少保留刚写入的这一条
+        while (out.length > MAX_SKILL_CHARS && lines.size > 1) {
+            lines = lines.drop(1)
+            out = render(lines)
+        }
+        return ExperienceMerge(out, added = true, lessonCount = lines.size)
+    }
+
+    /**
+     * 往技能追加一条经验；技能不存在时按 [name] + [packages]/[appNames] 新建。
+     * 内置技能不可写：追加会在自定义目录生成同 id 副本（自定义覆盖内置，删除副本即还原）。
+     */
+    internal fun appendExperience(
+        id: String,
+        kind: String,
+        lesson: String,
+        name: String,
+        description: String,
+        packages: List<String>,
+        appNames: List<String>,
+    ): Result<Pair<PhoneAppSkill, ExperienceMerge>> = runCatching {
+        synchronized(lock) {
+            check(::appContext.isInitialized) { "PhoneAppSkillStore 尚未初始化" }
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+            val existing = getByIdOrName(id, includeDisabled = true)
+            if (existing == null) {
+                require(name.isNotBlank() && (packages.isNotEmpty() || appNames.isNotEmpty())) {
+                    "技能「$id」不存在：新建需同时提供 name，以及 packages 或 app_names"
+                }
+                val merged = mergeExperience("", kind, lesson, today)
+                val saved = saveCustomSkill(
+                    id = id.ifBlank { name },
+                    name = name,
+                    description = description.ifBlank { "$name 的操作经验" },
+                    packages = packages,
+                    appNames = appNames,
+                    tags = emptyList(),
+                    priority = 80,
+                    content = merged.content,
+                ).getOrThrow()
+                saved to merged
+            } else {
+                val merged = mergeExperience(existing.content, kind, lesson, today)
+                if (!merged.added) return@synchronized existing to merged
+                val saved = saveCustomSkill(
+                    id = existing.id,
+                    name = existing.name,
+                    description = existing.description,
+                    packages = existing.packages,
+                    appNames = existing.appNames,
+                    tags = existing.tags,
+                    priority = existing.priority,
+                    content = merged.content,
+                ).getOrThrow()
+                saved to merged
+            }
+        }
+    }
+
     fun importSkillUri(context: Context, uri: Uri): Result<PhoneAppSkill> = runCatching {
         val displayName = resolveDisplayName(context, uri)
         val raw = context.contentResolver.openInputStream(uri)?.use {

@@ -204,6 +204,17 @@ object PhoneToolDispatcher {
             put("current_action", st.currentAction)
             put("step_count", st.stepCount)
             put("last_result", st.lastResult)
+            // 收尾反思提示：写在工具结果里比放在长提示词里更容易被模型看到。
+            // app_skill 不依赖手机操控状态，complete/stop 之后仍可调用。
+            if ((action == "complete" || action == "stop") &&
+                PhoneControlPrefs.config.value.allowSkillSelfLearning
+            ) {
+                put(
+                    "reflect_hint",
+                    "如本次出现过：失败后才找到的有效做法、稳定的入口或坐标比例、需要等待的时机、无障碍抓不到布局的页面，" +
+                        "请用 phone.app_skill(action=\"append\", ...) 追加 1~3 条经验；没有新经验就不要写。",
+                )
+            }
         }
         return ok(out)
     }
@@ -1379,6 +1390,43 @@ object PhoneToolDispatcher {
                         put("saved", true)
                         put("file_path", saved.filePath)
                         put("summary", "已保存应用技能「${saved.name}」(${saved.id})")
+                    }
+                }
+            }
+            "append" -> {
+                if (!cfg.allowSkillSelfLearning) {
+                    return Result.failure(
+                        IllegalStateException("用户已关闭「允许模型自动沉淀应用技能」，无法写入自定义技能库，请不要重试")
+                    )
+                }
+                val id = args.optString("id").trim()
+                val name = args.optString("name").trim()
+                if (id.isEmpty() && name.isEmpty()) {
+                    return Result.failure(IllegalArgumentException("append 需要提供技能 id（或新建时的 name）"))
+                }
+                PhoneAppSkillStore.appendExperience(
+                    id = id.ifBlank { name },
+                    kind = args.optString("kind"),
+                    lesson = args.optString("lesson"),
+                    name = name,
+                    description = args.optString("description").trim(),
+                    packages = jsonStringList(args, "packages"),
+                    appNames = jsonStringList(args, "app_names"),
+                ).map { (saved, merged) ->
+                    JSONObject().apply {
+                        put("id", saved.id)
+                        put("name", saved.name)
+                        put("saved", merged.added)
+                        put("lesson_count", merged.lessonCount)
+                        put("file_path", saved.filePath)
+                        put(
+                            "summary",
+                            if (merged.added) "已追加经验到应用技能「${saved.name}」（共 ${merged.lessonCount} 条）"
+                            else "该经验已存在，未重复写入",
+                        )
+                        if (merged.lessonCount > 20) {
+                            put("consolidate_hint", "经验已超过 20 条：请 get 读取全文后用 save 合并去重、删掉已失效的条目")
+                        }
                     }
                 }
             }

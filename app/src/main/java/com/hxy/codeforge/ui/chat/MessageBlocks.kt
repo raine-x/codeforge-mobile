@@ -325,9 +325,20 @@ private fun buildSvgHtmlDocument(svg: String, lightCanvas: Boolean): String {
         "html,body{margin:0;padding:0;width:100%;height:100%;background:$bg;color:$fg;overflow:hidden;" +
         "display:flex;align-items:center;justify-content:center;}" +
         "svg{width:100%!important;height:100%!important;max-width:100vw;max-height:100vh;display:block;object-fit:contain;}" +
+        "[data-cf-send],[data-cf-prefill]{cursor:pointer;}" +
         "</style></head><body>" +
         svg +
         "</body></html>"
+}
+
+/** 判定 SVG 是否包含交互声明（`data-cf-send` / `data-cf-prefill` / `window.__cf` / 脚本 / 内联点击）。 */
+internal fun isInteractiveSvg(svg: String): Boolean {
+    val low = svg.lowercase()
+    return low.contains("data-cf-send") ||
+        low.contains("data-cf-prefill") ||
+        low.contains("window.__cf") ||
+        low.contains("<script") ||
+        low.contains("onclick=")
 }
 
 /**
@@ -341,7 +352,10 @@ fun MessageSvgBlock(
     title: String = "SVG 矢量图",
 ) {
     val ctx = LocalContext.current
+    val chatActions = LocalChatUiActions.current
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
     val normalized = remember(svg) { normalizeSvgForRender(svg) }
+    val interactive = remember(normalized) { isInteractiveSvg(normalized) }
     val aspect = remember(normalized) { (svgAspect(normalized) ?: 1.5f).coerceIn(0.4f, 4f) }
     var showSource by remember(svg) { mutableStateOf(false) }
     var lightCanvas by remember(svg) { mutableStateOf(true) }
@@ -376,7 +390,7 @@ fun MessageSvgBlock(
                 )
             }
             Text(
-                text = title,
+                text = if (interactive) "$title · 可点击交互" else title,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -418,32 +432,48 @@ fun MessageSvgBlock(
             }
         } else {
             val canvasBg = if (lightCanvas) Color(0xFFFAF8F5) else Color.Transparent
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(aspect)
-                    .background(canvasBg)
-                    .clickable { fullscreen = true }
-                    .padding(6.dp),
-            ) {
+            val boxMod = Modifier
+                .fillMaxWidth()
+                .aspectRatio(aspect)
+                .background(canvasBg)
+                .let { if (interactive) it else it.clickable { fullscreen = true } }
+                .padding(6.dp)
+            Box(modifier = boxMod) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { wctx ->
                         WebView(wctx).apply {
-                            settings.javaScriptEnabled = false
+                            settings.javaScriptEnabled = interactive
                             settings.allowFileAccess = false
                             settings.loadWithOverviewMode = true
                             settings.useWideViewPort = false
                             isVerticalScrollBarEnabled = false
                             isHorizontalScrollBarEnabled = false
                             setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                            if (interactive) {
+                                addJavascriptInterface(
+                                    com.hxy.codeforge.ui.browser.PageBridge.AndroidBridge { ev ->
+                                        when (ev.kind) {
+                                            "send" -> mainHandler.post { chatActions?.onSend?.invoke(ev.payload) }
+                                            "prefill" -> mainHandler.post { chatActions?.onPrefill?.invoke(ev.payload) }
+                                            "toast" -> mainHandler.post { chatActions?.onToast?.invoke(ev.payload) }
+                                        }
+                                    },
+                                    "__cfAndroid",
+                                )
+                                webViewClient = object : android.webkit.WebViewClient() {
+                                    override fun onPageFinished(view: WebView, url: String?) {
+                                        view.evaluateJavascript(com.hxy.codeforge.ui.browser.PageBridge.SCRIPT, null)
+                                    }
+                                }
+                            }
                         }
                     },
                     update = { wv ->
                         val html = buildSvgHtmlDocument(normalized, lightCanvas)
                         if (wv.tag != html) {
                             wv.tag = html
-                            wv.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                            wv.loadDataWithBaseURL("https://codeforge.local/", html, "text/html", "utf-8", null)
                         }
                     },
                 )

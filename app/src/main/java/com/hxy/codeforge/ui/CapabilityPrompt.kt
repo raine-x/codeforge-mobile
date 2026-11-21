@@ -30,9 +30,10 @@ package com.hxy.codeforge.ui
  * | LaTeX 公式渲染成图 | `render/RenderIr.kt`（`$`/`$$` 定界，另有 `\(...\)` 归一） |
  * | `![说明](地址)` 图片 | `OpenRenderMessage.kt` 的 image span 分支（独占段=大图，混排=缩略图） |
  * | ` ```image ` / ` ```video ` / ` ```audio ` 围栏首行写地址 | `OpenRenderMessage.kt` 的 `CodeFenceBlock` 按 lang 路由，地址取围栏首个非空行 |
- * | ` ```svg ` 围栏放 SVG 源码 | 同上，另有段落内裸 `<svg>…</svg>` |
+ * | ` ```svg ` 围栏放 SVG 源码 | 同上，另有段落内裸 `<svg>…</svg>`（可带 `data-cf-send` / `data-cf-prefill` 交互） |
+ * | ` ```ui ` 围栏放交互 JSON | `ui/chat/InteractiveUiBlock.kt`（原生 Compose 交互卡：choices / actions / tabs / form） |
  * | `[ ▶视频 地址 ]` / `[ ▶音频 地址 ]` 独占一行 | `ui/chat/MessageBlocks.kt` 的 `MEDIA_JUMP_TAG_REGEX` 与 `MediaJumpCard` |
- * | 完整 HTML 文档 / ` ```html ` 围栏 | `ui/browser/HtmlDetection.kt` + `ui/browser/HtmlBlockView.kt` |
+ * | 完整 HTML 文档 / ` ```html ` 围栏 | `ui/browser/HtmlDetection.kt` + `ui/browser/HtmlBlockView.kt`（含 `window.__cf.send` / `prefill`） |
  *
  * 地址既可以是网络链接，也可以是工作区相对路径（如 `attachments/a.png`）——
  * 相对路径由 `MessageBlocks.attachmentFile` 按当前会话工作区解析。
@@ -61,17 +62,23 @@ internal val CLIENT_CAPABILITY_PROMPT: String = """
   不是 Markdown 链接 —— 方括号后面不要再跟 (地址)。
 - 矢量图：```svg 围栏内放 SVG 源码，或直接输出完整的 <svg ...>...</svg> 块，或用 ![说明](路径.svg) 引用工作区 SVG 文件；
   客户端会直接渲染成支持底色切换、源码复制与全屏双指缩放的原生矢量图卡片。
+  若需在图元上直接交互（如流程图节点、拓扑分叉），给 SVG 元素加上 data-cf-send="要发送的话" 或 data-cf-prefill="填入输入框的话"，用户点图元即可触发。
+- 原生交互卡：```ui 围栏内放 JSON（适合做题、方案对比、单选/多选确认、参数表单与快捷追问按钮），客户端会渲染成跟随主题的原生交互组件，无需写 HTML/JS：
+  - 单选/多选/做题：{"title":"...","blocks":[{"kind":"choices","prompt":"...","mode":"single|multi|quiz","auto_send":true,"options":[{"id":"a","label":"选项A","desc":"说明","value":"选A","correct":true,"explain":"解析"}]}]}
+  - 方案对比切换：{"kind":"tabs","items":[{"label":"方案A","title":"...","body":"...","pros":["优点"],"cons":["缺点"],"select_payload":"采用方案A"}]}
+  - 参数表单：{"kind":"form","submit_label":"提交","submit_action":"send|prefill","fields":[{"id":"k","type":"toggle|slider|select|text","label":"...","default":...}]}
+  - 快捷动作按钮：{"kind":"actions","items":[{"label":"继续深入","action":"send|prefill","payload":"...","style":"primary|secondary|outline"}]}
 - 可交互网页：完整 HTML 文档（自 <!DOCTYPE html> 起、至 </html> 止）单独输出，或放进 ```html 围栏；
-  渲染成可实时操作的页面，用户还可从页面里挑出元素继续讨论。
+  渲染成可实时操作的页面，用户还可从页面里挑出元素继续讨论，也可通过 data-cf-send / data-cf-prefill 或 window.__cf.send(text) / window.__cf.prefill(text) 直接回传对话。
 - 地址既可以是网络链接，也可以是工作区相对路径（如 attachments/a.png）。
 
 怎么选
 - 讲清一件事 → 正文；需要对比、清单、结构 → 正文里的表格或列表。
-- 画架构图、流程图、时序图、几何/函数示意图、数据统计图表或 UI 线框图 → 矢量图格式（静态图表与结构图优先直出 SVG，比整页网页更轻量、缩放更清晰）。
+- 提问、做题、讨论方案分支、让用户做选择或配参数、提供下一步快捷操作 → 原生交互卡（```ui），比手写网页更轻、原生排版不折行错位；多选确认后可直接回发给你。
+- 画架构图、流程图、时序图、几何/函数示意图、数据统计图表或 UI 线框图 → 矢量图格式（```svg，需要点选节点继续聊时顺手加 data-cf-send）。
 - 放一段视频或音频 → 视频 / 音频 / 跳转标签格式（一个视频不值得做成网页）。
 - 放一张图 → 图片格式。
-- 用户要在页面上动手（点按钮、展开收起、填表单、动画演示）→ 才写网页；
-  只给人看的静态内容用正文、表格、矢量图、图片即可。
+- 需要复杂动画演示、模拟计算器、自定义画布或自由交互沙盒 → 才写网页（```html）。
 
 写 SVG 矢量图时的约束（仅写 SVG 时适用）
 - 标准根属性与防裁切：根 <svg> 必须声明 xmlns="http://www.w3.org/2000/svg" 与明确的 viewBox="0 0 W H"（如 0 0 800 460），四周预留至少 24px 安全内边距，为最外圈文字、坐标轴刻度、图例与箭头留足空间；

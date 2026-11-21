@@ -2,117 +2,110 @@
 
 # CodeForge APP
 
-**原生 Android AI 编程与移动安全逆向工作台 · Native Android Client for CodeForge-Go**
+**原生 Android AI 编码、逆向分析与手机操控工作台 · Native Android Client for CodeForge-Go**
 
-[中文完整文档 (README_ZH.md)](README_ZH.md) · [English Documentation (README_EN.md)](README_EN.md)
+[![Release](https://img.shields.io/badge/Version-v2.0-D97757?style=flat-square)](https://github.com/raine-x/codeforge-mobile/releases/tag/v2.0)
+[![Platform](https://img.shields.io/badge/Android-ARM64--v8a%20(API%2026%2B)-3DDC84?style=flat-square)](app/build.gradle.kts)
+[![UI](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?style=flat-square)](app/src/main/java/com/hxy/codeforge/ui)
 
-本应用的 Go 内核 · Go Runtime: [CodeForge-Go](https://github.com/raine-x/CodeForge-GO.git)
+[中文详版文档 (README_ZH.md)](README_ZH.md) · [English Guide (README_EN.md)](README_EN.md) · [Go 内核 (CodeForge-Go)](https://github.com/raine-x/CodeForge-GO.git)
 
 </div>
 
 ---
 
-> 双语主 README 聚焦核心功能、实机演示与实测指标；架构分层、插件包规范、构建方式与已知边界见 [README_ZH.md](README_ZH.md) / [README_EN.md](README_EN.md)。
->
-> This bilingual overview highlights features, live captures, and measured benchmarks. See [README_ZH.md](README_ZH.md) or [README_EN.md](README_EN.md) for architecture, `.cfplugin` packaging, build instructions, and known limits.
+**CodeForge APP** 是 [CodeForge-Go](https://github.com/raine-x/CodeForge-GO.git) 的原生 Android 宿主客户端（Kotlin + Jetpack Compose）。它将独立运行的 Go Agent 内核、原生排版引擎、无 root `proot + Alpine` 沙箱与设备操控能力整合在手机和平板上，用于端侧代码开发、二进制逆向分析与自动化任务执行。
+
+---
+
+## 系统架构 · Architecture
+
+<div align="center">
+  <img src="docs/media/architecture.svg" alt="CodeForge Android System Architecture" width="900" />
+</div>
+
+| 层级 | 核心模块 | 职责 |
+|---|---|---|
+| **入口与服务** | `MainActivity` · `CodeForgeApp` · `CoreService` | 首启环境准备；`specialUse` 前台服务拉起 `libcodeforge.so` 并维护端口握手与断线重连 |
+| **状态与协议** | `ChatViewModel` · `ChatStateFold` · `HttpCoreTransport` · `CoreFrames` | 单向数据流；Cookie 鉴权 + WebSocket 自愈；内核帧解析与状态折叠 |
+| **界面与渲染** | `OpenRenderContent` · `MessageBlocks` · `BrowserOverlay` · `FileManagerSheet` | 增量 Markdown/公式/表格/SVG/音视频排版、交互式组件与内置浏览器、统一文件管理 |
+| **端侧能力** | `phone/` · `EnvKit` · `PluginInstaller` · `CloudVoice` | `@phone` 环回 MCP 服务、`proot + Alpine` 沙箱、`.cfplugin` 插件管理、云端语音转写 |
+
+---
+
+## 核心工作流 · Workflows
+
+### 1. 端侧编码与沙箱工作区
+
+```mermaid
+flowchart LR
+    U["输入需求 / 语音 / 附件 / 网页元素"] --> K["libcodeforge.so 内核 (127.0.0.1)"]
+    K --> E["EnvKit 沙箱 (proot + Alpine / cfrun)"]
+    E --> T["文件读写 · 终端执行 · 后台脚本 · 逆向分析"]
+    T --> R["OpenRender 增量渲染 · Diff 工具卡 · 检查点回滚"]
+```
+
+- **独立内核 + 零 Root 沙箱**：内核以独立进程运行，通过 `cfrun` 在 `filesDir` 单根目录下执行 `proot + Alpine` 命令，支持一键安装 Python、Node 及逆向工具链。
+- **富媒体与交互呈现**：支持流式 Markdown、LaTeX 公式、表格、代码块、Diff 工具卡、音视频播放、SVG 矢量图、原生交互卡片与内置浏览器网页。
+- **工程化管理**：多工作区隔离、大文件自动直写工作区、统一文件管理器、`.cfplugin` 插件包导入与分步检查点撤销。
+
+### 2. `@phone` 手机操控闭环
+
+```mermaid
+flowchart LR
+    A["@phone 任务"] --> B["screen_observe / 视觉分析<br/>读取前台包名与控件树"]
+    B --> C{"匹配应用技能库?"}
+    C -- "命中" --> D["按需加载对应 App 操作经验"]
+    C -- "未命中" --> E["自主探索 / 坐标手势操作"]
+    D --> F["单步或 ui_batch 连贯执行<br/>跑马灯可视化 · 黑名单与确认门"]
+    E --> F
+    F --> G["完成自动收口 · 切回 CodeForge"]
+```
+
+- **内嵌环回 MCP 服务**：在宿主进程内提供 20 个工具，涵盖屏幕观察、点击/滑动/输入、`ui_batch` 连贯动作、应用管理、系统设置、截图分析、录屏录音与通知读取。
+- **应用技能库与安全边界**：内置 11 个常用应用技能（工作区 > 自定义 > 内置三层覆盖），并配有应用黑名单、高风险操作确认弹窗、通知栏一键停止与操作轨迹悬浮动画。
+
+---
+
+## 实机截图 · Screenshots
+
+<div align="center">
+  <img src="docs/media/demo.gif" alt="CodeForge APP Live Demo" width="880" />
+</div>
+
+<br />
+
+| `@phone` 手机操控设置 | 应用技能库 | 操控过程动画 |
+| :---: | :---: | :---: |
+| <img src="docs/media/phone-control-settings.png" alt="Phone Control Settings" width="230" /> | <img src="docs/media/phone-app-skills.png" alt="Phone App Skills Library" width="230" /> | <img src="docs/media/phone-control-overlay.png" alt="Phone Control Overlay" width="230" /> |
+
+| 平板双栏 · 逆向分析报告 | 统一文件管理器 |
+|---|---|
+| ![Reverse Engineering Session](docs/media/chat-reverse-analysis.png) | ![Unified File Manager](docs/media/file-manager.png) |
+| **Markdown 表格与任务追踪** | **插件包与 MCP 管理** |
+| ![Markdown Table and Tasks](docs/media/chat-markdown-table.png) | ![Plugins Manager](docs/media/plugins-manager.png) |
+| **竖屏单栏聊天** | **竖屏设置页** |
+| ![Mobile Portrait Layout](docs/media/mobile-portrait.png) | ![Mobile Fullscreen Settings](docs/media/mobile-settings.png) |
 
 ---
 
 ## 快速开始 · Quick Start
 
-1. 在配置好 Android SDK 的环境运行 `./gradlew assembleRelease`（Windows 用 `.\gradlew.bat assembleRelease`）。
-2. 安装 `app/build/outputs/apk/release/app-release.apk`（`arm64-v8a`，包名 `com.hxy.codeforge`）。覆盖安装需要与已安装版本相同的签名证书。
-3. 打开应用，在设置里配置模型服务后开始对话。
+```powershell
+# Windows
+.\gradlew.bat assembleRelease
 
-Build with `./gradlew assembleRelease` (`.\gradlew.bat assembleRelease` on Windows), install the ARM64 APK from the path above, then configure a model provider in Settings. Updating an existing installation requires the same signing certificate.
+# Linux / macOS
+./gradlew assembleRelease
+```
 
-### Markdown 渲染更新 · Markdown Rendering Update
-
-表格使用透明底和完整网格。语言标签与代码正文分开，正文在浅色主题下使用白底。纯文本和日志输出透明，行内高亮贴合字体高度。
-
-Tables have transparent backgrounds and full grid lines. Language labels sit above code panels, which use white backgrounds in light mode. Plain text and logs stay transparent, and inline highlights follow the font height.
-
----
-
-## 实机演示 · Live Demo
-
-以下为较早版本的演示截图和录屏。 · The captures below show an earlier build.
-
-<div align="center">
-  <img src="docs/media/demo.gif" alt="CodeForge APP Live Demo" width="880" />
-  <br />
-  <sub>双栏平板布局浏览、@reverse_analysis ELF/JNI 分析报告滚动、插件管理与逆向修改 5 秒免责保护流（Android 14 模拟器实录）</sub>
-</div>
-
-<br />
-
-| 平板双栏 · 逆向 JNI/ABI 分析报告 | 内置逆向插件 · 修改能力 5 秒强制免责门禁 |
-|---|---|
-| ![Reverse Engineering Session](docs/media/chat-reverse-analysis.png) | ![Reverse Modify Disclaimer](docs/media/reverse-disclaimer.png) |
-| **Markdown 表格与任务追踪流** | **插件包 (`.cfplugin`) 与 MCP 管理** |
-| ![Markdown Table and Tasks](docs/media/chat-markdown-table.png) | ![Plugins Manager](docs/media/plugins-manager.png) |
-| **竖屏单栏手机模式（高 > 宽自动切换）** | **竖屏全屏设置页** |
-| ![Mobile Portrait Layout](docs/media/mobile-portrait.png) | ![Mobile Fullscreen Settings](docs/media/mobile-settings.png) |
-
-<br />
-
-| **`@phone` 手机操控设置面** | **应用技能库（YAML / Markdown）** | **操控过程动画（跑马灯 · 思考条 · 点击轨迹）** |
-| :---: | :---: | :---: |
-| <img src="docs/media/phone-control-settings.png" alt="Phone Control Settings" width="220" /> | <img src="docs/media/phone-app-skills.png" alt="Phone App Skills Library" width="220" /> | <img src="docs/media/phone-control-overlay.png" alt="Phone Control Overlay" width="220" /> |
-
-> **`@phone` 自主操控闭环 · Autonomous Phone Control Loop**
->
-> 1. **观察与技能命中（Observe & Match）**：调用 `screen_observe` / `app_manage` 读取前台包名与控件树时，自动匹配预置应用技能，仅向模型暴露 `matched_app_skills`（`id` / `name` / `description`），未命中零额外 Token。
-> 2. **按需读谱与安全操作（Read & Act）**：命中后模型按需调用 `phone.app_skill(action="get")` 读取完整步骤；操控期间屏幕四周亮起**流光跑马灯**、顶部展示**思考过程**与**通知栏随时停止**提示，并实时绘制点击/滑动轨迹。遇黑名单应用立即停止，高风险动作触发用户确认，无键盘场景自动回退剪贴板粘贴。
-> 3. **核验与经验沉淀（Verify & Save）**：每次动作后自动核验界面变化；探索出新 App 稳定路径后，可通过 `phone.app_skill(action="save")` 沉淀进自定义技能库（可在设置页管理或导入 `.md` / `.yaml`）。
-
----
-
-## 核心功能 · Key Features
-
-### 1. 内置逆向分析插件（`@reverse_analysis` / Built-in Reverse Engineering）
-
-- **全链路只读取证技能栈**：内置 `apk-reverse`（Manifest / DEX 类与字符串索引 `dex_inspector.py`）、`elf-jni-reverse`（ELF 段表 / C ABI / JNI 符号定位 `elf_jni_scanner.py`）、`crypto-unpack`（常见加密常量与壳特征扫描 `crypto_constant_scan.py`）。
-- **沙箱逆向工具链一键安装**：在运行环境中内置 `逆向工具` 安装包（`file`、`binutils`、`patchelf`、`radare2`、`py3-capstone`、`py3-unicorn`），随兼容 Alpine rootfs 即可开展二进制分析。
-- **高风险修改 5 秒强制免责门禁**：修改与重打包能力默认**关闭**（仅允许只读分析）；在设置页开启「允许修改与重打包」前需强制阅读 5 秒合规免责声明（`REVERSE_MODIFY_DISCLAIMER_SECONDS = 5`），明确授权边界。
-
-### 2. 自主手机操控与按应用技能库（`@phone` / Autonomous Phone Control）
-
-- **20 个高内聚 MCP 工具**：基于 `phone/` 内嵌环回 HTTP MCP 服务，覆盖屏幕观察、界面点击/滑动/输入、**同页连贯动作链（`ui_batch` + 步间等稳与失败熔断 + `observe_after`）**、应用管理、系统设置、80% 缩放截图与视觉分析、录屏/录音、通知/日历/通讯及应用技能库。
-- **防点击失效与拟人随机延时**：按压时长提升至 `85–175ms` 并支持三档步间随机延时与控件安全边界内微偏移；无障碍 `ACTION_CLICK` 无界面响应时自动回退真实坐标触摸手势。
-- **应用技能库（YAML / Markdown 双格式渐进式披露）**：内置 **11 条**高频应用经验（系统设置、微信、京东、淘宝、支付宝导览、高德地图、美团、哔哩哔哩、抖音、浏览器、日历与时钟），按 **工作区 > 自定义 > 内置** 三层覆盖；打开应用时仅暴露名称与简介，按需再读取完整步骤，支持自学习沉淀写回。
-- **全过程可视化、自动收口与安全门控**：四周跑马灯、顶部思考过程提示、通知栏一键停止、点击轨迹动画、应用黑名单、高风险动作确认，以及**任务完成后自动停止操控并切回 CodeForge 前台**（可在设置中开关）。
-
-### 3. 原生端侧 Coding Agent 宿主 · On-Device Agent Host
-
-- **独立内核进程 + 断线自愈**：以 `specialUse` 前台服务拉起 `libcodeforge.so`，随机本地回环端口 + Cookie 鉴权，HTTP / WebSocket 断线按退避重试自动恢复。
-- **流式增量排版与多模态渲染**：基于 `libopenrender.so` 的增量 Markdown IR 渲染，支持公式（RaTeX + 内嵌中文字体子集）、按实测宽度分列的表格、diff 工具卡片、代码块、音频、视频与 SVG 预览。
-- **内置浏览器与可视元素挑选**：消息内链接可直接唤起内置 WebView，点选页面节点并将标签、样式、几何位置与用户批注直接送入上下文。
-- **模型服务、记忆、检查点与多工作区**：支持多供应商接入、接口探测、连通性测试、自动补齐上下文窗口、分步文件撤销与检查点回滚（`/api/undo` / checkpoints）、按项目隔离的工作区与文件树浏览。
-- **`.cfplugin` 动态插件体系与 MCP 接入**：支持导入经过结构、路径遍历与大小校验的 `.cfplugin` 插件包（纯文本技能与可执行 MCP 工具），密钥经 `EncryptedSharedPreferences` 加密保存并同步至各工作区。
-- **横竖屏与手机/平板自适应**：以窗口实际纵横比判定布局——竖屏（高 > 宽）自动走单栏抽屉与全屏设置页，横屏（宽 > 高）自动切换双栏工作区，并支持单手横持传感器自适应内容旋转。
-- **后台任务、目标验证与双引擎语音**：支持自主后台脚本调度（`@goal_mode` 闭环验证与子智能体协同）、以及云端 OpenAI 兼容 `/audio/transcriptions` 语音输入。
-
----
-
-## 实测指标 · Measured Metrics
-
-> 以下全部数值均来自 **2026-11-14** 本地仓库实测统计与 Android 14 模拟器（`1600×900` @ `240 dpi`，`arm64-v8a` Release 包经 Houdini 转译运行）`adb` 实测采集，无任何估算或营销话术。
-
-| 维度 · Metric | 实测数值 · Measured Value | 采集方式 · Source |
-|---|---|---|
-| Release 安装包体积（含双 `.so` + Alpine 环境 + 技能库） | **17.58 MiB** (`18,428,777 B`) | `app/build/outputs/apk/release/app-release.apk`（R8 + ShrinkResources，`arm64-v8a`） |
-| 核心原生二进制构成 | `libcodeforge.so` **17.00 MiB** + `libopenrender.so` **8.52 MiB** | `app/src/main/jniLibs/arm64-v8a/` |
-| 主工程源码与单测规模 | **70** 个主 `.kt` 文件 / **31,793** 行 · **16** 个测试 `.kt` 文件 / **2,140** 行 | `app/src/{main,test}/java/` |
-| JVM 单元测试与静态检查 | **113 / 113** 项用例通过（17 个测试套件，0 失败 / 0 跳过），Android Lint **0 错误** | `./gradlew testDebugUnitTest lintDebug` |
-| 热态冷启动耗时（`am start -W`，3 次均值/中位） | **276 – 360 ms**（实测：360 / 276 / 283 ms，中位数 **283 ms**） | `adb shell am start -W -n com.hxy.codeforge/.MainActivity` |
-| 滚动与切换帧渲染性能（838 帧连续滑动长 Markdown 报告） | 掉帧率 **0.24%**（**2 / 838** 帧），Missed Vsync **0** | `adb shell dumpsys gfxinfo com.hxy.codeforge` |
-| 帧耗时分位数（P50 / P90 / P95 / P99） | **9 ms / 9 ms / 10 ms / 11 ms** | `adb shell dumpsys gfxinfo com.hxy.codeforge` |
-| 进程内存占用（连接内核后空闲 → 已加载长会话） | **82.9 MB → 120.5 MB PSS**（RSS 197.2 MB → 236.7 MB） | `adb shell dumpsys meminfo com.hxy.codeforge` |
+1. 安装 `app/build/outputs/apk/release/app-release.apk`（`arm64-v8a`，包名 `com.hxy.codeforge`；覆盖安装需同签名证书）。
+2. 打开应用等待环境准备完成，在 **设置 → 模型服务** 配置模型供应商与 API Key 即可使用。
 
 ---
 
 ## 更多文档 · Documentation
 
-- **[中文详版文档（README_ZH.md）](README_ZH.md)** — 安装与使用指南、逆向分析插件详解、`.cfplugin` 规范、完整架构分层、实测性能数据、CI 与源码构建方式、工程记录与已知限制。
-- **[English Full Guide (README_EN.md)](README_EN.md)** — Installation, Reverse Engineering workflow, `.cfplugin` packaging, architecture layers, measured benchmarks, CI setup, building from source, and known limits.
+- **[中文详版文档（README_ZH.md）](README_ZH.md)** — 架构分层、`.cfplugin` 规范、构建与签名、已知边界。
+- **[English Full Guide (README_EN.md)](README_EN.md)** — Full English guide for architecture, plugins, and building from source.
+- **[原生化方案与设计（docs/android-native-plan.md）](docs/android-native-plan.md)** — 架构选型与已知风险记录。

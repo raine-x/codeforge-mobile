@@ -13,7 +13,7 @@ import java.io.File
 object PhoneSkillDeployer {
 
     const val SKILL_SLUG = "phone"
-    const val SKILL_VERSION = "5"
+    const val SKILL_VERSION = "6"
     private const val MARKER_FILE = "phone-skill.version"
 
     /** 严格扁平单行 frontmatter（见 P-052 与 PluginInstaller.validateSkillMarkdown）。 */
@@ -68,6 +68,19 @@ enabled: true
 
 8. **任务完成主动停止与返回 CodeForge**：
    - 当用户的操控目标已完成，或已收集完所需数据（如比价信息）准备向用户输出最终总结/表格前，**必须主动调用 `phone.task_control(action="complete", step_summary="...")`（或 `action="stop"`）** 结束手机操控状态、收起屏幕跑马灯，并让系统按用户设置自动切回 CodeForge 前台展示结果。
+9. **抓不到布局的 App 直接按坐标点击**：
+   - 微信、游戏、Flutter/自绘画布、部分 WebView 页面的 `screen_observe` 常常控件很少甚至为空。出现这种情况**不要反复重试 observe**，改走「截图 + 坐标」：调用 `phone.screenshot` 或 `screen_observe(include_screenshot=true, analyze=true, question="…目标在哪里…")` 拿到截图与视觉分析（截图上叠有参考网格，便于估读位置）。
+   - 坐标一律以 `screen_observe` 返回的**窗口分辨率**为准；截图是缩放过的，按截图像素读出的位置必须按 `屏幕宽/截图宽` 换算后再点。
+   - 用 `phone.ui_click(x=…, y=…, prefer_gesture=true)` 点击；点完用 `screen_wait_change` 或再次截图核验。同一坐标无反应最多重试 1 次，之后换位置（偏移 20~40 像素）或换入口，不要原地死点。
+   - 输入文字前先点中输入框确认光标出现；需要粘贴时按 §3 的做法处理。
+   - 在应用技能里记录坐标时写**屏幕比例**（如 `x≈0.92, y≈0.06`），不要写绝对像素，换分辨率的设备才能复用。
+10. **技能自迭代（经验沉淀）**：
+   - 开始操作某个 App 前先看有没有 `matched_app_skills`，有就 `get` 读完整经验，按经验操作（含「自动沉淀的经验」小节）。
+   - 任务过程中出现这些情况就值得记：失败之后才找到的有效做法、稳定的入口或坐标比例、需要等待的时机、抓不到布局的页面、技能里原有步骤这次已失效。
+   - 结束前（`task_control complete` 之前或之后均可）调用 `phone.app_skill(action="append", id="…", kind="tip|pitfall|coords|flow", lesson="一句话经验")` 追加 1~3 条；原步骤失效时用 `kind="pitfall"` 写明「原做法 X 失效，改为 Y」。技能不存在时同时带上 `name`、`packages` 或 `app_names` 新建。
+   - 只写可复用的结论：不写账号、手机号、聊天内容、订单信息等隐私；已有同义经验不要重复写；没有新经验就不写。
+   - 返回 `consolidate_hint` 时说明经验已超 20 条：先 `get` 全文，再用 `save` 合并去重并删掉已失效条目。
+   - 返回「用户已关闭」就不要重试。
 """.trimIndent() + "\n"
 
     fun sync(workspacePath: String, enabled: Boolean) {
