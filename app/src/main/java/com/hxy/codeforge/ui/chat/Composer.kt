@@ -245,7 +245,10 @@ fun Composer(
             // 与正常打字同口径存一次草稿：切会话/退后台回来还能看到在编辑的内容
             onDraftChange(sessionId, editText)
         }
-        if (editAttachments.isNotEmpty()) {
+        if (editBack != null) {
+            // 进入编辑重发态时以原消息附件完全覆盖，避免输入区残留本地新选文件阻塞提交。
+            attachments = editAttachments
+        } else if (editAttachments.isNotEmpty()) {
             attachments = editAttachments
         }
     }
@@ -505,7 +508,9 @@ fun Composer(
 
     // 运行中不再排除：有内容时主按钮变发送（运行中发送 = steer 并入当前轮，
     // 占位符「回复 CodeForge…」即此语义）—— 打断不再吞掉发送入口
-    val canSend = (input.isNotBlank() || attachments.isNotEmpty()) && !listening &&
+    // 编辑重发时内核 EditAndResend 强制正文非空；普通发送允许纯附件无文本。
+    val canSend = (input.isNotBlank() || (editBack == null && attachments.isNotEmpty())) &&
+        !listening &&
         // 云端转写期间不许发：回来的文字还要接进输入框
         !transcribing
 

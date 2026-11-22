@@ -111,4 +111,66 @@ class InteractiveUiParserTest {
         assertTrue(isInteractiveSvg("""<svg viewBox="0 0 100 100"><g data-cf-send="选A"><rect/></g></svg>"""))
         assertTrue(isInteractiveSvg("""<svg viewBox="0 0 100 100"><g data-cf-prefill="展开讲"><rect/></g></svg>"""))
     }
+
+    @Test
+    fun `choices never auto-send by default and support multi-select, custom note, and open bottom buttons`() {
+        val json = """
+            {
+              "kind": "choices",
+              "prompt": "需要哪些模块？",
+              "mode": "multi",
+              "options": [
+                {"id": "auth", "label": "登录鉴权", "value": "登录鉴权"},
+                {"id": "pay", "label": "支付", "value": "支付"},
+                {"id": "log", "label": "审计日志", "value": "审计日志"}
+              ],
+              "buttons": [
+                {"label": "先填入输入框", "action": "prefill", "payload": "按以上需求补充："}
+              ]
+            }
+        """.trimIndent()
+        val spec = parseInteractiveUiSpec(json)!!
+        val choices = spec.blocks.single() as UiBlock.Choices
+        assertEquals("multi", choices.mode)
+        assertFalse(choices.autoSend)
+        assertTrue(choices.allowCustom)
+        assertEquals(1, choices.actions.size)
+        assertEquals("prefill", choices.actions.single().action)
+
+        // 多选 + 自定义补充
+        assertEquals(
+            "需要哪些模块？：登录鉴权、审计日志；补充：兼容离线模式",
+            formatChoicesReply(choices, listOf("auth", "log"), "兼容离线模式"),
+        )
+        // 仅填自定义内容也能正常产出
+        assertEquals(
+            "需要哪些模块？：先只做原型验证",
+            formatChoicesReply(choices, emptyList(), "先只做原型验证"),
+        )
+
+        // 即使旧模型漏传 auto_send 或显式写 auto_send:true，单选也不直接发送
+        val singleSpec = parseInteractiveUiSpec(
+            """{"kind":"choices","prompt":"选语言","mode":"single","auto_send":true,"options":["Kotlin","Go"]}""",
+        )!!
+        val singleChoices = singleSpec.blocks.single() as UiBlock.Choices
+        assertFalse(singleChoices.autoSend)
+        assertTrue(singleChoices.allowCustom)
+
+        // 卡片底部开放按钮会自动附带前面的选项与表单内容，也支持 include_selections=false 独立动作
+        val merged = composeCardActionPayload(
+            item = UiActionItem(label = "生成方案", action = "send", payload = "请据此给出目录结构"),
+            choiceSummaries = listOf("选语言：Kotlin"),
+            formSummaries = listOf("- 启用缓存：是"),
+        )
+        assertTrue(merged.contains("选语言：Kotlin"))
+        assertTrue(merged.contains("- 启用缓存：是"))
+        assertTrue(merged.contains("请据此给出目录结构"))
+
+        val standalone = composeCardActionPayload(
+            item = UiActionItem(label = "跳过", action = "send", payload = "由你直接推荐默认方案", includeSelections = false),
+            choiceSummaries = listOf("选语言：Kotlin"),
+            formSummaries = emptyList(),
+        )
+        assertEquals("由你直接推荐默认方案", standalone)
+    }
 }

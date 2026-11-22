@@ -64,8 +64,8 @@ android {
         // Play 上架本就不在计划内。36 合规代码（specialUse/edge-to-edge）全部保留。
         targetSdk = 28
         testInstrumentationRunner = "com.hxy.codeforge.phone.PhoneSmokeRunner"
-        versionCode = 3
-        versionName = "2.0"
+        versionCode = 4
+        versionName = "2.0.1"
 
         // 只出 64 位：Go 内核只交叉编译 arm64，32 位设备不覆盖。
         ndk {

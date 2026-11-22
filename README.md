@@ -4,7 +4,7 @@
 
 **原生 Android AI 编码、逆向分析与手机操控工作台 · Native Android Client for CodeForge-Go**
 
-[![Release](https://img.shields.io/badge/Version-v2.0-D97757?style=flat-square)](https://github.com/raine-x/codeforge-mobile/releases/tag/v2.0)
+[![Release](https://img.shields.io/badge/Version-v2.0.1-D97757?style=flat-square)](https://github.com/raine-x/codeforge-mobile/releases/tag/v2.0.1)
 [![Platform](https://img.shields.io/badge/Android-ARM64--v8a%20(API%2026%2B)-3DDC84?style=flat-square)](app/build.gradle.kts)
 [![UI](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?style=flat-square)](app/src/main/java/com/hxy/codeforge/ui)
 

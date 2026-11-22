@@ -131,25 +131,112 @@ fun ChatViewModel.sendActionPanel(text: String) {
     send(text)
 }
 /**
- * 编辑重发：回填输入卡，并按 checkpoints.editables 找该消息的 back 锚点
- * （按文本匹配，取最近一条）；发送时带锚点走内核 edit_user_message
- * （截断+文件回退+重跑的原语义），找不到（早于可编辑窗口）退回普通重发。
+ * 按消息位置计算 `edit_user_message` 所需的 `back`（距最后一条用户消息的偏移，0 = 最后一条）。
+ *
+ * 为什么不能只靠字符串相等查 `checkpoints.editables`：
+ * 1. 内核存储的是带 `【CodeForge 客户端渲染能力】` 等注入后缀的原文，而 UI 气泡是 `stripInjectedText`
+ *    之后的纯文本，直接比较会 100% 失配；
+ * 2. 内核 `editables` 仅下发最近 3 条且只在特定帧推送，而 `RerunFrom` 实际支持任意 `back >= 0`；
+ * 3. 同会话若有重复文本，按位置从末尾数才能命中用户点中的那一条。
+ */
+internal fun resolveEditBack(
+    messages: List<ChatMessage>,
+    editableAnchors: List<com.hxy.codeforge.model.EditableUserMessage>,
+    target: ChatMessage,
+): Int? {
+    val cleanTarget = stripInjectedText(target.text).trim()
+    val byId = messages.indexOfLast { it.id == target.id && it.role == MsgRole.User }
+    val idx = if (byId >= 0) {
+        byId
+    } else {
+        messages.indexOfLast {
+            it.role == MsgRole.User && stripInjectedText(it.text).trim() == cleanTarget
+        }
+    }
+    if (idx >= 0) {
+        val ordinalFromEnd = (idx + 1 until messages.size).count { messages[it].role == MsgRole.User }
+        // 若锚点表里有唯一匹配的剥离文本且仍在内核最近窗口内，以服务端 back 校准（可抵消运行中 steer 占位偏移）。
+        val anchorMatches = editableAnchors.filter {
+            stripInjectedText(it.text).trim() == cleanTarget
+        }
+        val maxAnchorBack = editableAnchors.maxOfOrNull { it.back } ?: -1
+        if (anchorMatches.size == 1 && ordinalFromEnd <= maxAnchorBack) {
+            return anchorMatches.single().back
+        }
+        return ordinalFromEnd
+    }
+    return editableAnchors.lastOrNull {
+        stripInjectedText(it.text).trim() == cleanTarget
+    }?.back
+}
+
+/**
+ * 本地立即截断被编辑消息之后的所有消息（回复、工具、后续轮次），
+ * 防止等待内核 `edit` + `history` 快照期间旧回复仍挂在界面上。
+ */
+internal fun truncateMessagesForEdit(
+    messages: List<ChatMessage>,
+    targetMessageId: String?,
+    back: Int,
+    newText: String,
+): List<ChatMessage> {
+    val idxById = if (!targetMessageId.isNullOrBlank()) {
+        messages.indexOfLast { it.id == targetMessageId && it.role == MsgRole.User }
+    } else {
+        -1
+    }
+    val idx = if (idxById >= 0) {
+        idxById
+    } else {
+        var remaining = back.coerceAtLeast(0)
+        var found = -1
+        for (i in messages.indices.reversed()) {
+            if (messages[i].role == MsgRole.User) {
+                if (remaining == 0) {
+                    found = i
+                    break
+                }
+                remaining--
+            }
+        }
+        found
+    }
+    if (idx < 0) return messages
+    val updated = messages[idx].copy(text = newText, streaming = false)
+    return messages.take(idx) + updated
+}
+
+/**
+ * 编辑重发：回填输入卡，并按位置/剥离后锚点计算 `back` 走内核 `edit_user_message`
+ * （从被编辑消息截断后续对话 + 回退文件改动 + 重跑）。
  */
 fun ChatViewModel.requestEdit(message: ChatMessage) {
-    val anchor = _state.value.editableAnchors
-        .lastOrNull { it.text.trim() == message.text.trim() }?.back
+    val state = _state.value
+    val anchor = resolveEditBack(state.messages, state.editableAnchors, message)
+    if (anchor == null) {
+        toast("未定位到可回溯的用户消息", isError = true)
+        return
+    }
     _state.update {
         it.copy(
             editText = message.text,
             editAttachments = message.attachments,
             editBack = anchor,
+            editMessageId = message.id,
             editSeq = ++editSeqCounter,
         )
     }
 }
 
 fun ChatViewModel.clearEdit() {
-    _state.update { it.copy(editText = null, editAttachments = emptyList(), editBack = null) }
+    _state.update {
+        it.copy(
+            editText = null,
+            editAttachments = emptyList(),
+            editBack = null,
+            editMessageId = null,
+        )
+    }
 }
 
 /**
@@ -179,6 +266,8 @@ fun ChatViewModel.onExternalContent(text: CharSequence?, uris: List<Uri>) {
             it.copy(
                 editText = body,
                 editAttachments = staged,
+                editBack = null,
+                editMessageId = null,
                 editSeq = ++editSeqCounter,
             )
         }
@@ -219,14 +308,18 @@ fun ChatViewModel.attachFileToInput(file: java.io.File, activeWorkspaceRoot: Str
                 editText = null,
                 editAttachments = listOf(target),
                 editBack = null,
+                editMessageId = null,
                 editSeq = ++editSeqCounter,
             )
         }
     }
 }
 
-/** 原样重发：原文+附件按一条新用户消息再走一遍（运行中自动并入 steer）。 */
-fun ChatViewModel.resendUser(message: ChatMessage) = send(message.text, message.attachments)
+/** 原样重发：原文+附件按一条新用户消息再走一遍（运行中自动并入 steer），先退出未发出的编辑态。 */
+fun ChatViewModel.resendUser(message: ChatMessage) {
+    clearEdit()
+    send(message.text, message.attachments)
+}
 
 /** 历史工具卡输出回放：/api/diff 拉回 diff/output 并挂回对应卡片。 */
 fun ChatViewModel.fetchToolReplay(callId: String) {

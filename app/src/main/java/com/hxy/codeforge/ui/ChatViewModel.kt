@@ -140,8 +140,10 @@ data class ChatUiState(
     val checkpoints: List<com.hxy.codeforge.model.CheckpointStep> = emptyList(),
     /** resume_back：有未跑完的轮次时可挂「继续上一轮」。 */
     val resumeBack: Int = -1,
-    /** 编辑重发锚点（checkpoints.editables 里的 back；null=普通发送）。 */
+    /** 编辑重发锚点（距最后一条用户消息偏移；null=普通发送）。 */
     val editBack: Int? = null,
+    /** 被编辑的用户消息 id，用于本地立即截断其后的旧消息。 */
+    val editMessageId: String? = null,
     /** 可编辑用户消息锚点表（checkpoints.editables）。 */
     val editableAnchors: List<com.hxy.codeforge.model.EditableUserMessage> = emptyList(),
     /** 侧栏项目（由 [sessions] 按 workspace 分组聚合，见 aggregateProjects）。 */
@@ -278,6 +280,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     internal val _state = MutableStateFlow(ChatUiState(currentSessionId = AppSettings.lastSessionId.value))
     // 冷启动兜底自动加载只做一次（内核重启重连走 Link 分支，见下）
     private var didColdStartLoad = false
+    // 正在等待 edit_user_message 触发的 edit→history 权威快照：
+    // 紧随 edit 帧到达的那一帧 history 仍处在重跑流开始前的空窗，不能清掉 running 与等待提示。
+    private var awaitingEditRerun = false
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
 
     private val seq = AtomicInteger(0)
@@ -741,6 +746,9 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             }
 
             is CoreEvent.SessionClaimed -> {
+                if (event.sessionId != _state.value.currentSessionId) {
+                    awaitingEditRerun = false
+                }
                 _state.update { it.foldSessionClaimed(event.sessionId, event.title, System.currentTimeMillis()) }
                 if (event.sessionId != "") planPending = false
                 transport?.setCurrentSession(event.sessionId)
@@ -759,6 +767,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 compressStartShown = false
                 // 历史帧是会话确立的另一条权威路径：传输层必须与界面同 id
                 transport?.setCurrentSession(event.sessionId)
+                val sessionChanged = _state.value.currentSessionId.isNotBlank() &&
+                    _state.value.currentSessionId != event.sessionId
+                val keepEditRunning = awaitingEditRerun && !sessionChanged
+                awaitingEditRerun = false
                 // 空历史帧防抖：新会话首条消息后内核会推空 history（claim 流程），
                 // 直接替换会把乐观消息清掉 → 问候页闪回 → AnimatedContent 快速
                 // A→B→A 抖动崩溃（真机 crash-1792934642977）+ 首帧闪白
@@ -780,9 +792,18 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                                     m
                                 }
                             },
-                            running = false,
-                            pendingStage = "",
+                            running = keepEditRunning,
+                            pendingStage = if (keepEditRunning) it.pendingStage else "",
                             approvals = emptyList(),
+                            // 切到另一会话时必须清空上一会话遗留的编辑态与检查点，
+                            // 防止 EditPromptBar 与 editBack 串台污染目标会话。
+                            editBack = if (sessionChanged) null else it.editBack,
+                            editMessageId = if (sessionChanged) null else it.editMessageId,
+                            editText = if (sessionChanged) null else it.editText,
+                            editAttachments = if (sessionChanged) emptyList() else it.editAttachments,
+                            editableAnchors = if (sessionChanged) emptyList() else it.editableAnchors,
+                            checkpoints = if (sessionChanged) emptyList() else it.checkpoints,
+                            resumeBack = if (sessionChanged) -1 else it.resumeBack,
                             // 不要在这里清 banner：history 会在本机动作后几十毫秒内到达
                             // （重连快照、会话确立），把刚弹出的「导入失败」「保存失败」
                             // 一起抹掉，用户看到的就是「点了没反应」。一次性提示由
@@ -799,6 +820,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             is CoreEvent.Busy -> _state.update { it.foldBusy(event.sessionId) }
 
             is CoreEvent.Idle -> {
+                awaitingEditRerun = false
                 // @plan 回合结束：把最后一条助手正文装进操作面板。
                 // 只认本轮（planPending 由 send 置位），普通回合不弹。
                 val showPlan = planPending
@@ -815,7 +837,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 it.copy(
                     checkpoints = event.steps,
                     resumeBack = event.resumeBack,
-                    editableAnchors = event.editables,
+                    // 统一在入态前剥离客户端注入提示词，保证与气泡展示口径一致（见 P-042 / P-064）。
+                    editableAnchors = event.editables.map { e ->
+                        e.copy(text = stripInjectedText(e.text))
+                    },
                 )
             }
 
@@ -945,6 +970,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             }
 
             is CoreEvent.Failure -> {
+                awaitingEditRerun = false
                 // 限流 / 网络类失败要留一个「重试」入口：内核在 llm 层已经自动退避重试过
                 // （429 无 RPM 时每次等 10 秒 ×5 次），仍然失败说明窗口没滑出来。
                 // 这时只弹一条 2 秒就消失的气泡，用户看到的就是「卡了一会儿然后断了」，
@@ -1012,6 +1038,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 editAttachments = emptyList(),
                 editSeq = ++editSeqCounter,
                 editBack = null,
+                editMessageId = null,
             )
         }
     }
@@ -1038,18 +1065,38 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         }
         // @plan 之后本轮结束要弹计划书面板；普通回合不弹
         if (planMention.containsMatchIn(trimmed)) planPending = true
-        if (_state.value.running) {
-            steer(trimmed)
+        // 编辑重发（带 back 锚点）：走内核原语义（截断后续历史 + 回退文件改动 + 重跑），
+        // 绝不静默降级为追加发送。本地先同步截断后续气泡，随后 edit→StreamReset→history 对齐真值。
+        val back = _state.value.editBack
+        val targetEditId = _state.value.editMessageId
+        if (back != null) {
+            if (trimmed.isEmpty()) {
+                toast("编辑后的内容不能为空", isError = true)
+                return
+            }
+            if (attachments.any { java.io.File(it).isAbsolute }) {
+                clearEdit()
+                toast("编辑重发暂不支持新增本地附件，请取消后直接发送", isError = true)
+                return
+            }
+            val wireText = buildWireText(trimmed, _state.value.attachedElements)
+            clearEdit()
+            awaitingEditRerun = true
+            _state.update { s ->
+                s.copy(
+                    banner = null,
+                    running = true,
+                    pendingStage = "正在回溯并重新生成…",
+                    approvals = emptyList(),
+                    attachedElements = emptyList(),
+                    messages = truncateMessagesForEdit(s.messages, targetEditId, back, trimmed),
+                )
+            }
+            transport?.editUserMessage(wireText, back)
             return
         }
-
-        // 编辑重发（带 checkpoints.editables 的 back 锚点）：走内核原语义
-        // （截断历史 + 回退文件改动 + 重跑），随后的 edit→StreamReset→history
-        // 快照会重建消息流；壳侧不乐观插入 —— 截断后旧消息本来就该消失
-        val back = _state.value.editBack
-        if (back != null && attachments.isEmpty()) {
-            clearEdit()
-            transport?.editUserMessage(trimmed, back)
+        if (_state.value.running) {
+            steer(trimmed)
             return
         }
         clearEdit()
@@ -1363,11 +1410,13 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     fun stop() {
+        awaitingEditRerun = false
         PhoneTaskController.stop("用户已停止当前任务", stopAgentTurn = false)
         transport?.cancel()
         _state.update { s ->
             s.copy(
                 running = false,
+                pendingStage = "",
                 // 手动打断后转向队列作废，占位符提示恢复中性
                 steerQueued = false,
                 messages = s.messages.map { m ->

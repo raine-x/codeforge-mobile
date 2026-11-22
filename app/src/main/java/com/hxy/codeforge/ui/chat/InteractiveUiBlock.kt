@@ -61,10 +61,15 @@ sealed interface UiBlock {
         val id: String,
         val prompt: String,
         val mode: String, // "single" | "multi" | "quiz"
-        val autoSend: Boolean,
-        val confirmLabel: String,
-        val sendTemplate: String,
+        val autoSend: Boolean = false,
+        val confirmLabel: String = "发送",
+        val confirmAction: String = "send", // "send" | "prefill"
+        val explicitConfirm: Boolean = false,
+        val allowCustom: Boolean = mode != "quiz",
+        val customPlaceholder: String = "其他想法或补充要求…",
+        val sendTemplate: String = "",
         val options: List<UiChoiceOption>,
+        val actions: List<UiActionItem> = emptyList(),
     ) : UiBlock
 
     data class Actions(
@@ -79,6 +84,7 @@ sealed interface UiBlock {
         val id: String,
         val submitLabel: String,
         val submitAction: String, // "send" | "prefill"
+        val explicitSubmit: Boolean = false,
         val fields: List<UiFormField>,
     ) : UiBlock
 }
@@ -97,6 +103,7 @@ data class UiActionItem(
     val action: String, // "send" | "prefill"
     val payload: String,
     val style: String = "secondary", // "primary" | "secondary" | "outline"
+    val includeSelections: Boolean = true,
 )
 
 data class UiTabItem(
@@ -209,30 +216,31 @@ private fun parseUiBlock(o: JSONObject): UiBlock? {
                 rawMode == "multi" || rawMode == "multiple" -> "multi"
                 else -> "single"
             }
+            val blockActions = parseActionItems(o.optJSONArray("buttons") ?: o.optJSONArray("actions"))
+            val confirmAction = o.optString("confirm_action").lowercase().trim()
+                .let { if (it == "prefill") "prefill" else "send" }
+            val explicitConfirm = o.has("confirm_label") || o.has("confirm_action") ||
+                o.optBoolean("show_confirm", false) || blockActions.isNotEmpty()
             UiBlock.Choices(
                 id = o.optString("id").ifBlank { "choices" },
                 prompt = o.optString("prompt").ifBlank { o.optString("question") }.trim(),
                 mode = mode,
-                autoSend = o.optBoolean("auto_send", mode == "single" && !o.has("confirm_label")),
-                confirmLabel = o.optString("confirm_label").ifBlank { "确认发送" }.trim(),
+                // 默认绝不在点击选项时自动发出消息，必须由底部按钮触发（见用户交互规范）。
+                autoSend = false,
+                confirmLabel = o.optString("confirm_label").ifBlank { "发送" }.trim(),
+                confirmAction = confirmAction,
+                explicitConfirm = explicitConfirm,
+                allowCustom = o.optBoolean("allow_custom", mode != "quiz"),
+                customPlaceholder = o.optString("custom_placeholder").ifBlank { "其他想法或补充要求…" }.trim(),
                 sendTemplate = o.optString("send_template").trim(),
                 options = opts,
+                actions = blockActions,
             )
         }
 
         "actions", "buttons" -> {
             val arr = o.optJSONArray("items") ?: o.optJSONArray("actions") ?: return null
-            val items = (0 until arr.length()).mapNotNull { i ->
-                val item = arr.optJSONObject(i) ?: return@mapNotNull null
-                val label = item.optString("label").ifBlank { item.optString("text") }.trim()
-                val payload = item.optString("payload").ifBlank { item.optString("value") }.ifBlank { label }.trim()
-                if (label.isEmpty() || payload.isEmpty()) return@mapNotNull null
-                val action = item.optString("action").lowercase().trim()
-                    .let { if (it == "prefill") "prefill" else "send" }
-                val style = item.optString("style").lowercase().trim()
-                    .let { if (it in setOf("primary", "secondary", "outline")) it else "secondary" }
-                UiActionItem(label = label, action = action, payload = payload, style = style)
-            }
+            val items = parseActionItems(arr)
             if (items.isEmpty()) null else UiBlock.Actions(items)
         }
 
@@ -306,12 +314,78 @@ private fun parseUiBlock(o: JSONObject): UiBlock? {
                 id = o.optString("id").ifBlank { "form" },
                 submitLabel = o.optString("submit_label").ifBlank { "提交" }.trim(),
                 submitAction = submitAction,
+                explicitSubmit = o.has("submit_label") || o.has("submit_action"),
                 fields = fields,
             )
         }
 
         else -> null
     }
+}
+
+private fun parseActionItems(arr: JSONArray?): List<UiActionItem> {
+    if (arr == null) return emptyList()
+    return (0 until arr.length()).mapNotNull { i ->
+        val item = arr.optJSONObject(i) ?: return@mapNotNull null
+        val label = item.optString("label").ifBlank { item.optString("text") }.trim()
+        val payload = item.optString("payload").ifBlank { item.optString("value") }.ifBlank { label }.trim()
+        if (label.isEmpty() || payload.isEmpty()) return@mapNotNull null
+        val action = item.optString("action").lowercase().trim()
+            .let { if (it == "prefill") "prefill" else "send" }
+        val style = item.optString("style").lowercase().trim()
+            .let { if (it in setOf("primary", "secondary", "outline")) it else "secondary" }
+        UiActionItem(
+            label = label,
+            action = action,
+            payload = payload,
+            style = style,
+            includeSelections = item.optBoolean("include_selections", true),
+        )
+    }
+}
+
+/** 格式化单选/多选 + 可选自定义补充内容为上行文本（纯函数，JVM 可测）。 */
+internal fun formatChoicesReply(
+    block: UiBlock.Choices,
+    selectedIds: List<String>,
+    customNote: String = "",
+): String {
+    val values = block.options.filter { it.id in selectedIds }.map { it.value }
+    val cleanNote = customNote.trim()
+    val joined = when {
+        values.isNotEmpty() && cleanNote.isNotEmpty() -> values.joinToString("、") + "；补充：$cleanNote"
+        values.isNotEmpty() -> values.joinToString("、")
+        cleanNote.isNotEmpty() -> cleanNote
+        else -> ""
+    }
+    if (joined.isEmpty()) return ""
+    return when {
+        block.sendTemplate.contains("{value}") -> block.sendTemplate.replace("{value}", joined)
+        block.prompt.isNotEmpty() -> "${block.prompt}：$joined"
+        else -> joined
+    }
+}
+
+/** 卡片底部开放按钮点击时，自动附带同一卡片内已选选项与表单值（纯函数，JVM 可测）。 */
+internal fun composeCardActionPayload(
+    item: UiActionItem,
+    choiceSummaries: List<String>,
+    formSummaries: List<String>,
+): String {
+    val cleanChoices = choiceSummaries.map { it.trim() }.filter { it.isNotEmpty() }
+    val cleanForms = formSummaries.map { it.trim() }.filter { it.isNotEmpty() }
+    val combined = (cleanChoices + cleanForms).joinToString("\n")
+    if (!item.includeSelections || combined.isEmpty()) return item.payload
+    val choicesText = cleanChoices.joinToString("\n").ifEmpty { combined }
+    val formText = cleanForms.joinToString("\n")
+    if (item.payload.contains("{choices}") || item.payload.contains("{selection}") || item.payload.contains("{form}")) {
+        return item.payload
+            .replace("{choices}", choicesText)
+            .replace("{selection}", choicesText)
+            .replace("{form}", formText)
+            .trim()
+    }
+    return "$combined\n\n${item.payload}"
 }
 
 private fun jsonStrings(arr: JSONArray?): List<String> {
@@ -355,6 +429,7 @@ internal fun InteractiveUiLoadingCard(modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun InteractiveUiCard(
     spec: InteractiveUiSpec,
@@ -402,46 +477,146 @@ internal fun InteractiveUiCard(
             }
         }
 
+        val hasCardActions = spec.blocks.any { it is UiBlock.Actions }
+        val nonQuizInteractiveCount = spec.blocks.count {
+            (it is UiBlock.Choices && it.mode != "quiz") || it is UiBlock.Form
+        }
+        val showCardFooter = !hasCardActions && nonQuizInteractiveCount > 1
+        val suppressDefaultBlockSubmit = hasCardActions || showCardFooter
+        val choiceProviders = remember(cardKey) { LinkedHashMap<String, () -> String?>() }
+        val formProviders = remember(cardKey) { LinkedHashMap<String, () -> String?>() }
+
         spec.blocks.forEachIndexed { idx, block ->
             val blockKey = "$cardKey:$idx"
             when (block) {
-                is UiBlock.Choices -> ChoicesBlockView(block, blockKey, actions)
-                is UiBlock.Actions -> ActionsBlockView(block, actions)
+                is UiBlock.Choices -> ChoicesBlockView(
+                    block = block,
+                    blockKey = blockKey,
+                    actions = actions,
+                    suppressDefaultSubmit = suppressDefaultBlockSubmit,
+                    registerSummary = { fn -> choiceProviders[blockKey] = fn },
+                )
+                is UiBlock.Actions -> ActionsBlockView(
+                    items = block.items,
+                    actions = actions,
+                    choiceSummariesProvider = { choiceProviders.values.mapNotNull { it() } },
+                    formSummariesProvider = { formProviders.values.mapNotNull { it() } },
+                )
                 is UiBlock.Tabs -> TabsBlockView(block, blockKey, actions)
-                is UiBlock.Form -> FormBlockView(block, blockKey, actions)
+                is UiBlock.Form -> FormBlockView(
+                    block = block,
+                    blockKey = blockKey,
+                    actions = actions,
+                    suppressDefaultSubmit = suppressDefaultBlockSubmit,
+                    registerSummary = { fn -> formProviders[blockKey] = fn },
+                )
+            }
+        }
+
+        if (showCardFooter) {
+            fun collectAll(): String =
+                (choiceProviders.values.mapNotNull { it() } + formProviders.values.mapNotNull { it() })
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .joinToString("\n")
+
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = {
+                    val summary = collectAll()
+                    if (summary.isNotEmpty()) {
+                        actions?.onPrefill?.invoke(summary)
+                    } else {
+                        actions?.onToast?.invoke("请先选择或填写至少一项")
+                    }
+                }) {
+                    Text("填入输入框", style = MaterialTheme.typography.labelLarge)
+                }
+                Button(
+                    onClick = {
+                        val summary = collectAll()
+                        if (summary.isNotEmpty()) {
+                            actions?.onSend?.invoke(summary)
+                        } else {
+                            actions?.onToast?.invoke("请先选择或填写至少一项")
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Clay),
+                ) {
+                    Text("发送已选 ↗", style = MaterialTheme.typography.labelLarge)
+                }
             }
         }
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ChoicesBlockView(
     block: UiBlock.Choices,
     blockKey: String,
     actions: ChatUiActions?,
+    suppressDefaultSubmit: Boolean,
+    registerSummary: (() -> String?) -> Unit,
 ) {
     val selected = remember(blockKey) {
         actions?.getState(blockKey) { mutableStateListOf<String>() } ?: mutableStateListOf()
     }
+    val customState = remember(blockKey) {
+        actions?.getState("$blockKey:custom") { mutableStateOf("") } ?: mutableStateOf("")
+    }
+    var customText by customState
+    var customExpanded by remember(blockKey) { mutableStateOf(customText.isNotEmpty()) }
     var submitted by remember(blockKey) { mutableStateOf(false) }
 
-    fun formatReply(ids: List<String>): String {
-        val values = block.options.filter { it.id in ids }.map { it.value }
-        val joined = values.joinToString("、")
-        return when {
-            block.sendTemplate.contains("{value}") -> block.sendTemplate.replace("{value}", joined)
-            block.prompt.isNotEmpty() -> "${block.prompt}：$joined"
-            else -> joined
-        }
+    val currentSummary: () -> String? = {
+        if (block.mode == "quiz") null
+        else formatChoicesReply(block, selected.toList(), customText).takeIf { it.isNotEmpty() }
+    }
+    registerSummary(currentSummary)
+
+    val modeLabel = when (block.mode) {
+        "multi" -> "多选"
+        "quiz" -> "测验"
+        else -> "单选"
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (block.prompt.isNotEmpty()) {
-            Text(
-                text = block.prompt,
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                color = MaterialTheme.colorScheme.onSurface,
-            )
+        if (block.prompt.isNotEmpty() || block.mode != "quiz") {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                if (block.prompt.isNotEmpty()) {
+                    Text(
+                        text = block.prompt,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                    )
+                } else {
+                    androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
+                }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(
+                            if (block.mode == "multi") Clay.copy(alpha = 0.14f)
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
+                        )
+                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        text = modeLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium),
+                        color = if (block.mode == "multi") Clay else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
 
         block.options.forEach { opt ->
@@ -476,11 +651,12 @@ private fun ChoicesBlockView(
                                 selected.add(opt.id)
                             }
                             else -> {
-                                selected.clear()
-                                selected.add(opt.id)
-                                if (block.autoSend && !submitted) {
-                                    submitted = true
-                                    actions?.onSend?.invoke(formatReply(listOf(opt.id)))
+                                // 单选点击只切换高亮，允许反选或改选，绝不直接发出消息。
+                                if (isSelected) {
+                                    selected.clear()
+                                } else {
+                                    selected.clear()
+                                    selected.add(opt.id)
                                 }
                             }
                         }
@@ -507,13 +683,7 @@ private fun ChoicesBlockView(
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f),
                     )
-                    if (block.mode == "single" && block.autoSend) {
-                        Text(
-                            text = if (submitted && isSelected) "已发送" else "↗",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = Clay,
-                        )
-                    } else if (isQuiz && isSelected && opt.correct != null) {
+                    if (isQuiz && isSelected && opt.correct != null) {
                         Text(
                             text = if (opt.correct) "✓ 正确" else "✗ 再想想",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
@@ -540,25 +710,32 @@ private fun ChoicesBlockView(
             }
         }
 
-        if (block.mode == "multi" || (block.mode == "single" && !block.autoSend)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-            ) {
-                Button(
-                    onClick = {
-                        if (selected.isNotEmpty()) {
-                            submitted = true
-                            actions?.onSend?.invoke(formatReply(selected.toList()))
-                        }
-                    },
-                    enabled = selected.isNotEmpty(),
-                    colors = ButtonDefaults.buttonColors(containerColor = Clay),
+        if (block.allowCustom && block.mode != "quiz") {
+            if (!customExpanded && customText.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { customExpanded = true }
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
                 ) {
-                    Text(if (submitted) "再次发送" else block.confirmLabel)
+                    Text(
+                        text = "+ 补充自定义内容",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Clay,
+                    )
                 }
+            } else {
+                OutlinedTextField(
+                    value = customText,
+                    onValueChange = { customText = it },
+                    placeholder = { Text(block.customPlaceholder) },
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
-        } else if (block.mode == "quiz" && selected.isNotEmpty()) {
+        }
+
+        if (block.mode == "quiz" && selected.isNotEmpty()) {
             val chosen = block.options.firstOrNull { it.id == selected.first() }
             if (chosen != null) {
                 Row(
@@ -572,6 +749,56 @@ private fun ChoicesBlockView(
                     }
                 }
             }
+        } else if (block.mode != "quiz") {
+            val reply = formatChoicesReply(block, selected.toList(), customText)
+            if (block.actions.isNotEmpty()) {
+                ActionsBlockView(
+                    items = block.actions,
+                    actions = actions,
+                    choiceSummariesProvider = { if (reply.isNotEmpty()) listOf(reply) else emptyList() },
+                    formSummariesProvider = { emptyList() },
+                )
+            } else if (!suppressDefaultSubmit || block.explicitConfirm) {
+                val hasSelection = reply.isNotEmpty()
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (block.confirmAction != "prefill") {
+                        OutlinedButton(
+                            onClick = {
+                                if (hasSelection) actions?.onPrefill?.invoke(reply)
+                            },
+                            enabled = hasSelection,
+                        ) {
+                            Text("填入输入框", style = MaterialTheme.typography.labelLarge)
+                        }
+                    }
+                    Button(
+                        onClick = {
+                            if (hasSelection) {
+                                submitted = true
+                                if (block.confirmAction == "prefill") {
+                                    actions?.onPrefill?.invoke(reply)
+                                } else {
+                                    actions?.onSend?.invoke(reply)
+                                }
+                            }
+                        },
+                        enabled = hasSelection,
+                        colors = ButtonDefaults.buttonColors(containerColor = Clay),
+                    ) {
+                        val suffix = if (block.confirmAction == "send") " ↗" else ""
+                        val labelText = if (submitted && block.confirmAction == "send") {
+                            "再次${block.confirmLabel}$suffix"
+                        } else {
+                            "${block.confirmLabel}$suffix"
+                        }
+                        Text(labelText, style = MaterialTheme.typography.labelLarge)
+                    }
+                }
+            }
         }
     }
 }
@@ -579,21 +806,28 @@ private fun ChoicesBlockView(
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ActionsBlockView(
-    block: UiBlock.Actions,
+    items: List<UiActionItem>,
     actions: ChatUiActions?,
+    choiceSummariesProvider: () -> List<String>,
+    formSummariesProvider: () -> List<String>,
 ) {
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        block.items.forEach { item ->
+        items.forEach { item ->
             val suffix = if (item.action == "send") " ↗" else ""
             val onClick = {
+                val finalPayload = composeCardActionPayload(
+                    item = item,
+                    choiceSummaries = choiceSummariesProvider(),
+                    formSummaries = formSummariesProvider(),
+                )
                 if (item.action == "prefill") {
-                    actions?.onPrefill?.invoke(item.payload)
+                    actions?.onPrefill?.invoke(finalPayload)
                 } else {
-                    actions?.onSend?.invoke(item.payload)
+                    actions?.onSend?.invoke(finalPayload)
                 }
                 Unit
             }
@@ -725,6 +959,8 @@ private fun FormBlockView(
     block: UiBlock.Form,
     blockKey: String,
     actions: ChatUiActions?,
+    suppressDefaultSubmit: Boolean,
+    registerSummary: (() -> String?) -> Unit,
 ) {
     val values = remember(blockKey) {
         actions?.getState(blockKey) {
@@ -740,6 +976,21 @@ private fun FormBlockView(
             }
         } ?: mutableStateMapOf()
     }
+
+    fun buildFormSummary(): String = block.fields.joinToString("\n") { f ->
+        val vStr = when (f) {
+            is UiFormField.Toggle -> if (values[f.id] as? Boolean ?: f.default) "是" else "否"
+            is UiFormField.Text -> (values[f.id] as? String ?: f.default).ifBlank { "(未填)" }
+            is UiFormField.NumberSlider -> {
+                val v = (values[f.id] as? Number)?.toFloat() ?: f.default
+                val n = if (f.step >= 1f) v.roundToInt().toString() else "%.1f".format(v)
+                "$n${f.unit}"
+            }
+            is UiFormField.Select -> values[f.id] as? String ?: f.default
+        }
+        "- ${f.label}：$vStr"
+    }
+    registerSummary { buildFormSummary() }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         block.fields.forEach { field ->
@@ -856,35 +1107,25 @@ private fun FormBlockView(
             }
         }
 
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.End,
-        ) {
-            Button(
-                onClick = {
-                    val summary = block.fields.joinToString("\n") { f ->
-                        val vStr = when (f) {
-                            is UiFormField.Toggle -> if (values[f.id] as? Boolean ?: f.default) "是" else "否"
-                            is UiFormField.Text -> (values[f.id] as? String ?: f.default).ifBlank { "(未填)" }
-                            is UiFormField.NumberSlider -> {
-                                val v = (values[f.id] as? Number)?.toFloat() ?: f.default
-                                val n = if (f.step >= 1f) v.roundToInt().toString() else "%.1f".format(v)
-                                "$n${f.unit}"
-                            }
-                            is UiFormField.Select -> values[f.id] as? String ?: f.default
-                        }
-                        "- ${f.label}：$vStr"
-                    }
-                    if (block.submitAction == "prefill") {
-                        actions?.onPrefill?.invoke(summary)
-                    } else {
-                        actions?.onSend?.invoke(summary)
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = Clay),
+        if (!suppressDefaultSubmit || block.explicitSubmit) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
             ) {
-                val suffix = if (block.submitAction == "send") " ↗" else ""
-                Text("${block.submitLabel}$suffix")
+                Button(
+                    onClick = {
+                        val summary = buildFormSummary()
+                        if (block.submitAction == "prefill") {
+                            actions?.onPrefill?.invoke(summary)
+                        } else {
+                            actions?.onSend?.invoke(summary)
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Clay),
+                ) {
+                    val suffix = if (block.submitAction == "send") " ↗" else ""
+                    Text("${block.submitLabel}$suffix")
+                }
             }
         }
     }

@@ -63,8 +63,11 @@ internal val CLIENT_CAPABILITY_PROMPT: String = """
 - 矢量图：```svg 围栏内放 SVG 源码，或直接输出完整的 <svg ...>...</svg> 块，或用 ![说明](路径.svg) 引用工作区 SVG 文件；
   客户端会直接渲染成支持底色切换、源码复制与全屏双指缩放的原生矢量图卡片。
   若需在图元上直接交互（如流程图节点、拓扑分叉），给 SVG 元素加上 data-cf-send="要发送的话" 或 data-cf-prefill="填入输入框的话"，用户点图元即可触发。
-- 原生交互卡：```ui 围栏内放 JSON（适合做题、方案对比、单选/多选确认、参数表单与快捷追问按钮），客户端会渲染成跟随主题的原生交互组件，无需写 HTML/JS：
-  - 单选/多选/做题：{"title":"...","blocks":[{"kind":"choices","prompt":"...","mode":"single|multi|quiz","auto_send":true,"options":[{"id":"a","label":"选项A","desc":"说明","value":"选A","correct":true,"explain":"解析"}]}]}
+- 原生交互卡：```ui 围栏内放 JSON（适合做题、方案对比、单选/多选确认、参数表单与开放动作按钮），客户端会渲染成跟随主题的原生交互组件，无需写 HTML/JS：
+  - 单选/多选/做题（点选项只选中、不立即发消息；用户可补充自定义内容，再点底部按钮触发）：
+    - 单选/多选：{"title":"...","blocks":[{"kind":"choices","prompt":"...","mode":"single|multi","allow_custom":true,"confirm_label":"继续（可选自定义）","confirm_action":"send|prefill","options":[{"id":"a","label":"选项A","desc":"说明","value":"选A"}]}]}
+    - 测验做题：{"kind":"choices","mode":"quiz","prompt":"...","options":[{"id":"a","label":"选项A","correct":true,"explain":"解析"}]}
+    - 组合开放按钮：可在同卡末尾附 "actions" 块（按钮可设任意文案与 action="send"|"prefill"），点击底部按钮会自动附带上面已选的 choices/form 内容。
   - 方案对比切换：{"kind":"tabs","items":[{"label":"方案A","title":"...","body":"...","pros":["优点"],"cons":["缺点"],"select_payload":"采用方案A"}]}
   - 参数表单：{"kind":"form","submit_label":"提交","submit_action":"send|prefill","fields":[{"id":"k","type":"toggle|slider|select|text","label":"...","default":...}]}
   - 快捷动作按钮：{"kind":"actions","items":[{"label":"继续深入","action":"send|prefill","payload":"...","style":"primary|secondary|outline"}]}
@@ -74,7 +77,7 @@ internal val CLIENT_CAPABILITY_PROMPT: String = """
 
 怎么选
 - 讲清一件事 → 正文；需要对比、清单、结构 → 正文里的表格或列表。
-- 提问、做题、讨论方案分支、让用户做选择或配参数、提供下一步快捷操作 → 原生交互卡（```ui），比手写网页更轻、原生排版不折行错位；多选确认后可直接回发给你。
+- 提问、做题、讨论方案分支、让用户做选择或配参数、提供下一步快捷操作 → 原生交互卡（```ui），比手写网页更轻、原生排版不折行错位；允许多项选择时用 mode="multi"，选中后由底部开放按钮发送或填入输入框补充。
 - 画架构图、流程图、时序图、几何/函数示意图、数据统计图表或 UI 线框图 → 矢量图格式（```svg，需要点选节点继续聊时顺手加 data-cf-send）。
 - 放一段视频或音频 → 视频 / 音频 / 跳转标签格式（一个视频不值得做成网页）。
 - 放一张图 → 图片格式。

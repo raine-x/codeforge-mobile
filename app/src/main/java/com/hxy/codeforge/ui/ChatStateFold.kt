@@ -316,5 +316,6 @@ internal fun ChatUiState.foldSessionClaimed(sessionId: String, rawTitle: String,
         editText = if (isNew) null else editText,
         editAttachments = if (isNew) emptyList() else editAttachments,
         editBack = if (isNew) null else editBack,
+        editMessageId = if (isNew) null else editMessageId,
     ).applySessions(patched)
 }

@@ -470,4 +470,9 @@ Gradle 走代理必须写 `systemProp.*` 到 `~/.gradle/gradle.properties`；发
 
 ### P-063 · 手机操控一轮一授权护栏 + 按包名索引与行级精准自迭代
 ① 后续普通回合不再误入手机操控模式：`PhoneTaskController` 维护 `explicitPhoneTurn` / `turnCompleted` / `currentTurnPrompt` 与纯意图判定（`isExplicitPhoneTrigger` / `isPhoneControlLikelyNeeded`）；非 `@phone` 且无设备/应用操作意图的回合会在 `PhoneToolDispatcher.checkTurnAllowed` 直接拒绝 `phone.*`，`app_skill` 静默执行不亮跑马灯，`buildWireText` 在无关回合追加提示词护栏，`SKILL_VERSION` 升至 `7`（规则 0）。
+
+### P-064 · 编辑历史消息禁止静默降级为追加发送，注入文本剥离必须覆盖所有匹配入口
+① **所有展示、比对或回填内核原始用户文本的通道**（不仅是 `History` 回放，还包括 `checkpoints.editables`）必须先经过 `stripInjectedText`；否则带 `INJECT_CAPABILITY_MARKER` 的原文与剥离后气泡文本永远比不中，导致 `editBack` 为空并静默退化成 `enqueueSend` 直接追加。
+② `requestEdit` 必须以消息在当前列表中的位置计算 `back`（其后 `MsgRole.User` 数量，`resolveEditBack`）为首选举据并记录 `editMessageId`；`send()` 命中 `editBack != null` 时先于 `running` 转向拦截走 `editUserMessage(buildWireText(...), back)` 并立即用 `truncateMessagesForEdit` 本地删掉后续对话，**绝不允许把「编辑回溯」静默降级为末尾追加或 `steer`**。
+③ 原生 `ui` 围栏 `choices` 的点击仅切换高亮（`autoSend` 默认与实际行为恒为 `false`），允许自定义补充（`allow_custom`）与「填入输入框」；提交必须由底部开放按钮（块自带 `buttons`/`confirm_label` 或卡片末 `actions` 自动携带已选与表单摘要）触发。
 ② 按包名渐进式索引与确定性自学习：被动第 1 步（`screen_observe`/`screen_wait_change`/`app_manage`）在 `matched_app_skills` 暴露 `total_lines`；主动第 1 步用 `app_skill(action=index, id|package_name)` 获取章节与经验行号索引（`buildSkillIndex`）；主动第 2 步用 `get(start_line, end_line)` 按行切片读、`append(target_line|replaces)` 原地替换、`prune` 删除；`PhoneToolDispatcher` 按前台包名脱敏采集动作（`ui_input` 不落盘原文），回合收尾通过 `onTurnFlushing` 写入 `## 最近成功路径`（最多 3 条，新包按 `pkg-<package>` 自动建档）。
