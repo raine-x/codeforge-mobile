@@ -45,8 +45,88 @@ object PhoneTaskController {
     private var lastThinkingUiUpdateMs = 0L
     private var lastThinkingNotifUpdateMs = 0L
 
+    /** 当前回合是否显式请求了手机操控（例如带 @phone）。 */
+    @Volatile
+    private var explicitPhoneTurn: Boolean = false
+
+    /** 当前回合是否已完成/停止（同回合收尾后禁止再次误入操控模式）。 */
+    @Volatile
+    private var turnCompleted: Boolean = false
+
+    /** 本轮完整用户输入，用于判断后续问题是否真的需要手机操控。 */
+    @Volatile
+    private var currentTurnPrompt: String = ""
+
+    /** 回合成功收尾时的轨迹落盘钩子（由 PhoneToolDispatcher 挂入）。 */
+    @Volatile
+    var onTurnFlushing: (() -> Unit)? = null
+
+    /** 新回合开始或强制停机时清理未落盘的临时轨迹。 */
+    @Volatile
+    var onTurnReset: (() -> Unit)? = null
+
     @Volatile
     private var historyFile: File? = null
+
+    fun isExplicitPhoneTurn(): Boolean = explicitPhoneTurn
+    fun isTurnCompleted(): Boolean = turnCompleted
+    fun currentTurnPrompt(): String = currentTurnPrompt
+
+    /**
+     * 判断文本是否显式触发 `@phone` 手机操控模式（用于提前点亮跑马灯）。
+     *
+     * 「为什么手机操控又进去了」「介绍手机操控架构」这类讨论性文本**不应**提前进入操控态，
+     * 只有明确带 `@phone` 或祈使型「用/开启/启动手机操控」才直接点亮。
+     */
+    internal fun isExplicitPhoneTrigger(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return false
+        if (t.contains("@phone", ignoreCase = true)) return true
+        val metaDiscussion = META_QUESTION_REGEX.containsMatchIn(t)
+        if (metaDiscussion) return false
+        return EXPLICIT_PHONE_PHRASE_REGEX.containsMatchIn(t)
+    }
+
+    /**
+     * 判断当前用户问题是否可能需要调用手机/设备操控工具（用于非 `@phone` 回合防误触发）。
+     *
+     * 上一轮刚用过 `@phone`，模型在历史上下文惯性下常在下一轮普通问答/写代码时
+     * 顺手调 `screen_observe` 或 `device_status`，导致莫名重进手机操控模式。
+     * 这里做轻量意图兜底：明确无设备操控诉求时直接在分发层拒掉，不亮跑马灯。
+     */
+    internal fun isPhoneControlLikelyNeeded(text: String): Boolean {
+        val t = text.trim()
+        if (t.isEmpty()) return false
+        if (t.contains("@phone", ignoreCase = true)) return true
+        // 若用户明确是在问代码/报错/机制/原因（且不含直接「打开某 App/截屏/设闹钟」等执行动作），放回普通问答
+        val hasDirectExec = DIRECT_PHONE_EXEC_REGEX.containsMatchIn(t)
+        if (hasDirectExec) return true
+        if (META_QUESTION_REGEX.containsMatchIn(t)) return false
+        return IMPLICIT_PHONE_ACTION_REGEX.containsMatchIn(t)
+    }
+
+    private val META_QUESTION_REGEX = Regex(
+        "(为什么|为啥|怎么回事|什么原因|架构|原理|代码|源码|报错|崩溃|bug|readme|文档|介绍一下|解释一下)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private val EXPLICIT_PHONE_PHRASE_REGEX = Regex(
+        "((请|帮我|用|开启|进入|启动|执行).{0,6}(手机操控|操控手机|操作手机)|^(手机操控|操控手机)[：:,，\\s])",
+    )
+
+    private val DIRECT_PHONE_EXEC_REGEX = Regex(
+        "((帮我|去|请|现在|立刻)?(打开|启动|切到|切换到|卸载|关闭).{0,10}(设置|微信|京东|淘宝|支付宝|高德|美团|b站|哔哩|抖音|浏览器|日历|时钟|相机|相册|短信|电话|应用|app|settings)" +
+            "|截[个张下]?[屏图]|录[个段下]?[屏音]|take\\s+a?\\s*screenshot|open\\s+(android\\s+)?settings" +
+            "|查(一下|看)?(当前)?(电量|电池|wifi|蓝牙|音量|亮度|存储|通知)|battery\\s+level" +
+            "|(设|定|建|调)[个置]?.{0,14}(闹钟|日程|提醒|倒计时|音量|亮度|勿扰|蓝牙|wifi|wi-fi)" +
+            "|发(一条)?(微信|短信)|打(个)?电话|拨号)",
+        RegexOption.IGNORE_CASE,
+    )
+
+    private val IMPLICIT_PHONE_ACTION_REGEX = Regex(
+        "(点[击按]屏幕|滑[动屏]|长按|拖拽|通知栏|桌面|通讯录|联系人|分享到|操控手机|操作手机|tap\\s+|swipe\\s+|click\\s+)",
+        RegexOption.IGNORE_CASE,
+    )
 
     fun init(context: Context) {
         val dir = File(context.applicationContext.filesDir, "phone_control").apply { mkdirs() }
@@ -60,7 +140,12 @@ object PhoneTaskController {
 
     /** 新对话发送前重置停机标记；仅记录任务摘要待工具调用时正式激活。 */
     fun prepareForTurn(userPrompt: String) {
-        val clean = userPrompt.trim().take(120)
+        val full = userPrompt.trim()
+        val clean = full.take(120)
+        explicitPhoneTurn = false
+        turnCompleted = false
+        currentTurnPrompt = full
+        runCatching { onTurnReset?.invoke() }
         synchronized(lock) {
             thinkingRaw.setLength(0)
             lastThinkingUiUpdateMs = 0L
@@ -81,7 +166,12 @@ object PhoneTaskController {
 
     /** 发送 `@phone` 任务时立即进入运行态，点亮屏幕跑马灯、思考提示与可停止通知栏。 */
     fun activateForPhoneTurn(userPrompt: String) {
-        val clean = userPrompt.trim().take(120)
+        val full = userPrompt.trim()
+        val clean = full.take(120)
+        explicitPhoneTurn = true
+        turnCompleted = false
+        currentTurnPrompt = full
+        runCatching { onTurnReset?.invoke() }
         synchronized(lock) {
             thinkingRaw.setLength(0)
             lastThinkingUiUpdateMs = 0L
@@ -235,6 +325,9 @@ object PhoneTaskController {
 
     /** 当单轮对话完成（Agent Idle）时收口。 */
     fun markTurnCompleted() {
+        runCatching { onTurnFlushing?.invoke() }
+        explicitPhoneTurn = false
+        turnCompleted = true
         val cfg = PhoneControlPrefs.config.value
         var shouldReturnToApp = false
         synchronized(lock) {
@@ -266,6 +359,9 @@ object PhoneTaskController {
 
     /** 由 Agent 主动宣告任务完成或停止操控（不打断 Agent 当前最终回复生成）。 */
     fun completeByAgent(summary: String = "手机操控任务已完成", returnToAppOverride: Boolean? = null) {
+        runCatching { onTurnFlushing?.invoke() }
+        explicitPhoneTurn = false
+        turnCompleted = true
         val cfg = PhoneControlPrefs.config.value
         synchronized(lock) {
             thinkingRaw.setLength(0)
@@ -336,6 +432,9 @@ object PhoneTaskController {
     }
 
     fun stop(reason: String = "用户已立即停止手机操控", stopAgentTurn: Boolean = true) {
+        explicitPhoneTurn = false
+        turnCompleted = true
+        runCatching { onTurnReset?.invoke() }
         synchronized(lock) {
             thinkingRaw.setLength(0)
             val cur = _state.value

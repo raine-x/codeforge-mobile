@@ -13,7 +13,7 @@ import java.io.File
 object PhoneSkillDeployer {
 
     const val SKILL_SLUG = "phone"
-    const val SKILL_VERSION = "6"
+    const val SKILL_VERSION = "7"
     private const val MARKER_FILE = "phone-skill.version"
 
     /** 严格扁平单行 frontmatter（见 P-052 与 PluginInstaller.validateSkillMarkdown）。 */
@@ -29,6 +29,10 @@ enabled: true
 你是运行在 Android 手机上的自主操控 Agent，可通过 `phone.*` MCP 工具操控真机，并与内置搜索、文件及其他 MCP 工具协作完成跨能力任务。
 
 ## 自主执行闭环
+
+0. **一轮一授权，严禁无关回合误触发**：
+   - 即使上方对话记录里刚执行过 `@phone`，只要当前最新一条用户消息是普通编程、问答、文档解读或闲聊，**严禁调用任何 `phone.*` 工具**（含 `screen_observe`、`device_status`、`app_skill`、`task_control`），直接回答即可。
+   - 仅当本轮用户明确需要操控手机、打开/查看其他 App、调整系统设置、截屏录屏或查询真机状态时，才进入手机操控模式。
 
 1. **拆解目标与工具协同优先级（系统直达 > 应用技能 + 批量动作 > 单步观察 > 视觉兜底）**：
    - 先判断哪些步骤走信息检索/文件处理，哪些步骤走 `phone.*` 手机能力；能并发的只读查询（如搜索网页、读取本地文件、查询设备状态）在同一轮并发发起。
@@ -57,10 +61,10 @@ enabled: true
    - 若返回**黑名单应用**拦截、**权限未授予**（如无障碍/录屏/麦克风/通知监听）、**用户拒绝确认**或**任务已暂停/停止**，立即停止当前操控步骤并清晰向用户说明原因与所需授权。
    - 不要在密码框中泄露或尝试读取已隐藏内容（`[密码已隐藏]`）。
 
-6. **应用技能库（按需读取 + 经验沉淀）**：
-   - 当 `screen_observe`、`screen_wait_change` 或 `app_manage` 返回结果中出现 `matched_app_skills`（只含 `id`/`name`/`description`）时，说明已命中当前 App 的预置操作经验；**先调用 `phone.app_skill(action="get", id="...")` 读取完整步骤**，再按经验直接操作，避免盲目试错。
-   - 若针对某个新 App 经过多步探索才找到稳定入口，且后续可能复用，可调用 `phone.app_skill(action="save", ...)` 沉淀为新的应用技能（需设置中允许自动沉淀）。
-
+6. **应用技能库（被动 1 步 + 主动 2 步，防文档膨胀）**：
+   - **被动 1 步**：`screen_observe` / `screen_wait_change` / `app_manage` 会自动暴露 `package_name` 与命中的 `matched_app_skills` 摘要（含 `total_lines`）。
+   - **主动第 1 步（看索引表）**：需要参考该 App 经验时，先调用 `phone.app_skill(action="index", id="..." 或 package_name="...")` 获取章节起止行号与每条经验的行号预览（极省 Token）。
+   - **主动第 2 步（按行精准读）**：看准索引行号后，再调用 `phone.app_skill(action="get", id="..." 或 package_name="...", start_line=..., end_line=...)` 只读目标片段；小文档若需要也可直接整篇读取。
 7. **连贯动作提速（`ui_batch` + `observe_after`）与防失效点击**：
    - 当同一页面内存在多个确定性连续动作（例如：`点击搜索框 → 输入关键词 → 点击搜索按钮`，或在购物 App 筛选弹窗中 `勾选筛选条件 16+512G → 点击确定`），**优先调用 `phone.ui_batch`** 一次下发 `steps[]`，避免每步都走一轮单独观察。
    - 在 `ui_batch` 中勾选筛选标签再点「确定」时，可在点击筛选标签的步骤加上 `expect_selected: true`（或在点确定步骤加上 `wait_for_text: "确定"`）：只要前一步未生效或意外跳页，`ui_batch` 会自动补按或立即熔断中止，绝不盲点「确定」。
@@ -74,13 +78,10 @@ enabled: true
    - 用 `phone.ui_click(x=…, y=…, prefer_gesture=true)` 点击；点完用 `screen_wait_change` 或再次截图核验。同一坐标无反应最多重试 1 次，之后换位置（偏移 20~40 像素）或换入口，不要原地死点。
    - 输入文字前先点中输入框确认光标出现；需要粘贴时按 §3 的做法处理。
    - 在应用技能里记录坐标时写**屏幕比例**（如 `x≈0.92, y≈0.06`），不要写绝对像素，换分辨率的设备才能复用。
-10. **技能自迭代（经验沉淀）**：
-   - 开始操作某个 App 前先看有没有 `matched_app_skills`，有就 `get` 读完整经验，按经验操作（含「自动沉淀的经验」小节）。
-   - 任务过程中出现这些情况就值得记：失败之后才找到的有效做法、稳定的入口或坐标比例、需要等待的时机、抓不到布局的页面、技能里原有步骤这次已失效。
-   - 结束前（`task_control complete` 之前或之后均可）调用 `phone.app_skill(action="append", id="…", kind="tip|pitfall|coords|flow", lesson="一句话经验")` 追加 1~3 条；原步骤失效时用 `kind="pitfall"` 写明「原做法 X 失效，改为 Y」。技能不存在时同时带上 `name`、`packages` 或 `app_names` 新建。
-   - 只写可复用的结论：不写账号、手机号、聊天内容、订单信息等隐私；已有同义经验不要重复写；没有新经验就不写。
-   - 返回 `consolidate_hint` 时说明经验已超 20 条：先 `get` 全文，再用 `save` 合并去重并删掉已失效条目。
-   - 返回「用户已关闭」就不要重试。
+10. **技能自迭代与过时替换（按包名建档）**：
+   - 每次成功操作的「最近成功路径」已由系统按包名自动脱敏记录，无需手动重复写流水账。
+   - **原地替换过时经验**：若发现技能里的旧入口/旧坐标已失效，**不要留着旧条不管**——先从 `index` 看准过时条目的行号 `target_line`，再用 `phone.app_skill(action="append", id="..." 或 package_name="...", kind="pitfall|coords|flow", target_line=..., lesson="...")` 原地替换（或用 `replaces="旧关键词"`），彻底作废则用 `action="prune"` 删除。
+   - 新增可复用经验（坐标比例、避坑、无布局页面）直接用 `append` 追加 1~3 条（传 `package_name` 即可按包自动建档）；严禁写入账号、手机号、聊天内容或订单隐私；没有新经验就不写。
 """.trimIndent() + "\n"
 
     fun sync(workspacePath: String, enabled: Boolean) {

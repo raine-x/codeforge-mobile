@@ -187,43 +187,7 @@ object EnvKit {
         cacheDir: File,
         nowMs: Long = System.currentTimeMillis(),
     ) {
-        val dayDeadline = nowMs - 24L * 3600 * 1000
-        val weekDeadline = nowMs - 7L * 24 * 3600 * 1000
-
-        File(filesDir, "outbox").takeIf { it.isDirectory }?.listFiles()?.forEach { f ->
-            if (f.isFile && (f.name.endsWith(".tmp") || f.lastModified() < dayDeadline)) {
-                runCatching { f.delete() }
-            }
-        }
-
-        listOf(File(cacheDir, "camera"), File(cacheDir, "logs")).forEach { dir ->
-            if (dir.isDirectory) {
-                dir.listFiles()?.forEach { f ->
-                    if (f.isFile && f.lastModified() < dayDeadline) {
-                        runCatching { f.delete() }
-                    }
-                }
-            }
-        }
-
-        val managedAttachmentDirs = buildList {
-            add(File(filesDir, "workspace/attachments"))
-            add(File(filesDir, "spaces/inbox/attachments"))
-            File(filesDir, "workspace").takeIf { it.isDirectory }?.listFiles()?.forEach { d ->
-                if (d.isDirectory && d.name.startsWith("p-")) {
-                    add(File(d, "attachments"))
-                }
-            }
-        }
-        managedAttachmentDirs.forEach { dir ->
-            if (dir.isDirectory) {
-                dir.listFiles()?.forEach { f ->
-                    if (f.isFile && f.lastModified() < weekDeadline) {
-                        runCatching { f.delete() }
-                    }
-                }
-            }
-        }
+        StorageManager.enforceAutoQuota(filesDir, cacheDir, nowMs)
     }
 
     /**

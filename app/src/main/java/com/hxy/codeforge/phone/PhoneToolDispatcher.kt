@@ -24,6 +24,119 @@ import java.util.Locale
 object PhoneToolDispatcher {
 
     private const val MAX_OUTPUT_CHARS = 22_000
+    private val traceLock = Any()
+    private val turnTraces = linkedMapOf<String, MutableList<String>>()
+    private val traceLabels = mutableMapOf<String, String>()
+    private val skillReadPackages = mutableSetOf<String>()
+    private val hadFailurePackages = mutableSetOf<String>()
+    private val TRACEABLE_TOOLS = setOf("ui_click", "ui_gesture", "ui_input", "ui_batch", "app_manage")
+
+    init {
+        PhoneTaskController.onTurnFlushing = { flushTurnTraces() }
+        PhoneTaskController.onTurnReset = { clearTurnTraces() }
+    }
+
+    private fun clearTurnTraces() {
+        synchronized(traceLock) {
+            turnTraces.clear()
+            traceLabels.clear()
+            skillReadPackages.clear()
+            hadFailurePackages.clear()
+        }
+    }
+
+    private fun checkTurnAllowed(toolName: String): String? {
+        // app_skill 仅读写经验文档，允许在任务完成后的反思阶段静默调用
+        if (toolName == "app_skill") {
+            val prompt = PhoneTaskController.currentTurnPrompt()
+            if (prompt.isNotBlank() &&
+                !PhoneTaskController.isExplicitPhoneTurn() &&
+                !PhoneTaskController.isPhoneControlLikelyNeeded(prompt)
+            ) {
+                return "当前用户问题无需手机操控，请直接回答，勿调用 phone.app_skill。"
+            }
+            return null
+        }
+        if (PhoneTaskController.isTurnCompleted()) {
+            return if (toolName == "task_control") null
+            else "本轮手机操控已结束，请直接向用户总结回复，不要再次进入手机操控模式。"
+        }
+        val prompt = PhoneTaskController.currentTurnPrompt()
+        if (prompt.isNotBlank() &&
+            !PhoneTaskController.isExplicitPhoneTurn() &&
+            !PhoneTaskController.isPhoneControlLikelyNeeded(prompt)
+        ) {
+            return "当前用户问题与手机操控无关，未授权进入手机操控模式。请直接用文字、代码或搜索/文件工具回答，勿调用 phone.* 工具。"
+        }
+        return null
+    }
+
+    private fun recordActionTrace(ctx: Context, toolName: String, args: JSONObject, payload: JSONObject, fgPkg: String) {
+        val pkg = payload.optString("package").ifBlank {
+            payload.optString("target_package")
+        }.ifBlank { fgPkg }.trim()
+        if (pkg.isEmpty() || pkg == ctx.packageName || PhoneScope.blocked(ctx, pkg)) return
+
+        val stepText = when (toolName) {
+            "ui_click" -> {
+                val target = payload.optString("target").ifBlank { args.optString("text") }.ifBlank { "控件" }
+                if (args.has("x") && args.has("y")) {
+                    val dm = ctx.resources.displayMetrics
+                    val x = args.optDouble("x", -1.0)
+                    val y = args.optDouble("y", -1.0)
+                    if (dm.widthPixels > 0 && dm.heightPixels > 0 && x >= 0 && y >= 0) {
+                        val rx = "%.2f".format(java.util.Locale.US, (x / dm.widthPixels).coerceIn(0.0, 1.0))
+                        val ry = "%.2f".format(java.util.Locale.US, (y / dm.heightPixels).coerceIn(0.0, 1.0))
+                        "点「$target」($rx,$ry)"
+                    } else {
+                        "点「$target」"
+                    }
+                } else {
+                    "点「$target」"
+                }
+            }
+            "ui_gesture" -> "${args.optString("direction", args.optString("action", "swipe"))}滑动"
+            // 严格脱敏：ui_input 绝不把用户输入内容落盘，只记目标控件与动作类型
+            "ui_input" -> "在「${payload.optString("target").ifBlank { args.optString("ref").ifBlank { "输入框" } }}」输入文本"
+            "ui_batch" -> "批量执行${args.optJSONArray("steps")?.length() ?: 0}步"
+            "app_manage" -> {
+                val act = args.optString("action")
+                if (act == "launch" || act == "switch") "打开应用" else return
+            }
+            else -> return
+        }
+        val label = payload.optString("target_name").ifBlank { PhoneScope.appLabel(ctx, pkg) }
+        synchronized(traceLock) {
+            val list = turnTraces.getOrPut(pkg) { mutableListOf() }
+            if (list.lastOrNull() != stepText && list.size < 12) {
+                list.add(stepText)
+            }
+            if (label.isNotBlank()) traceLabels[pkg] = label
+        }
+    }
+
+    private fun flushTurnTraces() {
+        val cfg = PhoneControlPrefs.config.value
+        val ctx = PhoneRuntime.appContext
+        if (!cfg.allowSkillSelfLearning || !cfg.appSkillsEnabled || ctx == null) {
+            clearTurnTraces()
+            return
+        }
+        val snapshot: List<Triple<String, String, List<String>>>
+        synchronized(traceLock) {
+            snapshot = turnTraces.entries
+                .filter { it.value.size >= 2 }
+                .map { (pkg, steps) -> Triple(pkg, traceLabels[pkg] ?: pkg, steps.toList()) }
+            turnTraces.clear()
+            traceLabels.clear()
+        }
+        snapshot.forEach { (pkg, label, steps) ->
+            if (!PhoneScope.blocked(ctx, pkg)) {
+                val summary = steps.take(8).joinToString(" → ")
+                PhoneAppSkillStore.recordRecentFlow(pkg, label, summary)
+            }
+        }
+    }
 
     private val server: PhoneMcpServer by lazy {
         PhoneMcpServer { toolName, args -> dispatch(toolName, args) }
@@ -58,9 +171,16 @@ object PhoneToolDispatcher {
         val def = PhoneToolRegistry.find(toolName)
             ?: return fail("未知手机操控工具：$toolName")
 
+        checkTurnAllowed(toolName)?.let { reason -> return fail(reason) }
+
         // `task_control` 不受总开关外层 pause 阻塞，确保模型随时可查/停状态
         if (toolName == "task_control") {
             return executeTaskControl(args)
+        }
+        // app_skill 只读取/索引/更新本地技能文件，不点亮屏幕跑马灯与控制条
+        if (toolName == "app_skill") {
+            if (!cfg.masterEnabled) return fail("手机操控总开关未启用")
+            return executeAppSkill(args).fold(onSuccess = { ok(it) }, onFailure = { fail(it.message ?: "skill failed") })
         }
 
         if (!cfg.masterEnabled) {
@@ -126,6 +246,9 @@ object PhoneToolDispatcher {
                 val detail = payload.optString("summary")
                     .ifBlank { payload.optString("message") }
                     .ifBlank { "执行成功" }
+                if (toolName in TRACEABLE_TOOLS) {
+                    recordActionTrace(ctx, toolName, args, payload, fgPkg)
+                }
                 PhoneTaskController.finishAction(
                     tool = toolName,
                     summary = summary,
@@ -139,6 +262,11 @@ object PhoneToolDispatcher {
             },
             onFailure = { err ->
                 val msg = err.message ?: err.javaClass.simpleName
+                if (fgPkg.isNotBlank()) {
+                    synchronized(traceLock) {
+                        if (fgPkg in skillReadPackages) hadFailurePackages.add(fgPkg)
+                    }
+                }
                 PhoneTaskController.finishAction(
                     tool = toolName,
                     summary = summary,
@@ -209,10 +337,15 @@ object PhoneToolDispatcher {
             if ((action == "complete" || action == "stop") &&
                 PhoneControlPrefs.config.value.allowSkillSelfLearning
             ) {
+                val fallbackPkgs = synchronized(traceLock) { hadFailurePackages.toList() }
+                val replaceTip = if (fallbackPkgs.isNotEmpty()) {
+                    "本轮曾在 ${fallbackPkgs.joinToString()} 上调过旧技能后重探成功，请先调 app_skill(action=\"index\", package_name=...) 查行号，再用 append(target_line=...) 或 prune 原地替换过时条目；"
+                } else {
+                    ""
+                }
                 put(
                     "reflect_hint",
-                    "如本次出现过：失败后才找到的有效做法、稳定的入口或坐标比例、需要等待的时机、无障碍抓不到布局的页面，" +
-                        "请用 phone.app_skill(action=\"append\", ...) 追加 1~3 条经验；没有新经验就不要写。",
+                    replaceTip + "如本次出现新发现（坐标比例/避坑/无布局页面），请用 phone.app_skill(action=\"append\", ...) 追加 1~3 条；最近成功路径已由系统按包自动记录，无新经验可不写。",
                 )
             }
         }
@@ -1297,7 +1430,7 @@ object PhoneToolDispatcher {
         targetJson.put("matched_app_skills", PhoneAppSkillStore.toSummaryJsonArray(matched))
         targetJson.put(
             "app_skill_hint",
-            "命中当前应用的操作技能，如需完整步骤请调用 phone.app_skill(action=\"get\", id=\"...\")",
+            "命中当前应用的操作技能（见 total_lines）。推荐先调 phone.app_skill(action=\"index\", id=\"...\") 看章节与条目行号，再用 get(start_line, end_line) 精准读取。",
         )
     }
 
@@ -1348,19 +1481,56 @@ object PhoneToolDispatcher {
                     }
                 )
             }
-            "get" -> {
-                val idOrName = args.optString("id").trim()
-                    .ifBlank { args.optString("name").trim() }
-                if (idOrName.isEmpty()) {
-                    return Result.failure(IllegalArgumentException("get 需要提供技能 id 或 name"))
+            "index" -> {
+                val idOrName = args.optString("id").trim().ifBlank { args.optString("name").trim() }
+                val pkg = args.optString("package_name").trim()
+                val skill = PhoneAppSkillStore.resolveSkill(idOrName, pkg, includeDisabled = false)
+                    ?: return Result.failure(IllegalArgumentException("未找到匹配的应用技能（id=$idOrName, package_name=$pkg）"))
+                synchronized(traceLock) {
+                    skill.packages.forEach { if (!it.contains('*')) skillReadPackages.add(it) }
+                    if (pkg.isNotEmpty()) skillReadPackages.add(pkg)
                 }
-                val skill = PhoneAppSkillStore.getByIdOrName(idOrName, includeDisabled = false)
-                    ?: return Result.failure(IllegalArgumentException("未找到或未启用应用技能：$idOrName"))
                 Result.success(
-                    PhoneAppSkillStore.toDetailJson(skill).apply {
-                        put("summary", "已读取应用技能「${skill.name}」")
+                    PhoneAppSkillStore.toIndexJson(skill).apply {
+                        put("summary", "已生成「${skill.name}」行号索引（共 ${optInt("total_lines")} 行），可用 get(start_line, end_line) 精准读取")
                     }
                 )
+            }
+            "get" -> {
+                val idOrName = args.optString("id").trim().ifBlank { args.optString("name").trim() }
+                val pkg = args.optString("package_name").trim()
+                if (idOrName.isEmpty() && pkg.isEmpty()) {
+                    return Result.failure(IllegalArgumentException("get 需要提供技能 id、name 或 package_name"))
+                }
+                val skill = PhoneAppSkillStore.resolveSkill(idOrName, pkg, includeDisabled = false)
+                    ?: return Result.failure(IllegalArgumentException("未找到或未启用应用技能：${idOrName.ifBlank { pkg }}"))
+                synchronized(traceLock) {
+                    skill.packages.forEach { if (!it.contains('*')) skillReadPackages.add(it) }
+                    if (pkg.isNotEmpty()) skillReadPackages.add(pkg)
+                }
+                val startLine = if (args.has("start_line") && !args.isNull("start_line")) args.optInt("start_line") else null
+                val endLine = if (args.has("end_line") && !args.isNull("end_line")) args.optInt("end_line") else null
+                val totalLines = PhoneAppSkillStore.buildSkillIndex(skill.content).totalLines
+                val out = when {
+                    startLine != null || endLine != null -> {
+                        PhoneAppSkillStore.toLineSliceJson(skill, startLine, endLine).apply {
+                            put("summary", "已精准读取「${skill.name}」第 ${optInt("start_line")}–${optInt("end_line")} 行")
+                        }
+                    }
+                    totalLines <= PhoneAppSkillStore.SMALL_SKILL_INLINE_LINES -> {
+                        PhoneAppSkillStore.toDetailJson(skill).apply {
+                            put("summary", "已读取应用技能「${skill.name}」（共 $totalLines 行）")
+                        }
+                    }
+                    else -> {
+                        PhoneAppSkillStore.toLineSliceJson(skill, 1, PhoneAppSkillStore.SMALL_SKILL_INLINE_LINES).apply {
+                            put("truncated", true)
+                            put("index", PhoneAppSkillStore.toIndexJson(skill))
+                            put("summary", "文档共 $totalLines 行，已截断前 ${PhoneAppSkillStore.SMALL_SKILL_INLINE_LINES} 行并返回索引表；请按 index 行号用 start_line/end_line 精准读取")
+                        }
+                    }
+                }
+                Result.success(out)
             }
             "save" -> {
                 if (!cfg.allowSkillSelfLearning) {
@@ -1401,9 +1571,11 @@ object PhoneToolDispatcher {
                 }
                 val id = args.optString("id").trim()
                 val name = args.optString("name").trim()
-                if (id.isEmpty() && name.isEmpty()) {
-                    return Result.failure(IllegalArgumentException("append 需要提供技能 id（或新建时的 name）"))
+                val pkg = args.optString("package_name").trim()
+                if (id.isEmpty() && name.isEmpty() && pkg.isEmpty()) {
+                    return Result.failure(IllegalArgumentException("append 需要提供技能 id、package_name 或新建时的 name"))
                 }
+                val targetLine = if (args.has("target_line") && !args.isNull("target_line")) args.optInt("target_line") else null
                 PhoneAppSkillStore.appendExperience(
                     id = id.ifBlank { name },
                     kind = args.optString("kind"),
@@ -1412,21 +1584,50 @@ object PhoneToolDispatcher {
                     description = args.optString("description").trim(),
                     packages = jsonStringList(args, "packages"),
                     appNames = jsonStringList(args, "app_names"),
+                    packageName = pkg,
+                    targetLine = targetLine,
+                    replaces = args.optString("replaces"),
                 ).map { (saved, merged) ->
                     JSONObject().apply {
                         put("id", saved.id)
                         put("name", saved.name)
                         put("saved", merged.added)
+                        put("replaced", merged.replaced)
                         put("lesson_count", merged.lessonCount)
                         put("file_path", saved.filePath)
                         put(
                             "summary",
-                            if (merged.added) "已追加经验到应用技能「${saved.name}」（共 ${merged.lessonCount} 条）"
-                            else "该经验已存在，未重复写入",
+                            when {
+                                merged.replaced -> "已原地替换「${saved.name}」的过时经验（共 ${merged.lessonCount} 条）"
+                                merged.added -> "已追加经验到应用技能「${saved.name}」（共 ${merged.lessonCount} 条）"
+                                else -> "该经验已存在，未重复写入"
+                            },
                         )
                         if (merged.lessonCount > 20) {
-                            put("consolidate_hint", "经验已超过 20 条：请 get 读取全文后用 save 合并去重、删掉已失效的条目")
+                            put("consolidate_hint", "经验已超过 20 条：请 index 查看行号后用 prune 清理过时条目")
                         }
+                    }
+                }
+            }
+            "prune" -> {
+                if (!cfg.allowSkillSelfLearning) {
+                    return Result.failure(
+                        IllegalStateException("用户已关闭「允许模型自动沉淀应用技能」，无法修改自定义技能库")
+                    )
+                }
+                val id = args.optString("id").trim().ifBlank { args.optString("name").trim() }
+                val pkg = args.optString("package_name").trim()
+                val targetLine = if (args.has("target_line") && !args.isNull("target_line")) args.optInt("target_line") else null
+                val match = args.optString("match").ifBlank { args.optString("replaces") }.trim()
+                if (targetLine == null && match.isEmpty()) {
+                    return Result.failure(IllegalArgumentException("prune 需要提供 target_line 或 match 关键词"))
+                }
+                PhoneAppSkillStore.pruneCustomExperience(id, pkg, targetLine, match).map { (saved, removed) ->
+                    JSONObject().apply {
+                        put("id", saved.id)
+                        put("name", saved.name)
+                        put("removed", removed)
+                        put("summary", if (removed > 0) "已从「${saved.name}」移除 $removed 条过时经验" else "未匹配到要删除的条目")
                     }
                 }
             }

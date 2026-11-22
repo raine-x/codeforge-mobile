@@ -379,11 +379,11 @@ object PhoneToolRegistry {
         ),
         ToolDef(
             name = "app_skill",
-            description = "检索、读取或沉淀特定 App 的操作技能库（YAML/Markdown 经验文档）。默认只返回名称与简介，调用 get 才加载完整步骤；save 整篇写入自定义技能；append 只追加一条经验到技能末尾的「自动沉淀的经验」小节（推荐，不会丢原有步骤）。",
+            description = "按包名检索、索引并精准读写特定 App 的操作技能库。被动命中后：先调用 action=index 查看章节与每条经验的精确行号（主动第1步），再用 action=get(start_line, end_line) 只读取需要的片段或用 append(target_line/replaces)/prune 原地替换删减过时经验（主动第2步）。",
             requiredCapability = null,
             schema = schema(
                 props = mapOf(
-                    "action" to prop("string", "动作类型", listOf("list", "match", "get", "save", "append")),
+                    "action" to prop("string", "动作类型", listOf("list", "match", "index", "get", "append", "prune", "save")),
                     "id" to prop("string", "技能 id 或名称（get/save 时使用）"),
                     "package_name" to prop("string", "目标应用包名（match 时可选）"),
                     "app_name" to prop("string", "目标应用名称（match 时可选）"),
@@ -397,6 +397,11 @@ object PhoneToolRegistry {
                     "content" to prop("string", "save 时的 Markdown 操作经验正文"),
                     "kind" to prop("string", "append 时的经验类型：tip 通用技巧 / pitfall 踩坑 / coords 坐标点击位置 / flow 操作流程", listOf("tip", "pitfall", "coords", "flow")),
                     "lesson" to prop("string", "append 时的一条经验（200 字内，一句话讲清；不得含账号、手机号、聊天内容等隐私）"),
+                    "start_line" to prop("integer", "get 时按行读取的起始行号（1-based，先从 index 获取）"),
+                    "end_line" to prop("integer", "get 时按行读取的结束行号（1-based）"),
+                    "target_line" to prop("integer", "append(替换) 或 prune(删除) 时要精准修改的条目行号"),
+                    "replaces" to prop("string", "append 时要原地替换的旧经验关键词（不用行号时可选）"),
+                    "match" to prop("string", "prune 时要删除的过时经验关键词"),
                 ),
                 required = listOf("action"),
             ),

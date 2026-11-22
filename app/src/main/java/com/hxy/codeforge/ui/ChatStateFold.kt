@@ -123,7 +123,7 @@ internal fun ChatUiState.foldAssistantText(text: String, newId: () -> String, no
             ),
         )
     }
-    return copy(messages = msgs)
+    return copy(messages = msgs, pendingStage = "")
 }
 
 /** 思考增量：与正文一致按**增量**追加（内核 reasoning 帧是流式增量）。 */
@@ -148,7 +148,7 @@ internal fun ChatUiState.foldThinking(text: String, newId: () -> String, now: Lo
             ),
         )
     }
-    return copy(messages = msgs)
+    return copy(messages = msgs, pendingStage = "")
 }
 
 /**
@@ -178,7 +178,7 @@ internal fun ChatUiState.foldToolStart(call: ToolCall, newId: () -> String, now:
         tools = tools,
         segments = upsertToolSegment(target.segments, call),
     )
-    return copy(messages = msgs)
+    return copy(messages = msgs, pendingStage = "")
 }
 
 /** 工具结果回填：tools 与 segments 两份拷贝一起改，否则按段渲染的卡永远停在「执行中」。 */
@@ -211,9 +211,12 @@ internal fun ChatUiState.foldToolEnd(event: CoreEvent.ToolEnd): ChatUiState {
 }
 
 /** 当前会话忙碌：运行态与会话列表 busy 标记一起写（侧栏项目行的转圈从 busy 聚合）。 */
-internal fun ChatUiState.foldBusy(sessionId: String): ChatUiState =
-    copy(running = true, banner = null)
+internal fun ChatUiState.foldBusy(sessionId: String): ChatUiState {
+    val hasStream = messages.lastOrNull()?.let { it.role == MsgRole.Assistant && it.streaming } == true
+    val nextStage = if (hasStream) "" else pendingStage.ifBlank { "正在连接模型，等待响应…" }
+    return copy(running = true, banner = null, pendingStage = nextStage)
         .applySessions(sessions.map { if (it.id == sessionId) it.copy(busy = true) else it })
+}
 
 /**
  * 一轮结束：清流式标记与挂着的运行中工具行；[showPlan] 为真时把最后一条助手正文装进操作面板。
@@ -230,6 +233,7 @@ internal fun ChatUiState.foldIdle(sessionId: String, showPlan: Boolean): ChatUiS
     }
     return copy(
         running = false,
+        pendingStage = "",
         // 轮次结束：已排队的转向指令此时已被内核处理，提示状态复位
         steerQueued = false,
         messages = msgs,
@@ -240,6 +244,7 @@ internal fun ChatUiState.foldIdle(sessionId: String, showPlan: Boolean): ChatUiS
 /** 失败收尾：同样要清流式标记与挂着的运行中工具行，并挂上错误横幅。 */
 internal fun ChatUiState.foldFailure(banner: Banner): ChatUiState = copy(
     running = false,
+    pendingStage = "",
     banner = banner,
     messages = messages.map { m ->
         sweepMessage(if (m.streaming) m.copy(streaming = false) else m)
@@ -298,6 +303,7 @@ internal fun ChatUiState.foldSessionClaimed(sessionId: String, rawTitle: String,
         title = newTitle,
         messages = if (isNew) emptyList() else messages,
         running = if (isNew) false else running,
+        pendingStage = if (isNew) "" else pendingStage,
         approvals = if (isNew) emptyList() else approvals,
         todos = if (isNew) emptyList() else todos,
         subagents = if (isNew) emptyList() else subagents,

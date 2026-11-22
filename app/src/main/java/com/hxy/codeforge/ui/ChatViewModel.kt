@@ -76,6 +76,8 @@ data class ChatUiState(
     val title: String = "CodeForge",
     val messages: List<ChatMessage> = emptyList(),
     val running: Boolean = false,
+    /** 发送后到首段助手输出/工具开始之间的等待阶段文案（如「正在准备会话…」「正在连接模型…」）。 */
+    val pendingStage: String = "",
     /** 内核已把转向指令排队（steer_queued）：输入框占位符据此提示，并入/轮次结束即清。 */
     val steerQueued: Boolean = false,
     val approvals: List<ApprovalCard> = emptyList(),
@@ -779,6 +781,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                                 }
                             },
                             running = false,
+                            pendingStage = "",
                             approvals = emptyList(),
                             // 不要在这里清 banner：history 会在本机动作后几十毫秒内到达
                             // （重连快照、会话确立），把刚弹出的「导入失败」「保存失败」
@@ -1021,9 +1024,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             _state.update { it.copy(banner = Banner("内核启动中，稍候再发", isError = false)) }
             return
         }
-        val mentionsPhone = trimmed.contains("@phone", ignoreCase = true) ||
-            trimmed.contains("手机操控") ||
-            trimmed.contains("操控手机")
+        val mentionsPhone = PhoneTaskController.isExplicitPhoneTrigger(trimmed)
         if (trimmed.contains("@phone", ignoreCase = true) && !PhoneControlPrefs.config.value.masterEnabled) {
             val msg = "请先在「设置 → 手机操控」中打开总开关以启用 @phone 工具，再发送任务"
             _state.update { it.copy(banner = Banner(msg, isError = true)) }
@@ -1087,11 +1088,16 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
      */
     private suspend fun deliver(req: PendingSend) {
         val t = transport ?: return
-        val sid = awaitSession(t) ?: return
+        val initialStage = when {
+            !_state.value.connected -> "正在启动或连接内核…"
+            newSessionGate != null || _state.value.currentSessionId.isBlank() -> "正在准备会话…"
+            else -> "正在连接模型，等待响应…"
+        }
         val bubbleId = "m-${seq.incrementAndGet()}"
         _state.update { s ->
             s.copy(
                 banner = null,
+                pendingStage = initialStage,
                 messages = s.messages + ChatMessage(
                     id = bubbleId,
                     role = MsgRole.User,
@@ -1101,6 +1107,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     time = System.currentTimeMillis(),
                 ),
             )
+        }
+        val sid = awaitSession(t) ?: run {
+            _state.update { it.copy(pendingStage = "") }
+            return
         }
         // 首条消息不再在客户端截断前 24 字充当标题：内核会在收到首轮提问时并发
         // 静默请求 AI 生成小标题并通过 sessions 帧推回（用户已手动命名时不会覆盖）。
@@ -1119,7 +1129,13 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                 syncPhoneControlPluginNow()
             }
         }
-        val outcome = uploadAttachments(req.attachments, workspaceDir) ?: return
+        if (req.attachments.isNotEmpty()) {
+            _state.update { it.copy(pendingStage = "正在上传附件…") }
+        }
+        val outcome = uploadAttachments(req.attachments, workspaceDir) ?: run {
+            _state.update { it.copy(pendingStage = "") }
+            return
+        }
         if (outcome.bubbleAttachments != req.attachments && outcome.bubbleAttachments.isNotEmpty()) {
             _state.update { s ->
                 s.copy(
@@ -1152,6 +1168,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             }
             appendNoteBeforeInjectedMarkers(req.text, note)
         }
+        _state.update { it.copy(pendingStage = "已发送，正在等待模型响应…") }
         t.setCurrentSession(sid)
         t.sendMessage(wireText, outcome.wireAttachments)
         // 元素已经随这条消息走了 —— 清掉待发列表，输入卡上的 chip 一并消失。

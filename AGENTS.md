@@ -54,11 +54,11 @@ CodeForgeAPP/
 | 界面·浏览器 | `ui/browser/` | `BrowserOverlay`（全屏页）· `PageBridge`（JS 桥 `window.__cf`）· `BrowserWebView` · `HtmlBlockView`（流内 HTML 块）· `HtmlDetection`（裸 HTML 判定/合并）· `BrowserModels` / `BrowserController` |
 | 界面·文件 | `ui/files/` | `FileManagerSheet`（当前工作区/默认空间/全部工作区/手机存储/暂存缓存统一文件浏览、目录选择器模式、一键设为侧栏项目、搜索排序、预览/播放、导入导出、重命名与安全删除、引用与装入附件） |
 | 界面·会话 | `ui/sessions/` | `SessionPane`（项目分组/侧栏）· `ProjectPanel` · `McpSidebarPanel`（三段插件面板）· `PluginDetailSheet` · `SessionActionsSheet` |
-| 界面·设置 | `ui/settings/` | `AppSettings`（Compose 状态 + 加密 SharedPreferences）· `SettingsSheet` + `SettingsModelSection`（二级页、模型与供应商库）· `PhoneControlSettings` + `PhoneControlDialogs`（手机操控设置与黑名单/产物弹窗）· `FileTransferSection` · `ModelEditorSection` · `KernelSettingsSection` · `EnvPackagesSection` |
+| 界面·设置 | `ui/settings/` | `AppSettings`（Compose 状态 + 加密 SharedPreferences）· `SettingsSheet` + `SettingsModelSection`（二级页、模型与供应商库）· `PhoneControlSettings` + `PhoneControlDialogs`（手机操控设置与黑名单/产物弹窗）· `FileTransferSection` · `StorageSection`（存储空间占用统计、缓存清理与孤立工作区管理）· `ModelEditorSection` · `KernelSettingsSection` · `EnvPackagesSection` |
 | 界面·通用 | `ui/common/` `ui/theme/` | `Responsive`（三档判定）· `Glyphs`（图标库）· `NoRipple` · `DeviceRotation`（已停用的旧内容旋转遗留实现）· `StatusBarVisibility`（主窗+弹层状态栏显隐同步）· `ToastHost` · `Theme.kt`（暖色配色/字体/`AppBackground`） |
 | 界面·提示词 | `ui/CapabilityPrompt.kt` | 注入给模型的「客户端渲染能力」说明与注入标记（P-042 / P-054） |
 | 协议 | `core/` | `CoreTransport`（`CoreEvent` + 接口）· `HttpCoreTransport`（HTTP+WS 自愈重连，帧交给 `CoreFrames`）· `CoreFrames`（一种帧一个解析器的注册表，纯 org.json，可纯 JVM 单测）· `AttachmentParsers` · `EnvProbe` |
-| 服务 | `core/` | `CoreService`（specialUse 前台服务：拉起 `.so`、PORT 握手、退避重启）· `KernelApi`（REST 客户端，Cookie 同 WS）· `KernelConfig`（设置 ↔ local.yaml）· `ModelPresets`（国内外常见模型上下文规格预设与 ≥128K 默认兜底）· `EnvKit`（proot+Alpine、`$CELL` 单根、cfrun、软件包）· `BuiltinSkills` · `PluginInstaller`（`.cfplugin` 校验与原子安装）· `PluginSkills`（多工作区技能同步）· `LiveTransport`（进程级 WS holder）· `ApprovalReceiver`（通知 action） |
+| 服务 | `core/` | `CoreService`（specialUse 前台服务：拉起 `.so`、PORT 握手、退避重启）· `KernelApi`（REST 客户端，Cookie 同 WS）· `KernelConfig`（设置 ↔ local.yaml）· `ModelPresets`（国内外常见模型上下文规格预设与 ≥128K 默认兜底）· `EnvKit`（proot+Alpine、`$CELL` 单根、cfrun、软件包）· `StorageManager`（3 级分层目录审计、配额/过期自动清理、孤立工作区识别与安全删除）· `BuiltinSkills` · `PluginInstaller`（`.cfplugin` 校验与原子安装）· `PluginSkills`（多工作区技能同步）· `LiveTransport`（进程级 WS holder）· `ApprovalReceiver`（通知 action） |
 | 语音 | `voice/CloudVoice.kt` | 云端识别（OpenAI 兼容 `/audio/transcriptions`）：16k PCM → WAV → multipart |
 | 模型 | `model/CoreModels.kt`、`model/PluginModels.kt` | 纯 data class / enum，无逻辑无 Android 依赖 |
 | 渲染 | `render/` | `OpenRenderNative`（JNI 封装，加载失败进程级判死退纯文本）· `RenderIr`（IR 解析、delta 应用、公式定界符归一） |
@@ -108,6 +108,7 @@ CodeForgeAPP/
 | 状态栏显隐（默认隐藏） | `AppSettings.showStatusBar` + `MainActivity` + `ui/common/StatusBarVisibility.kt`（同步主窗与所有 `ModalBottomSheet` Dialog 窗） |
 | 附件选择/上传/预览 | `Composer`（stage → outbox）+ `ChatViewModel.uploadAttachments`（<20MiB 走 `/api/upload_file`，≥20MiB 或服务端拒收自动直写 `<workspace>/imports/` 并剥离 WS `attachments[]`）+ `MessageBlocks` 的 `LocalAttachmentRoot`（P-034） |
 | 手机文件导入/导出与统一管理 | `EnvKit` 文件传输/文件管理原语 + `ui/files/FileManagerSheet.kt` + `ui/settings/FileTransferSection.kt` |
+| 存储空间审计、自动配额与清理 | `core/StorageManager.kt` + `EnvKit.cleanupOrphanDirs` + `phone/PhoneArtifactStore.pruneMissing` + `ui/settings/StorageSection.kt` |
 | 内置技能 | `assets/builtin-skills.zip` + `core/BuiltinSkills.kt`；frontmatter 必须扁平单行（P-052） |
 | 动态插件包（`.cfplugin` 导入/启停/密钥/多工作区技能同步） | `model/PluginModels.kt` + `core/PluginInstaller.kt` + `core/PluginSkills.kt` + `ui/sessions/McpSidebarPanel.kt` / `PluginDetailSheet.kt` |
 | 手机操控插件（`@phone` / 内嵌 MCP / 应用技能库 / 权限 / 黑名单 / 确认 / 操作动画 / 录屏录音 / 产物） | `phone/`（`PhoneMcpServer` · `PhoneToolRegistry` · `PhoneToolDispatcher` · `PhoneAppSkillStore` · `PhoneObservationService` · `PhoneActionOverlay` · `PhoneMediaService` · `PhoneNotificationService` · `PhoneSystemCapabilities`）+ `assets/phone-app-skills.zip` + `ChatViewModel{,Models,Plugins}.kt` + `ui/settings/PhoneControl{Settings,Dialogs}.kt` + `ui/AppRoot.kt` |
@@ -466,3 +467,7 @@ Gradle 走代理必须写 `systemProp.*` 到 `~/.gradle/gradle.properties`；发
 ### P-062 · 双轨声明式交互 UI（原生 `ui` 围栏 + 可回传 SVG/HTML 桥）
 ① 原生交互围栏 `ui`/`widget` 由 `OpenRenderMessage` 路由到 `ui/chat/InteractiveUiBlock.kt`，支持 `choices`（single/multi/quiz）、`actions`（send/prefill）、`tabs`（方案对比）与 `form`（toggle/slider/select/text）；流式未闭合显示占位，解析失败回落代码块，状态通过 `LocalChatUiActions` 缓存防 `LazyColumn` 回收丢失。
 ② `PageBridge.SCRIPT` 提供 `window.__cf.send/prefill/toast` 及声明式属性 `data-cf-send` / `data-cf-prefill`（500ms 防连点 + `isTrusted` 校验）；`MessageSvgBlock` 仅在 `isInteractiveSvg` 为真时启用 JS 与桥接，静态 SVG 保持无 JS；`CapabilityPrompt.kt` 同步广告 `ui` 与 `data-cf-send`。
+
+### P-063 · 手机操控一轮一授权护栏 + 按包名索引与行级精准自迭代
+① 后续普通回合不再误入手机操控模式：`PhoneTaskController` 维护 `explicitPhoneTurn` / `turnCompleted` / `currentTurnPrompt` 与纯意图判定（`isExplicitPhoneTrigger` / `isPhoneControlLikelyNeeded`）；非 `@phone` 且无设备/应用操作意图的回合会在 `PhoneToolDispatcher.checkTurnAllowed` 直接拒绝 `phone.*`，`app_skill` 静默执行不亮跑马灯，`buildWireText` 在无关回合追加提示词护栏，`SKILL_VERSION` 升至 `7`（规则 0）。
+② 按包名渐进式索引与确定性自学习：被动第 1 步（`screen_observe`/`screen_wait_change`/`app_manage`）在 `matched_app_skills` 暴露 `total_lines`；主动第 1 步用 `app_skill(action=index, id|package_name)` 获取章节与经验行号索引（`buildSkillIndex`）；主动第 2 步用 `get(start_line, end_line)` 按行切片读、`append(target_line|replaces)` 原地替换、`prune` 删除；`PhoneToolDispatcher` 按前台包名脱敏采集动作（`ui_input` 不落盘原文），回合收尾通过 `onTurnFlushing` 写入 `## 最近成功路径`（最多 3 条，新包按 `pkg-<package>` 自动建档）。

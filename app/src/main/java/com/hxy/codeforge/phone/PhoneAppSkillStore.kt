@@ -269,74 +269,252 @@ object PhoneAppSkillStore {
         }
     }
 
-    // ---------- 经验沉淀（append） ----------
+    // ---------- 经验沉淀、行级索引与最近成功路径 ----------
 
     internal const val EXPERIENCE_HEADING = "## 自动沉淀的经验"
+    internal const val RECENT_FLOW_HEADING = "## 最近成功路径"
     internal const val MAX_EXPERIENCE_LINES = 30
+    internal const val MAX_RECENT_FLOWS = 3
     internal const val MAX_LESSON_CHARS = 200
     internal const val MAX_SKILL_CHARS = 16_000
+    internal const val SMALL_SKILL_INLINE_LINES = 80
     internal val EXPERIENCE_KINDS = setOf("tip", "pitfall", "coords", "flow")
 
-    /** [mergeExperience] 的结果：新正文、是否真的新增、合并后经验条数。 */
-    internal data class ExperienceMerge(val content: String, val added: Boolean, val lessonCount: Int)
+    /** 章节行号区间（1-based，基于 `skill.content`）。 */
+    internal data class SkillSectionIndex(val title: String, val startLine: Int, val endLine: Int)
+
+    /** 索引条目：精确行号、所属小节、标签与单行预览。 */
+    internal data class SkillEntryIndex(
+        val line: Int,
+        val section: String,
+        val tag: String,
+        val preview: String,
+    )
+
+    /** 技能文档轻量行号索引表，供模型「主动第 1 步」先定位行号再精准读取/替换。 */
+    internal data class SkillIndex(
+        val totalLines: Int,
+        val sections: List<SkillSectionIndex>,
+        val entries: List<SkillEntryIndex>,
+    )
+
+    /** [mergeExperience] 的结果：新正文、是否写入变更、合并后经验条数、是否原地替换。 */
+    internal data class ExperienceMerge(
+        val content: String,
+        val added: Boolean,
+        val lessonCount: Int,
+        val replaced: Boolean = false,
+    )
+
+    internal fun packageSkillId(packageName: String): String =
+        sanitizeId("pkg-" + packageName.trim().lowercase().replace('.', '-'))
+
+    fun resolveSkill(
+        idOrName: String? = null,
+        packageName: String? = null,
+        includeDisabled: Boolean = false,
+    ): PhoneAppSkill? {
+        val id = idOrName?.trim().orEmpty()
+        if (id.isNotEmpty()) {
+            getByIdOrName(id, includeDisabled)?.let { return it }
+        }
+        val pkg = packageName?.trim().orEmpty()
+        if (pkg.isNotEmpty()) {
+            return match(packageName = pkg, includeDisabled = includeDisabled, limit = 1).firstOrNull()
+        }
+        return null
+    }
+
+    /** 扫描 Markdown 生成章节行号范围与条目行号预览（纯函数，可 JVM 单测）。 */
+    internal fun buildSkillIndex(content: String): SkillIndex {
+        val lines = content.replace("\r\n", "\n").lines()
+        val total = lines.size
+        val headings = mutableListOf<Pair<Int, String>>()
+        val entryRegex = Regex("""^(?:-|\d+\.)\s+(?:\[([^\]]+)])?(?:\[([^\]]+)])?\s*(.+)$""")
+        val rawEntries = mutableListOf<SkillEntryIndex>()
+
+        var currentSection = "正文"
+        lines.forEachIndexed { idx, rawLine ->
+            val lineNo = idx + 1
+            val trimmed = rawLine.trim()
+            if (trimmed.startsWith("#")) {
+                val cleanTitle = trimmed.trimStart('#').trim()
+                if (cleanTitle.isNotEmpty()) {
+                    headings.add(lineNo to trimmed)
+                    currentSection = cleanTitle
+                }
+            } else {
+                val m = entryRegex.matchEntire(trimmed)
+                if (m != null) {
+                    val tag1 = m.groupValues[1].trim()
+                    val tag2 = m.groupValues[2].trim()
+                    val body = m.groupValues[3].trim()
+                    val preview = (if (tag2.isNotEmpty()) "[$tag2] $body" else body).take(90)
+                    rawEntries.add(
+                        SkillEntryIndex(
+                            line = lineNo,
+                            section = currentSection,
+                            tag = tag1.ifBlank { "step" },
+                            preview = preview,
+                        ),
+                    )
+                }
+            }
+        }
+
+        val sections = headings.mapIndexed { i, (start, title) ->
+            val end = if (i + 1 < headings.size) headings[i + 1].first - 1 else total
+            SkillSectionIndex(title = title, startLine = start, endLine = end.coerceAtLeast(start))
+        }
+        return SkillIndex(totalLines = total, sections = sections, entries = rawEntries)
+    }
+
+    /** 按 1-based 行号区间切片，返回 `(actualStart, actualEnd, 带行号正文)`。 */
+    internal fun readSkillLines(content: String, startLine: Int?, endLine: Int?): Triple<Int, Int, String> {
+        val lines = content.replace("\r\n", "\n").lines()
+        if (lines.isEmpty()) return Triple(1, 1, "")
+        val total = lines.size
+        val start = (startLine ?: 1).coerceIn(1, total)
+        val defaultEnd = minOf(total, start + SMALL_SKILL_INLINE_LINES - 1)
+        val end = (endLine ?: defaultEnd).coerceIn(start, minOf(total, start + 119))
+        val slice = (start..end).joinToString("\n") { ln -> "$ln: ${lines[ln - 1]}" }
+        return Triple(start, end, slice)
+    }
+
+    private fun extractSection(content: String, heading: String): Triple<String, List<String>, String> {
+        val norm = content.replace("\r\n", "\n")
+        val start = norm.indexOf(heading)
+        if (start < 0) return Triple(norm.trimEnd(), emptyList(), "")
+        val bodyStart = start + heading.length
+        val next = norm.indexOf("\n## ", bodyStart)
+        val sectionEnd = if (next >= 0) next else norm.length
+        val head = norm.substring(0, start).trimEnd()
+        val lines = norm.substring(bodyStart, sectionEnd).lines()
+            .map { it.trim() }.filter { it.startsWith("- ") }
+        val tail = norm.substring(sectionEnd).trim('\n')
+        return Triple(head, lines, tail)
+    }
+
+    private fun renderWithSection(head: String, heading: String, lines: List<String>, tail: String): String =
+        buildString {
+            if (head.isNotEmpty()) append(head).append("\n\n")
+            if (lines.isNotEmpty()) {
+                append(heading).append('\n')
+                append(lines.joinToString("\n")).append('\n')
+                if (tail.isNotEmpty()) append('\n')
+            }
+            if (tail.isNotEmpty()) append(tail).append('\n')
+        }
+
+    private fun normEntryBody(line: String): String =
+        line.replace(Regex("""^- (?:\[[^\]]*]){1,2}\s*"""), "").lowercase().filter { !it.isWhitespace() }
 
     /**
-     * 把一条经验并入技能正文末尾的「自动沉淀的经验」小节（纯函数，可 JVM 单测）。
-     *
-     * 为什么用追加而不是让模型重写整篇：重写要把原文整段回传，模型一漏就丢步骤；
-     * 追加只动自己的小节，原有步骤不会被误删。同义重复（忽略空白与大小写）直接丢弃，
-     * 条数、单条长度、全文长度都有上限，避免技能越写越长污染上下文。
+     * 把一条经验并入技能的「自动沉淀的经验」小节；支持按 [targetLine]（1-based 行号）或 [replaces] 关键词原地替换。
      */
-    internal fun mergeExperience(content: String, kind: String, lesson: String, date: String): ExperienceMerge {
+    internal fun mergeExperience(
+        content: String,
+        kind: String,
+        lesson: String,
+        date: String,
+        targetLine: Int? = null,
+        replaces: String = "",
+    ): ExperienceMerge {
         val k = kind.trim().lowercase().takeIf { it in EXPERIENCE_KINDS } ?: "tip"
         val clean = lesson.replace(Regex("\\s+"), " ").trim().take(MAX_LESSON_CHARS)
         require(clean.isNotBlank()) { "经验内容不能为空" }
+        val formatted = "- [$k][$date] $clean"
 
-        val start = content.indexOf(EXPERIENCE_HEADING)
-        val head: String
-        val sectionLines: List<String>
-        val tail: String
-        if (start >= 0) {
-            val bodyStart = start + EXPERIENCE_HEADING.length
-            val next = content.indexOf("\n## ", bodyStart)
-            val sectionEnd = if (next >= 0) next else content.length
-            head = content.substring(0, start).trimEnd()
-            sectionLines = content.substring(bodyStart, sectionEnd).lines()
-                .map { it.trim() }.filter { it.startsWith("- ") }
-            tail = content.substring(sectionEnd).trim('\n')
-        } else {
-            head = content.trimEnd()
-            sectionLines = emptyList()
-            tail = ""
+        // 1) 精确行号原地替换：AI 先用 index 看准过时条目的行号，再直接改那一行
+        if (targetLine != null && targetLine >= 1) {
+            val allLines = content.replace("\r\n", "\n").lines().toMutableList()
+            if (targetLine <= allLines.size) {
+                val old = allLines[targetLine - 1].trim()
+                if (old.startsWith("- ")) {
+                    allLines[targetLine - 1] = formatted
+                    val (_, expLines, _) = extractSection(allLines.joinToString("\n"), EXPERIENCE_HEADING)
+                    return ExperienceMerge(
+                        content = allLines.joinToString("\n"),
+                        added = true,
+                        lessonCount = expLines.size,
+                        replaced = true,
+                    )
+                }
+            }
         }
 
-        fun norm(line: String): String =
-            line.replace(Regex("^- \\[[^\\]]*]\\[[^\\]]*]\\s*"), "").lowercase().filter { !it.isWhitespace() }
+        val (head, sectionLines, tail) = extractSection(content, EXPERIENCE_HEADING)
 
-        if (sectionLines.any { norm(it) == norm("- [x][x] $clean") }) {
+        // 2) 关键词原地替换
+        val rep = replaces.trim()
+        if (rep.isNotEmpty()) {
+            val hitIdx = sectionLines.indexOfFirst { it.contains(rep, ignoreCase = true) }
+            if (hitIdx >= 0) {
+                val updated = sectionLines.toMutableList().also { it[hitIdx] = formatted }
+                val out = renderWithSection(head, EXPERIENCE_HEADING, updated, tail)
+                return ExperienceMerge(out, added = true, lessonCount = updated.size, replaced = true)
+            }
+        }
+
+        // 3) 去重追加
+        if (sectionLines.any { normEntryBody(it) == normEntryBody(formatted) }) {
             return ExperienceMerge(content, added = false, lessonCount = sectionLines.size)
         }
 
-        var lines = (sectionLines + "- [$k][$date] $clean").takeLast(MAX_EXPERIENCE_LINES)
-        fun render(ls: List<String>): String = buildString {
-            if (head.isNotEmpty()) append(head).append("\n\n")
-            append(EXPERIENCE_HEADING).append('\n')
-            append(ls.joinToString("\n")).append('\n')
-            if (tail.isNotEmpty()) append('\n').append(tail).append('\n')
-        }
-        var out = render(lines)
-        // 全文超限：从最旧的经验开始丢，至少保留刚写入的这一条
+        var lines = (sectionLines + formatted).takeLast(MAX_EXPERIENCE_LINES)
+        var out = renderWithSection(head, EXPERIENCE_HEADING, lines, tail)
         while (out.length > MAX_SKILL_CHARS && lines.size > 1) {
             lines = lines.drop(1)
-            out = render(lines)
+            out = renderWithSection(head, EXPERIENCE_HEADING, lines, tail)
         }
         return ExperienceMerge(out, added = true, lessonCount = lines.size)
     }
 
-    /**
-     * 往技能追加一条经验；技能不存在时按 [name] + [packages]/[appNames] 新建。
-     * 内置技能不可写：追加会在自定义目录生成同 id 副本（自定义覆盖内置，删除副本即还原）。
-     */
+    /** 按精确行号或关键词删除已过时/失效的经验条目（只删 `- ` 列表项，不破坏核心标题）。 */
+    internal fun pruneExperience(
+        content: String,
+        targetLine: Int? = null,
+        match: String = "",
+    ): Pair<String, Int> {
+        val norm = content.replace("\r\n", "\n")
+        if (targetLine != null && targetLine >= 1) {
+            val allLines = norm.lines().toMutableList()
+            if (targetLine <= allLines.size && allLines[targetLine - 1].trim().startsWith("- ")) {
+                allLines.removeAt(targetLine - 1)
+                return allLines.joinToString("\n").trimEnd() + "\n" to 1
+            }
+            return content to 0
+        }
+        val needle = match.trim()
+        if (needle.isEmpty()) return content to 0
+
+        var removed = 0
+        var work = norm
+        for (heading in listOf(EXPERIENCE_HEADING, RECENT_FLOW_HEADING)) {
+            if (!work.contains(heading)) continue
+            val (head, lines, tail) = extractSection(work, heading)
+            val kept = lines.filterNot { line ->
+                val hit = line.contains(needle, ignoreCase = true)
+                if (hit) removed++
+                hit
+            }
+            work = renderWithSection(head, heading, kept, tail)
+        }
+        return (if (removed > 0) work else content) to removed
+    }
+
+    /** 更新「最近成功路径」小节：仅保留最新 [MAX_RECENT_FLOWS] 条，去重淘汰旧路径。 */
+    internal fun mergeRecentFlow(content: String, flow: String, date: String): String {
+        val clean = flow.replace(Regex("\\s+"), " ").trim().take(MAX_LESSON_CHARS)
+        require(clean.isNotBlank()) { "路径不能为空" }
+        val entry = "- [$date] $clean"
+        val (head, existing, tail) = extractSection(content, RECENT_FLOW_HEADING)
+        val deduped = existing.filterNot { normEntryBody(it) == normEntryBody(entry) }
+        val updated = (deduped + entry).takeLast(MAX_RECENT_FLOWS)
+        return renderWithSection(head, RECENT_FLOW_HEADING, updated, tail)
+    }
+
+    /** 往技能追加或原地替换一条经验；技能不存在时按 [name]/[packageName] 新建。 */
     internal fun appendExperience(
         id: String,
         kind: String,
@@ -345,29 +523,36 @@ object PhoneAppSkillStore {
         description: String,
         packages: List<String>,
         appNames: List<String>,
+        packageName: String = "",
+        targetLine: Int? = null,
+        replaces: String = "",
     ): Result<Pair<PhoneAppSkill, ExperienceMerge>> = runCatching {
         synchronized(lock) {
             check(::appContext.isInitialized) { "PhoneAppSkillStore 尚未初始化" }
             val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
-            val existing = getByIdOrName(id, includeDisabled = true)
+            val pkg = packageName.trim()
+            val allPkgs = (packages + listOfNotNull(pkg.takeIf { it.isNotEmpty() })).distinct()
+            val existing = resolveSkill(id.ifBlank { null }, pkg.ifBlank { null }, includeDisabled = true)
             if (existing == null) {
-                require(name.isNotBlank() && (packages.isNotEmpty() || appNames.isNotEmpty())) {
-                    "技能「$id」不存在：新建需同时提供 name，以及 packages 或 app_names"
+                require((name.isNotBlank() || pkg.isNotEmpty()) && (allPkgs.isNotEmpty() || appNames.isNotEmpty())) {
+                    "技能「$id」不存在：新建需提供 name 与 packages（或 package_name）/ app_names"
                 }
+                val newId = id.ifBlank { if (pkg.isNotEmpty()) packageSkillId(pkg) else name }
+                val cleanName = name.ifBlank { pkg }
                 val merged = mergeExperience("", kind, lesson, today)
                 val saved = saveCustomSkill(
-                    id = id.ifBlank { name },
-                    name = name,
-                    description = description.ifBlank { "$name 的操作经验" },
-                    packages = packages,
-                    appNames = appNames,
+                    id = newId,
+                    name = cleanName,
+                    description = description.ifBlank { "$cleanName 的操作经验" },
+                    packages = allPkgs,
+                    appNames = appNames.ifEmpty { listOf(cleanName) },
                     tags = emptyList(),
                     priority = 80,
                     content = merged.content,
                 ).getOrThrow()
                 saved to merged
             } else {
-                val merged = mergeExperience(existing.content, kind, lesson, today)
+                val merged = mergeExperience(existing.content, kind, lesson, today, targetLine, replaces)
                 if (!merged.added) return@synchronized existing to merged
                 val saved = saveCustomSkill(
                     id = existing.id,
@@ -380,6 +565,73 @@ object PhoneAppSkillStore {
                     content = merged.content,
                 ).getOrThrow()
                 saved to merged
+            }
+        }
+    }
+
+    internal fun pruneCustomExperience(
+        idOrName: String,
+        packageName: String,
+        targetLine: Int?,
+        match: String,
+    ): Result<Pair<PhoneAppSkill, Int>> = runCatching {
+        synchronized(lock) {
+            check(::appContext.isInitialized) { "PhoneAppSkillStore 尚未初始化" }
+            val existing = resolveSkill(idOrName.ifBlank { null }, packageName.ifBlank { null }, includeDisabled = true)
+                ?: error("未找到对应应用技能：$idOrName $packageName".trim())
+            val (newContent, removed) = pruneExperience(existing.content, targetLine, match)
+            if (removed == 0) return@synchronized existing to 0
+            val saved = saveCustomSkill(
+                id = existing.id,
+                name = existing.name,
+                description = existing.description,
+                packages = existing.packages,
+                appNames = existing.appNames,
+                tags = existing.tags,
+                priority = existing.priority,
+                content = newContent,
+            ).getOrThrow()
+            saved to removed
+        }
+    }
+
+    /** 按包名自动记录本轮「最近成功路径」（不存在则按包名建档）。 */
+    internal fun recordRecentFlow(
+        packageName: String,
+        appLabel: String,
+        flow: String,
+    ): Result<PhoneAppSkill> = runCatching {
+        synchronized(lock) {
+            check(::appContext.isInitialized) { "PhoneAppSkillStore 尚未初始化" }
+            val pkg = packageName.trim()
+            require(pkg.isNotEmpty()) { "packageName 不能为空" }
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+            val existing = resolveSkill(null, pkg, includeDisabled = true)
+            if (existing == null) {
+                val label = appLabel.trim().ifBlank { pkg }
+                val content = mergeRecentFlow("# $label\n", flow, today)
+                saveCustomSkill(
+                    id = packageSkillId(pkg),
+                    name = label,
+                    description = "$label（$pkg）自动沉淀的操作路径与经验",
+                    packages = listOf(pkg),
+                    appNames = listOf(label),
+                    tags = listOf("自动沉淀"),
+                    priority = 75,
+                    content = content,
+                ).getOrThrow()
+            } else {
+                val updated = mergeRecentFlow(existing.content, flow, today)
+                saveCustomSkill(
+                    id = existing.id,
+                    name = existing.name,
+                    description = existing.description,
+                    packages = (existing.packages + pkg).distinct(),
+                    appNames = existing.appNames,
+                    tags = existing.tags,
+                    priority = existing.priority,
+                    content = updated,
+                ).getOrThrow()
             }
         }
     }
@@ -443,6 +695,7 @@ object PhoneAppSkillStore {
                     put("name", skill.name)
                     put("description", skill.description)
                     put("source", skill.source.label)
+                    put("total_lines", skill.content.replace("\r\n", "\n").lines().size)
                     if (skill.packages.isNotEmpty()) {
                         put("packages", JSONArray(skill.packages))
                     }
@@ -464,7 +717,42 @@ object PhoneAppSkillStore {
         put("packages", JSONArray(skill.packages))
         put("app_names", JSONArray(skill.appNames))
         put("tags", JSONArray(skill.tags))
+        put("total_lines", skill.content.replace("\r\n", "\n").lines().size)
         put("content", skill.content)
+    }
+
+    fun toIndexJson(skill: PhoneAppSkill): JSONObject {
+        val index = buildSkillIndex(skill.content)
+        return JSONObject().apply {
+            put("id", skill.id)
+            put("name", skill.name)
+            put("description", skill.description)
+            put("packages", JSONArray(skill.packages))
+            put("total_lines", index.totalLines)
+            put("sections", JSONArray().apply {
+                index.sections.forEach { s ->
+                    put(JSONObject().put("title", s.title).put("start_line", s.startLine).put("end_line", s.endLine))
+                }
+            })
+            put("entries", JSONArray().apply {
+                index.entries.forEach { e ->
+                    put(JSONObject().put("line", e.line).put("section", e.section).put("tag", e.tag).put("preview", e.preview))
+                }
+            })
+        }
+    }
+
+    fun toLineSliceJson(skill: PhoneAppSkill, startLine: Int?, endLine: Int?): JSONObject {
+        val index = buildSkillIndex(skill.content)
+        val (s, e, slice) = readSkillLines(skill.content, startLine, endLine)
+        return JSONObject().apply {
+            put("id", skill.id)
+            put("name", skill.name)
+            put("total_lines", index.totalLines)
+            put("start_line", s)
+            put("end_line", e)
+            put("content", slice)
+        }
     }
 
     /**

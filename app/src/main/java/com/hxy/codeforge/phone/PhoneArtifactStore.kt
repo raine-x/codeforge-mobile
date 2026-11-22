@@ -93,6 +93,17 @@ object PhoneArtifactStore {
         }
     }
 
+    /** 清理磁盘文件已不存在的悬空元数据条目（存储空间清理后调用）。 */
+    fun pruneMissing() {
+        synchronized(lock) {
+            val kept = _artifacts.value.filter { File(it.absolutePath).isFile }
+            if (kept.size != _artifacts.value.size) {
+                _artifacts.value = kept
+                saveToDisk(kept)
+            }
+        }
+    }
+
     fun openInSystem(context: Context, artifact: PhoneArtifact): Result<Unit> = runCatching {
         val file = File(artifact.absolutePath)
         require(file.isFile) { "文件不存在或已被清理" }

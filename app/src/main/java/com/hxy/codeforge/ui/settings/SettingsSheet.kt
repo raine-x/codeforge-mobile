@@ -104,7 +104,7 @@ fun SettingsSheet(
     vm: ChatViewModel,
     onDismiss: () -> Unit,
     initialPage: String? = null,
-    onOpenFileManager: (() -> Unit)? = null,
+    onOpenFileManager: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
 
@@ -258,6 +258,7 @@ fun SettingsSheet(
                             "archive" -> ArchiveSection(vm)
                             "env" -> EnvSection(context)
                             "transfer" -> FileTransferSection(vm, onOpenFileManager = onOpenFileManager)
+                            "storage" -> StorageSection(vm)
                             "phone" -> PhoneControlSettings(vm)
                             "kernel" -> KernelSettingsSection(vm)
                             "voice" -> VoiceSection(context)
@@ -297,6 +298,7 @@ private val PAGE_TITLES = mapOf(
     "archive" to "已归档会话",
     "env" to "运行环境",
     "transfer" to "文件传输",
+    "storage" to "存储空间管理",
     "phone" to "手机操控",
     "kernel" to "内核设置",
     "voice" to "语音输入",
@@ -322,9 +324,10 @@ private fun SettingsHome(onOpen: (String) -> Unit) {
         Triple("archive", "已归档会话", "恢复或永久删除"),
         Triple("env", "运行环境", "Linux 兼容环境、语言软件包"),
         Triple("transfer", "文件传输", "导入到工作区、导出到手机 Download"),
+        Triple("storage", "存储空间管理", "查看占用分布、清理缓存与孤立目录"),
         Triple("phone", "手机操控", "总开关、权限、能力、黑名单、确认与产物"),
         Triple("kernel", "内核设置", "重试、权限、智能体"),
-        Triple("voice", "语音输入", "系统语音服务、云端转写"),
+        Triple("voice", "语音输入", "云端语音转写配置"),
         Triple("diag", "诊断", "崩溃与环境日志、导出"),
     )
     Column(modifier = Modifier.fillMaxWidth()) {

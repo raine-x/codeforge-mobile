@@ -261,4 +261,23 @@ class ChatEventFoldTest {
     fun `切会话本身的事件不被当作后台事件`() {
         assertFalse(isBackgroundSessionEvent(CoreEvent.SessionClaimed("s2", "t"), "s1"))
     }
+
+    @Test
+    fun `等待阶段文案在 Busy 时出现并在首段响应到达或结束时清除`() {
+        val busy = ChatUiState(currentSessionId = "s1").foldBusy("s1")
+        assertTrue(busy.running)
+        assertTrue(busy.pendingStage.isNotBlank())
+
+        val streamed = busy.foldAssistantText("你", newId, 1L)
+        assertEquals("", streamed.pendingStage)
+
+        val viaThinking = busy.foldThinking("想", newId, 1L)
+        assertEquals("", viaThinking.pendingStage)
+
+        val viaTool = busy.foldToolStart(tool("t1"), newId, 1L)
+        assertEquals("", viaTool.pendingStage)
+
+        val idled = busy.foldIdle("s1", showPlan = false)
+        assertEquals("", idled.pendingStage)
+    }
 }

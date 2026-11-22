@@ -284,10 +284,10 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
                     settingsInitialPage = null
                 },
                 initialPage = settingsInitialPage,
-                onOpenFileManager = {
+                onOpenFileManager = { rootKey ->
                     showSettings = false
                     settingsInitialPage = null
-                    openFileManager("CURRENT")
+                    openFileManager(rootKey)
                 },
             )
         }
@@ -1118,6 +1118,7 @@ private fun ChatBody(
                 onFetchOutput = vm::fetchToolReplay,
                 listState = listState,
                 running = state.running,
+                pendingStage = state.pendingStage,
                 onContinue = if (state.resumeBack >= 0 && !state.running) {
                     { vm.continueTurn() }
                 } else {

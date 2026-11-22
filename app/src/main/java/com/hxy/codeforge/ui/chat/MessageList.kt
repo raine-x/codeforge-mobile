@@ -1,6 +1,10 @@
 package com.hxy.codeforge.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -9,8 +13,10 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +28,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -32,6 +39,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.unit.dp
 import com.hxy.codeforge.model.ApprovalCard
 import com.hxy.codeforge.model.ChatMessage
@@ -94,6 +102,8 @@ fun MessageList(
     listState: LazyListState = rememberLazyListState(),
     /** agent loop 是否还在跑：跑的过程中不显示操作栏。 */
     running: Boolean = false,
+    /** 发送后到首段助手输出/工具开始之间的等待阶段文案。 */
+    pendingStage: String = "",
     /**
      * 断点「继续这一轮」。
      *
@@ -148,6 +158,17 @@ fun MessageList(
 
     val rows = remember(messages, approvals) { buildFeedRows(messages, approvals) }
     val lastMessage = messages.lastOrNull()
+    val assistantHasVisibleStreaming = lastMessage != null &&
+        lastMessage.role == MsgRole.Assistant &&
+        lastMessage.streaming &&
+        (lastMessage.text.isNotBlank() || !lastMessage.thinking.isNullOrBlank() ||
+            lastMessage.tools.isNotEmpty() || lastMessage.segments.isNotEmpty())
+    val effectivePending = when {
+        assistantHasVisibleStreaming -> ""
+        pendingStage.isNotBlank() -> pendingStage
+        running -> "正在连接模型，等待响应…"
+        else -> ""
+    }
     // 跟随的触发键必须覆盖正文 + 思考 + 工具输出 + 片段数：
     // 只看 text.length 时，思考/工具阶段的内容增长不会触发滚动，表现为「不动」。
     val streamKey = lastMessage?.let {
@@ -155,12 +176,12 @@ fun MessageList(
             it.tools.sumOf { t -> t.output?.length ?: 0 } +
             it.segments.size
     } ?: 0
-    val itemCount = rows.size + 1
+    val itemCount = rows.size + (if (effectivePending.isNotEmpty()) 1 else 0) + 1
 
     // 新消息入列：跟随时滚到底；不跟随时不动视口，只点亮提示。
     // 不再把新问题顶到视口上方 —— 下面没有消息时，回复被拉到屏幕顶部
     // 本来就是不合理的布局。
-    LaunchedEffect(messages.size) {
+    LaunchedEffect(messages.size, effectivePending.isNotEmpty()) {
         if (messages.isEmpty()) return@LaunchedEffect
         if (autoFollow) {
             hasNew = false
@@ -267,6 +288,13 @@ fun MessageList(
                 }
             }
 
+            // 等待 AI 首段输出的真空期提示（发送后至首字/思考/工具到达前）
+            if (effectivePending.isNotEmpty()) {
+                item(key = "__pending__") {
+                    PendingResponseRow(stage = effectivePending)
+                }
+            }
+
             // 尾部哨兵：1dp，只用于让 scrollToItem 能滚到「最后一条的结尾」。
             // 之前这里撑到 0.92 屏高，导致内容不足一屏时也能被拉出近一屏空白，
             // 回复因此能被拉到屏幕顶部 —— 用户明确不认可这种布局。
@@ -335,6 +363,51 @@ fun MessageList(
                 )
             }
         }
+    }
+}
+
+/**
+ * 提问后到 AI 吐出首字/工具调用前的占位行。
+ *
+ * 解决首次启动或每次提问后、模型首字尚未回来期间消息流下方完全空白的真空期体验。
+ */
+@Composable
+private fun PendingResponseRow(stage: String) {
+    val transition = rememberInfiniteTransition(label = "pending-stage")
+    val dotColor = Clay
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            repeat(3) { i ->
+                val alpha by transition.animateFloat(
+                    initialValue = 0.25f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 550, delayMillis = i * 150),
+                        repeatMode = RepeatMode.Reverse,
+                    ),
+                    label = "pending-dot-$i",
+                )
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .drawBehind { drawCircle(dotColor.copy(alpha = alpha)) },
+                )
+            }
+        }
+        Text(
+            text = stage,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

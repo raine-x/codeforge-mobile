@@ -3,8 +3,15 @@ package com.hxy.codeforge.phone
 import com.hxy.codeforge.phone.PhoneAppSkillStore.EXPERIENCE_HEADING
 import com.hxy.codeforge.phone.PhoneAppSkillStore.MAX_EXPERIENCE_LINES
 import com.hxy.codeforge.phone.PhoneAppSkillStore.MAX_LESSON_CHARS
+import com.hxy.codeforge.phone.PhoneAppSkillStore.MAX_RECENT_FLOWS
 import com.hxy.codeforge.phone.PhoneAppSkillStore.MAX_SKILL_CHARS
+import com.hxy.codeforge.phone.PhoneAppSkillStore.RECENT_FLOW_HEADING
+import com.hxy.codeforge.phone.PhoneAppSkillStore.buildSkillIndex
 import com.hxy.codeforge.phone.PhoneAppSkillStore.mergeExperience
+import com.hxy.codeforge.phone.PhoneAppSkillStore.mergeRecentFlow
+import com.hxy.codeforge.phone.PhoneAppSkillStore.packageSkillId
+import com.hxy.codeforge.phone.PhoneAppSkillStore.pruneExperience
+import com.hxy.codeforge.phone.PhoneAppSkillStore.readSkillLines
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -91,5 +98,89 @@ class PhoneAppSkillExperienceTest {
     @Test(expected = IllegalArgumentException::class)
     fun `空经验直接拒绝`() {
         mergeExperience(base, "tip", "   ", "2026-11-21")
+    }
+
+    @Test
+    fun `行号索引与按行精准读取对齐`() {
+        val doc = """
+            # 微信操作
+            1. 打开微信
+            2. 点击发现
+
+            $EXPERIENCE_HEADING
+            - [coords][2026-11-20] 搜索入口在 (0.85, 0.06)
+            - [pitfall][2026-11-20] 旧版发送按钮无效
+
+            $RECENT_FLOW_HEADING
+            - [2026-11-21] 打开应用 → 点「搜索」
+        """.trimIndent()
+        val idx = buildSkillIndex(doc)
+        assertEquals(3, idx.sections.size)
+        assertEquals(1, idx.sections[0].startLine)
+        val pitfallEntry = idx.entries.first { it.tag == "pitfall" }
+        assertTrue(pitfallEntry.preview.contains("旧版发送按钮无效"))
+
+        val (s, e, slice) = readSkillLines(doc, pitfallEntry.line, pitfallEntry.line)
+        assertEquals(pitfallEntry.line, s)
+        assertEquals(pitfallEntry.line, e)
+        assertTrue(slice.startsWith("${pitfallEntry.line}: "))
+        assertTrue(slice.contains("旧版发送按钮无效"))
+    }
+
+    @Test
+    fun `支持按精确行号与关键词原地替换过时经验`() {
+        var doc = mergeExperience(base, "coords", "旧搜索位置 (0.50, 0.10)", "2026-11-01").content
+        doc = mergeExperience(doc, "pitfall", "普通点击筛选失效", "2026-11-01").content
+        val idx = buildSkillIndex(doc)
+        val oldLine = idx.entries.first { it.preview.contains("旧搜索位置") }.line
+
+        val r1 = mergeExperience(doc, "coords", "新版搜索在右上角 (0.88, 0.06)", "2026-11-22", targetLine = oldLine)
+        assertTrue(r1.replaced)
+        assertEquals(2, r1.lessonCount)
+        assertFalse(r1.content.contains("旧搜索位置"))
+        assertTrue(r1.content.contains("新版搜索在右上角"))
+
+        val r2 = mergeExperience(r1.content, "pitfall", "筛选需传 prefer_gesture=true", "2026-11-22", replaces = "普通点击筛选")
+        assertTrue(r2.replaced)
+        assertEquals(2, r2.lessonCount)
+        assertFalse(r2.content.contains("普通点击筛选失效"))
+    }
+
+    @Test
+    fun `支持按行号或关键词精准删除失效条目且不误删标题`() {
+        var doc = mergeExperience(base, "tip", "条目一", "2026-11-20").content
+        doc = mergeExperience(doc, "tip", "过时条目二", "2026-11-20").content
+        val idx = buildSkillIndex(doc)
+        val targetLine = idx.entries.first { it.preview.contains("过时条目二") }.line
+
+        val (after1, count1) = pruneExperience(doc, targetLine = targetLine)
+        assertEquals(1, count1)
+        assertFalse(after1.contains("过时条目二"))
+        assertTrue(after1.contains("条目一"))
+
+        val (after2, count2) = pruneExperience(after1, match = "条目一")
+        assertEquals(1, count2)
+        assertFalse(after2.contains("条目一"))
+        assertTrue(after2.contains(base))
+    }
+
+    @Test
+    fun `最近成功路径保留最新上限且不影响经验小节`() {
+        var doc = mergeExperience(base, "coords", "固定入口", "2026-11-20").content
+        for (i in 1..(MAX_RECENT_FLOWS + 2)) {
+            doc = mergeRecentFlow(doc, "路径$i → 完成", "2026-11-22")
+        }
+        assertTrue(doc.contains(EXPERIENCE_HEADING))
+        assertTrue(doc.contains("固定入口"))
+        assertTrue(doc.contains(RECENT_FLOW_HEADING))
+        val flows = doc.substringAfter(RECENT_FLOW_HEADING).lines().filter { it.startsWith("- [") }
+        assertEquals(MAX_RECENT_FLOWS, flows.size)
+        assertFalse(flows.any { it.contains("路径1 ") })
+        assertTrue(flows.last().contains("路径${MAX_RECENT_FLOWS + 2}"))
+    }
+
+    @Test
+    fun `按包名生成规范化技能 id`() {
+        assertEquals("pkg-com-tencent-mm", packageSkillId("com.tencent.mm"))
     }
 }

@@ -223,4 +223,45 @@ class PhonePolicyAndControlTest {
         assertTrue(uiInput.description.contains("粘贴"))
         assertTrue(uiInput.description.contains("set_text"))
     }
+
+    @Test
+    fun `non-phone follow-up questions do not falsely trigger phone mode`() {
+        assertTrue(PhoneTaskController.isExplicitPhoneTrigger("@phone 打开微信"))
+        assertTrue(PhoneTaskController.isExplicitPhoneTrigger("用手机操控帮我查下快递"))
+        assertFalse(PhoneTaskController.isExplicitPhoneTrigger("为什么手机操控又进去了"))
+        assertFalse(PhoneTaskController.isExplicitPhoneTrigger("介绍一下手机操控的架构"))
+
+        assertFalse(PhoneTaskController.isPhoneControlLikelyNeeded("写一个快速排序"))
+        assertFalse(PhoneTaskController.isPhoneControlLikelyNeeded("为什么刚刚手机操控会自动退出"))
+        assertFalse(PhoneTaskController.isPhoneControlLikelyNeeded("帮我把 README 改得更简洁"))
+        assertFalse(PhoneTaskController.isPhoneControlLikelyNeeded("谢谢"))
+
+        assertTrue(PhoneTaskController.isPhoneControlLikelyNeeded("打开微信给张三发消息"))
+        assertTrue(PhoneTaskController.isPhoneControlLikelyNeeded("截个屏看看"))
+        assertTrue(PhoneTaskController.isPhoneControlLikelyNeeded("查看当前电量"))
+        assertTrue(PhoneTaskController.isPhoneControlLikelyNeeded("设个明天早上8点的闹钟"))
+    }
+
+    @Test
+    fun `completed phone turn locks re-entry until next prepareForTurn`() {
+        var flushed = 0
+        PhoneTaskController.onTurnFlushing = { flushed++ }
+        try {
+            PhoneTaskController.activateForPhoneTurn("@phone 查看电量")
+            assertTrue(PhoneTaskController.isExplicitPhoneTurn())
+            assertFalse(PhoneTaskController.isTurnCompleted())
+
+            PhoneTaskController.completeByAgent("已完成")
+            assertEquals(1, flushed)
+            assertFalse(PhoneTaskController.isExplicitPhoneTurn())
+            assertTrue(PhoneTaskController.isTurnCompleted())
+
+            PhoneTaskController.prepareForTurn("帮我写一段 Kotlin")
+            assertFalse(PhoneTaskController.isExplicitPhoneTurn())
+            assertFalse(PhoneTaskController.isTurnCompleted())
+        } finally {
+            PhoneTaskController.onTurnFlushing = null
+            PhoneTaskController.prepareForTurn("")
+        }
+    }
 }

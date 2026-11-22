@@ -84,6 +84,12 @@ internal fun ChatViewModel.buildWireText(userText: String, elements: List<Picked
         )
     }
     sb.append('\n').append('\n').append(CLIENT_CAPABILITY_PROMPT)
+    if (com.hxy.codeforge.phone.PhoneControlPrefs.config.value.masterEnabled &&
+        !com.hxy.codeforge.phone.PhoneTaskController.isExplicitPhoneTurn() &&
+        !com.hxy.codeforge.phone.PhoneTaskController.isPhoneControlLikelyNeeded(userText)
+    ) {
+        sb.append("\n\n（本轮注意：当前问题无需手机操控，请直接回答，不要调用 phone.* 工具或进入手机操控模式。）")
+    }
     return sb.toString()
 }
 // ---------- 文件树（GET /api/tree，depth=1 懒加载）----------
