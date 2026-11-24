@@ -222,12 +222,22 @@ private fun isBareHtmlParagraph(b: RenderBlock): Boolean =
  * 判定一段文本是否为完整的 SVG 矢量图源码（允许前置 `<?xml ...?>`、`<!DOCTYPE svg ...>` 或 XML 注释）。
  */
 internal fun looksLikeSvgMarkup(raw: String): Boolean {
-    val cleaned = stripLeadingXmlProlog(raw.trim())
+    val cleaned = stripTrailingXmlComments(stripLeadingXmlProlog(raw.trim()))
     if (!cleaned.startsWith("<svg", ignoreCase = true)) return false
     val nextChar = cleaned.getOrNull(4) ?: return false
     if (!nextChar.isWhitespace() && nextChar != '>') return false
     val lower = cleaned.lowercase()
-    return lower.endsWith("</svg>") || ( !lower.contains("</svg>") && lower.endsWith("/>") )
+    return lower.endsWith("</svg>") || (!lower.contains("</svg>") && lower.endsWith("/>"))
+}
+
+private fun stripTrailingXmlComments(raw: String): String {
+    var s = raw.trimEnd()
+    while (s.endsWith("-->")) {
+        val start = s.lastIndexOf("<!--")
+        if (start < 0) break
+        s = s.substring(0, start).trimEnd()
+    }
+    return s
 }
 
 /** 剥除 SVG 前置的 XML 声明、DOCTYPE 与注释。 */
@@ -327,12 +337,11 @@ internal fun splitProseAroundBareSvg(raw: String): List<BareSvgSegment> {
             segments.add(BareSvgSegment(proseBefore, isSvg = false))
         }
 
-        val closeIdx = lower.indexOf("</svg>", svgStart)
-        if (closeIdx >= 0) {
-            val endPos = closeIdx + "</svg>".length
-            val svgText = raw.substring(actualStart, endPos).trim()
+        val closeEnd = findMatchingSvgCloseEnd(lower, svgStart)
+        if (closeEnd >= 0) {
+            val svgText = raw.substring(actualStart, closeEnd).trim()
             segments.add(BareSvgSegment(svgText, isSvg = true, closed = true))
-            cursor = endPos
+            cursor = closeEnd
         } else {
             val unclosedSvg = raw.substring(actualStart).trim()
             segments.add(BareSvgSegment(unclosedSvg, isSvg = true, closed = false))
@@ -341,6 +350,42 @@ internal fun splitProseAroundBareSvg(raw: String): List<BareSvgSegment> {
     }
 
     return if (segments.isEmpty()) listOf(BareSvgSegment(raw, isSvg = false)) else segments
+}
+
+/** 按 `<svg` / `</svg>` 嵌套深度匹配最外层闭合位置，兼容子 `<svg>` 图标与自闭合 `<svg ... />`。 */
+private fun findMatchingSvgCloseEnd(lower: String, svgStart: Int): Int {
+    val n = lower.length
+    var depth = 0
+    var pos = svgStart
+    while (pos < n) {
+        val openIdx = lower.indexOf("<svg", pos)
+        val closeIdx = lower.indexOf("</svg>", pos)
+        if (openIdx >= 0 && (closeIdx < 0 || openIdx < closeIdx)) {
+            val after = lower.getOrNull(openIdx + 4)
+            if (after != null && (after.isWhitespace() || after == '>' || after == '/')) {
+                val tagEnd = lower.indexOf('>', openIdx + 4)
+                if (tagEnd < 0) return -1
+                val selfClosing = tagEnd > openIdx && lower[tagEnd - 1] == '/'
+                if (!selfClosing) {
+                    depth++
+                } else if (depth == 0) {
+                    return tagEnd + 1
+                }
+                pos = tagEnd + 1
+                continue
+            }
+            pos = openIdx + 4
+            continue
+        }
+        if (closeIdx >= 0) {
+            depth--
+            pos = closeIdx + "</svg>".length
+            if (depth <= 0) return pos
+            continue
+        }
+        break
+    }
+    return -1
 }
 
 /** 找出文本中所有代码围栏（``` / ~~~）与行内反引号（`...`）的字符区间，防止误切代码里的 `<svg>`。 */
@@ -390,12 +435,17 @@ private fun findFencedAndInlineCodeRanges(raw: String): List<Pair<Int, Int>> {
             while (i + ticks < n && raw[i + ticks] == '`') ticks++
             val delimiter = "`".repeat(ticks)
             val close = raw.indexOf(delimiter, i + ticks)
+            // CommonMark 行内代码不跨越空行；防止不成对的反引号把后续段落的裸 <svg> 吞掉。
             if (close >= 0) {
-                val end = close + ticks
-                ranges.add(i to end)
-                i = end
-                atLineStart = false
-                continue
+                val spanText = raw.substring(i + ticks, close)
+                val crossesBlankLine = spanText.contains("\n\n") || spanText.contains("\r\n\r\n")
+                if (!crossesBlankLine) {
+                    val end = close + ticks
+                    ranges.add(i to end)
+                    i = end
+                    atLineStart = false
+                    continue
+                }
             }
         }
 

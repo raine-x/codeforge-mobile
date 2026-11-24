@@ -413,7 +413,20 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
             }
         }
 
-        "svg" -> if (openTail) StreamingTailBlock(block.text) else MessageSvgBlock(block.text)
+        "svg" -> {
+            if (openTail) {
+                StreamingTailBlock(block.text)
+            } else if (block.text.contains("<svg", ignoreCase = true)) {
+                MessageSvgBlock(block.text)
+            } else {
+                val url = firstNonBlankLine(block.text)
+                if (url != null && isSvgPathOrDataUri(url)) {
+                    MessageImageBlock(url, "")
+                } else {
+                    MessageSvgBlock(block.text)
+                }
+            }
+        }
 
         "ui", "widget" -> {
             if (openTail) {

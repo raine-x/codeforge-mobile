@@ -477,3 +477,8 @@ Gradle 走代理必须写 `systemProp.*` 到 `~/.gradle/gradle.properties`；发
 ② `requestEdit` 必须以消息在当前列表中的位置计算 `back`（其后 `MsgRole.User` 数量，`resolveEditBack`）为首选举据并记录 `editMessageId`；`send()` 命中 `editBack != null` 时先于 `running` 转向拦截走 `editUserMessage(buildWireText(...), back)` 并立即用 `truncateMessagesForEdit` 本地删掉后续对话，**绝不允许把「编辑回溯」静默降级为末尾追加或 `steer`**。
 ③ 原生 `ui` 围栏 `choices` 的点击仅切换高亮（`autoSend` 默认与实际行为恒为 `false`），允许自定义补充（`allow_custom`）与「填入输入框」；提交必须由底部开放按钮（块自带 `buttons`/`confirm_label` 或卡片末 `actions` 自动携带已选与表单摘要）触发。
 ② 按包名渐进式索引与确定性自学习：被动第 1 步（`screen_observe`/`screen_wait_change`/`app_manage`）在 `matched_app_skills` 暴露 `total_lines`；主动第 1 步用 `app_skill(action=index, id|package_name)` 获取章节与经验行号索引（`buildSkillIndex`）；主动第 2 步用 `get(start_line, end_line)` 按行切片读、`append(target_line|replaces)` 原地替换、`prune` 删除；`PhoneToolDispatcher` 按前台包名脱敏采集动作（`ui_input` 不落盘原文），回合收尾通过 `onTurnFlushing` 写入 `## 最近成功路径`（最多 3 条，新包按 `pkg-<package>` 自动建档）。
+
+### P-065 · 聊天气泡内嵌 SVG `WebView` 必须 `MATCH_PARENT` 视口、`body>svg` 作用域隔离且支持嵌套 `<svg>` 配对
+① `LazyColumn` 内的 SVG `WebView` 若未显式设置 `FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)` 与 `useWideViewPort = true`，易在首帧按 `WRAP_CONTENT` 测量塌缩或裁剪；同时 `WebView` 会拦截触摸事件，非交互 SVG 的全屏手势需叠加透明顶层可点击遮罩而非放在底层 `Box`。
+② `buildSvgHtmlDocument` 中的尺寸 CSS 只能作用于 `body>svg`，绝不能写全局 `svg{width:100%!important;height:100%!important}`，否则架构图里嵌套的 `<svg>` 小图标会被拉爆铺满整画布；`normalizeSvgForRender` 需自动补齐缺失的 `xmlns="http://www.w3.org/2000/svg"` 与内联 `style="width:...;height:..."` 推导的 `viewBox`，`parseSvgRootDimensions` 用 `(?<![-\w])` 避开 `stroke-width` 误匹配。
+③ `splitProseAroundBareSvg` 必须做 `<svg>`/`</svg>` 嵌套深度配对（`findMatchingSvgCloseEnd`），行内反引号扫描不得跨 `\n\n` 空行吞掉后文裸 `<svg>`，`looksLikeSvgMarkup` 须忽略尾部 `<!-- ... -->` XML 注释。

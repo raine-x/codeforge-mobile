@@ -36,6 +36,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -267,22 +268,29 @@ internal fun normalizeSvgForRender(rawSvg: String): String {
     val tagEnd = core.indexOf('>')
     if (tagEnd < 0) return core
     val openTag = core.substring(0, tagEnd + 1)
-    if (openTag.contains("viewBox", ignoreCase = true)) return core
 
-    val dims = parseSvgRootDimensions(openTag)
-    if (dims != null) {
-        val (w, h) = dims
-        val wStr = if (w % 1f == 0f) w.toInt().toString() else w.toString()
-        val hStr = if (h % 1f == 0f) h.toInt().toString() else h.toString()
-        val injectedOpenTag = openTag.substring(0, 4) + " viewBox=\"0 0 $wStr $hStr\"" + openTag.substring(4)
-        return injectedOpenTag + core.substring(tagEnd + 1)
+    val extraAttrs = buildString {
+        // 裸 SVG 常省略 xmlns；注入默认 SVG 命名空间以保证内嵌与独立解析一致
+        if (!Regex("""(?<![-\w])xmlns\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(openTag)) {
+            append(""" xmlns="http://www.w3.org/2000/svg"""")
+        }
+        if (!Regex("""(?<![-\w])viewBox\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(openTag)) {
+            val dims = parseSvgRootDimensions(openTag)
+            if (dims != null) {
+                val (w, h) = dims
+                val wStr = if (w % 1f == 0f) w.toInt().toString() else w.toString()
+                val hStr = if (h % 1f == 0f) h.toInt().toString() else h.toString()
+                append(""" viewBox="0 0 $wStr $hStr"""")
+            }
+        }
     }
-    return core
+    if (extraAttrs.isEmpty()) return core
+    return openTag.substring(0, 4) + extraAttrs + openTag.substring(4) + core.substring(tagEnd + 1)
 }
 
 /**
- * 从根 `<svg ...>` 开标签的 `viewBox` 或 `width`/`height` 推算宽高比；
- * 只解析根 `<svg>` 开标签，绝不误读内部 `<rect width="100%" height="20">` 等子元素属性。
+ * 从根 `<svg ...>` 开标签的 `viewBox` 或 `width`/`height`（含内联 `style`）推算宽高比；
+ * 只解析根 `<svg>` 开标签，绝不误读 `stroke-width` 或内部 `<rect width="100%">` 等子元素属性。
  */
 internal fun svgAspect(svg: String): Float? {
     val startIdx = svg.indexOf("<svg", ignoreCase = true)
@@ -291,11 +299,12 @@ internal fun svgAspect(svg: String): Float? {
     if (tagEnd < 0) return null
     val openTag = svg.substring(startIdx, tagEnd + 1)
 
-    val vbMatch = Regex("""viewBox\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(openTag)
+    val vbMatch = Regex("""(?<![-\w])viewBox\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(openTag)
     val vbParts = vbMatch?.groupValues?.get(1)?.trim()?.split(Regex("""[,\s]+"""))
     if (vbParts != null && vbParts.size == 4) {
-        val w = vbParts[2].toFloatOrNull()
-        val h = vbParts[3].toFloatOrNull()
+        val vbNum = Regex("""^([0-9]+(?:\.[0-9]+)?)(?:px)?$""", RegexOption.IGNORE_CASE)
+        val w = vbNum.find(vbParts[2])?.groupValues?.get(1)?.toFloatOrNull()
+        val h = vbNum.find(vbParts[3])?.groupValues?.get(1)?.toFloatOrNull()
         if (w != null && h != null && w > 0f && h > 0f) return w / h
     }
 
@@ -303,28 +312,42 @@ internal fun svgAspect(svg: String): Float? {
     return if (dims != null) dims.first / dims.second else null
 }
 
-private fun parseSvgRootDimensions(openTag: String): Pair<Float, Float>? {
-    val wRaw = Regex("""\bwidth\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-        .find(openTag)?.groupValues?.get(1)?.trim() ?: return null
-    val hRaw = Regex("""\bheight\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-        .find(openTag)?.groupValues?.get(1)?.trim() ?: return null
-    // 百分比宽高（如 width="100%"）无法提供固有像素比例
-    if (wRaw.endsWith("%") || hRaw.endsWith("%")) return null
-    val numRegex = Regex("""^([0-9]+(?:\.[0-9]+)?)""")
-    val w = numRegex.find(wRaw)?.groupValues?.get(1)?.toFloatOrNull() ?: return null
-    val h = numRegex.find(hRaw)?.groupValues?.get(1)?.toFloatOrNull() ?: return null
-    return if (w > 0f && h > 0f) (w to h) else null
+private fun parseSvgDimNumber(raw: String?): Float? {
+    val v = raw?.trim() ?: return null
+    if (v.isEmpty() || v.endsWith("%") || v.equals("auto", ignoreCase = true)) return null
+    val num = Regex("""^([0-9]+(?:\.[0-9]+)?)""").find(v)?.groupValues?.get(1)?.toFloatOrNull()
+    return if (num != null && num > 0f) num else null
 }
 
-private fun buildSvgHtmlDocument(svg: String, lightCanvas: Boolean): String {
+private fun parseSvgRootDimensions(openTag: String): Pair<Float, Float>? {
+    // 使用负向后行避免 `stroke-width="..."` 误匹配为根 width
+    val wAttr = Regex("""(?<![-\w])width\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        .find(openTag)?.groupValues?.get(1)
+    val hAttr = Regex("""(?<![-\w])height\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        .find(openTag)?.groupValues?.get(1)
+    val styleText = Regex("""(?<![-\w])style\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+        .find(openTag)?.groupValues?.get(1)
+    val wStyle = styleText?.let {
+        Regex("""(?:^|;)\s*width\s*:\s*([^;]+)""", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)
+    }
+    val hStyle = styleText?.let {
+        Regex("""(?:^|;)\s*height\s*:\s*([^;]+)""", RegexOption.IGNORE_CASE).find(it)?.groupValues?.get(1)
+    }
+    val w = parseSvgDimNumber(wAttr) ?: parseSvgDimNumber(wStyle) ?: return null
+    val h = parseSvgDimNumber(hAttr) ?: parseSvgDimNumber(hStyle) ?: return null
+    return w to h
+}
+
+internal fun buildSvgHtmlDocument(svg: String, lightCanvas: Boolean): String {
     val bg = if (lightCanvas) "#FAF8F5" else "transparent"
     val fg = if (lightCanvas) "#1F1E1B" else "#EAE6DF"
+    // 只约束顶层 `body > svg`，避免 `svg{width:100%!important}` 把架构图里嵌套的小 `<svg>` 图标拉爆
     return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes\">" +
         "<style>" +
         "html,body{margin:0;padding:0;width:100%;height:100%;background:$bg;color:$fg;overflow:hidden;" +
         "display:flex;align-items:center;justify-content:center;}" +
-        "svg{width:100%!important;height:100%!important;max-width:100vw;max-height:100vh;display:block;object-fit:contain;}" +
+        "body>svg{width:100%;height:100%;max-width:100%;max-height:100%;display:block;}" +
         "[data-cf-send],[data-cf-prefill]{cursor:pointer;}" +
         "</style></head><body>" +
         svg +
@@ -352,7 +375,7 @@ fun MessageSvgBlock(
     title: String = "SVG 矢量图",
 ) {
     val ctx = LocalContext.current
-    val chatActions = LocalChatUiActions.current
+    val chatActions by rememberUpdatedState(LocalChatUiActions.current)
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
     val normalized = remember(svg) { normalizeSvgForRender(svg) }
     val interactive = remember(normalized) { isInteractiveSvg(normalized) }
@@ -432,21 +455,25 @@ fun MessageSvgBlock(
             }
         } else {
             val canvasBg = if (lightCanvas) Color(0xFFFAF8F5) else Color.Transparent
-            val boxMod = Modifier
-                .fillMaxWidth()
-                .aspectRatio(aspect)
-                .background(canvasBg)
-                .let { if (interactive) it else it.clickable { fullscreen = true } }
-                .padding(6.dp)
-            Box(modifier = boxMod) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(aspect)
+                    .background(canvasBg)
+                    .padding(6.dp),
+            ) {
                 AndroidView(
                     modifier = Modifier.fillMaxSize(),
                     factory = { wctx ->
                         WebView(wctx).apply {
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
                             settings.javaScriptEnabled = interactive
                             settings.allowFileAccess = false
                             settings.loadWithOverviewMode = true
-                            settings.useWideViewPort = false
+                            settings.useWideViewPort = true
                             isVerticalScrollBarEnabled = false
                             isHorizontalScrollBarEnabled = false
                             setBackgroundColor(android.graphics.Color.TRANSPARENT)
@@ -470,6 +497,9 @@ fun MessageSvgBlock(
                         }
                     },
                     update = { wv ->
+                        wv.setBackgroundColor(
+                            if (lightCanvas) 0xFFFAF8F5.toInt() else android.graphics.Color.TRANSPARENT,
+                        )
                         val html = buildSvgHtmlDocument(normalized, lightCanvas)
                         if (wv.tag != html) {
                             wv.tag = html
@@ -477,6 +507,14 @@ fun MessageSvgBlock(
                         }
                     },
                 )
+                // WebView 默认吞掉点击事件，非交互态需上层透明遮罩承接全屏手势
+                if (!interactive) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clickable { fullscreen = true },
+                    )
+                }
             }
         }
     }
@@ -563,6 +601,10 @@ internal fun FullscreenSvgViewer(
                     modifier = Modifier.fillMaxSize(),
                     factory = { wctx ->
                         WebView(wctx).apply {
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
                             settings.javaScriptEnabled = false
                             settings.allowFileAccess = false
                             settings.setSupportZoom(true)
@@ -574,10 +616,13 @@ internal fun FullscreenSvgViewer(
                         }
                     },
                     update = { wv ->
+                        wv.setBackgroundColor(
+                            if (lightCanvas) 0xFFFAF8F5.toInt() else 0xFF141312.toInt(),
+                        )
                         val html = buildSvgHtmlDocument(normalized, lightCanvas)
                         if (wv.tag != html) {
                             wv.tag = html
-                            wv.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                            wv.loadDataWithBaseURL("https://codeforge.local/", html, "text/html", "utf-8", null)
                         }
                     },
                 )
@@ -1059,18 +1104,24 @@ internal fun LocalAttachmentThumb(path: String, onClick: () -> Unit) {
                     modifier = Modifier.size(120.dp),
                     factory = { wctx ->
                         WebView(wctx).apply {
+                            layoutParams = FrameLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                                ViewGroup.LayoutParams.MATCH_PARENT,
+                            )
                             settings.javaScriptEnabled = false
                             settings.allowFileAccess = false
+                            settings.loadWithOverviewMode = true
+                            settings.useWideViewPort = true
                             isVerticalScrollBarEnabled = false
                             isHorizontalScrollBarEnabled = false
-                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                            setBackgroundColor(0xFFFAF8F5.toInt())
                         }
                     },
                     update = { wv ->
                         val html = buildSvgHtmlDocument(normalized, lightCanvas = true)
                         if (wv.tag != html) {
                             wv.tag = html
-                            wv.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                            wv.loadDataWithBaseURL("https://codeforge.local/", html, "text/html", "utf-8", null)
                         }
                     },
                 )
