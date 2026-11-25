@@ -173,4 +173,62 @@ class InteractiveUiParserTest {
         )
         assertEquals("由你直接推荐默认方案", standalone)
     }
+
+    @Test
+    fun `parses form select with id-label objects, resolves id default, and preserves out-of-range slider default`() {
+        val json = """
+            {
+              "title": "收敛到最终方向",
+              "blocks": [
+                {
+                  "kind": "form",
+                  "submit_label": "生成最终方案",
+                  "submit_action": "send",
+                  "fields": [
+                    {"id": "person", "type": "text", "label": "你是谁", "default": ""},
+                    {
+                      "id": "form",
+                      "type": "select",
+                      "label": "你能交付的形态",
+                      "options": [
+                        {"id": "html", "label": "只能交单文件 HTML 网页"},
+                        {"id": "hw", "label": "能做实物硬件（Arduino/ESP32/传感器）"},
+                        {"id": "both", "label": "两者都行", "value": "HTML和实物都可以"}
+                      ],
+                      "default": "hw"
+                    },
+                    {"id": "time", "type": "slider", "label": "可用天数", "default": 28},
+                    {"id": "budget", "type": "slider", "label": "预算上限", "default": 500}
+                  ]
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val spec = parseInteractiveUiSpec(json)
+        assertNotNull(spec)
+        val form = spec!!.blocks.single() as UiBlock.Form
+        assertEquals("生成最终方案", form.submitLabel)
+        assertEquals("send", form.submitAction)
+        assertEquals(4, form.fields.size)
+
+        val select = form.fields[1] as UiFormField.Select
+        assertEquals(
+            listOf("只能交单文件 HTML 网页", "能做实物硬件（Arduino/ESP32/传感器）", "两者都行"),
+            select.options,
+        )
+        assertFalse(select.options.any { it.startsWith("{") })
+        assertEquals("能做实物硬件（Arduino/ESP32/传感器）", select.default)
+        assertEquals("HTML和实物都可以", select.valuesByOption["两者都行"])
+
+        val daysSlider = form.fields[2] as UiFormField.NumberSlider
+        assertEquals(0f, daysSlider.min)
+        assertEquals(100f, daysSlider.max)
+        assertEquals(28f, daysSlider.default)
+
+        val budgetSlider = form.fields[3] as UiFormField.NumberSlider
+        assertEquals(0f, budgetSlider.min)
+        assertEquals(500f, budgetSlider.max)
+        assertEquals(500f, budgetSlider.default)
+    }
 }

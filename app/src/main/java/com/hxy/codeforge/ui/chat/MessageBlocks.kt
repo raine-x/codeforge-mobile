@@ -22,9 +22,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
@@ -33,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -45,6 +50,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -57,6 +63,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import com.hxy.codeforge.ui.common.Glyph
 import com.hxy.codeforge.ui.common.GlyphIcon
+import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
 import android.widget.Toast
 import android.content.Intent
@@ -338,9 +345,14 @@ private fun parseSvgRootDimensions(openTag: String): Pair<Float, Float>? {
     return w to h
 }
 
-internal fun buildSvgHtmlDocument(svg: String, lightCanvas: Boolean): String {
-    val bg = if (lightCanvas) "#FAF8F5" else "transparent"
-    val fg = if (lightCanvas) "#1F1E1B" else "#EAE6DF"
+internal fun buildSvgHtmlDocument(
+    svg: String,
+    lightCanvas: Boolean,
+    transparentBg: Boolean = false,
+    textColorHex: String? = null,
+): String {
+    val bg = if (transparentBg || !lightCanvas) "transparent" else "#FAF8F5"
+    val fg = textColorHex ?: if (lightCanvas) "#1F1E1B" else "#EAE6DF"
     // 只约束顶层 `body > svg`，避免 `svg{width:100%!important}` 把架构图里嵌套的小 `<svg>` 图标拉爆
     return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes\">" +
@@ -354,6 +366,65 @@ internal fun buildSvgHtmlDocument(svg: String, lightCanvas: Boolean): String {
         "</body></html>"
 }
 
+/** 检测 SVG 是否自带覆盖画布的不透明背景层（如整卡 `<rect width="100%" height="100%" fill="..."/>`）。 */
+internal fun svgHasOpaqueBackdrop(svg: String): Boolean {
+    val startIdx = svg.indexOf("<svg", ignoreCase = true)
+    if (startIdx < 0) return false
+    val tagEnd = svg.indexOf('>', startIdx)
+    if (tagEnd < 0) return false
+    val openTag = svg.substring(startIdx, tagEnd + 1)
+
+    val rootStyleBg = Regex("""background(?:-color)?\s*:\s*([^;"']+)""", RegexOption.IGNORE_CASE)
+        .find(openTag)?.groupValues?.get(1)?.trim()?.lowercase()
+    if (rootStyleBg != null && rootStyleBg != "none" && rootStyleBg != "transparent") return true
+
+    val rootDims = parseSvgRootDimensions(openTag) ?: run {
+        val vb = Regex("""(?<![-\w])viewBox\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(openTag)?.groupValues?.get(1)?.trim()?.split(Regex("""[,\s]+"""))
+        val w = vb?.getOrNull(2)?.removeSuffix("px")?.toFloatOrNull()
+        val h = vb?.getOrNull(3)?.removeSuffix("px")?.toFloatOrNull()
+        if (w != null && h != null && w > 0f && h > 0f) w to h else null
+    }
+
+    val rectRegex = Regex("""<rect\b([^>]{0,400})/?>""", RegexOption.IGNORE_CASE)
+    for (m in rectRegex.findAll(svg).take(3)) {
+        val attrs = m.groupValues[1]
+        val wRaw = Regex("""(?<![-\w])width\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(attrs)?.groupValues?.get(1)?.trim()
+        val hRaw = Regex("""(?<![-\w])height\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(attrs)?.groupValues?.get(1)?.trim()
+        val fillAttr = Regex("""(?<![-\w])fill\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(attrs)?.groupValues?.get(1)?.trim()?.lowercase()
+            ?: Regex("""fill\s*:\s*([^;"']+)""", RegexOption.IGNORE_CASE)
+                .find(attrs)?.groupValues?.get(1)?.trim()?.lowercase()
+        if (fillAttr == null || fillAttr == "none" || fillAttr == "transparent") continue
+
+        val coversWidth = wRaw == "100%" || (
+            rootDims != null && (parseSvgDimNumber(wRaw) ?: 0f) >= rootDims.first * 0.7f
+        )
+        val coversHeight = hRaw == "100%" || (
+            rootDims != null && (parseSvgDimNumber(hRaw) ?: 0f) >= rootDims.second * 0.7f
+        )
+        if (coversWidth && coversHeight) return true
+    }
+    return false
+}
+
+/**
+ * 深色模式下判断无底色透明 SVG 是否需要垫一块无框柔白底，
+ * 防止 `#000`/`#333` 等深色线条在深灰背景上隐身；自带底色卡或纯浅色线条保持透明直接融入。
+ */
+internal fun needsLightBackdropInDarkMode(svg: String): Boolean {
+    if (svgHasOpaqueBackdrop(svg)) return false
+    val low = svg.lowercase()
+    val hasDarkInk = Regex("""(?:#0[0-9a-f]{2}|#1[0-9a-f]{2}|#2[0-9a-f]{2}|#3[0-9a-f]{2}|#4[0-9a-f]{2}\b|\bblack\b)""")
+        .containsMatchIn(low)
+    if (hasDarkInk) return true
+    val hasExplicitLightInk = Regex("""(?:#[c-f][0-9a-f]{2}|#[c-f][0-9a-f]{5}|\bwhite\b|currentcolor)""")
+        .containsMatchIn(low)
+    return !hasExplicitLightInk
+}
+
 /** 判定 SVG 是否包含交互声明（`data-cf-send` / `data-cf-prefill` / `window.__cf` / 脚本 / 内联点击）。 */
 internal fun isInteractiveSvg(svg: String): Boolean {
     val low = svg.lowercase()
@@ -364,9 +435,145 @@ internal fun isInteractiveSvg(svg: String): Boolean {
         low.contains("onclick=")
 }
 
+private class SvgWebHolder {
+    var pendingHtml: String = ""
+    var loadedHtml: String = ""
+    var lastBgColor: Int? = null
+}
+
+private fun loadSvgIfLaidOut(wv: WebView, holder: SvgWebHolder) {
+    val target = holder.pendingHtml
+    if (target.isEmpty() || holder.loadedHtml == target) return
+    if (wv.width > 0 && wv.height > 0) {
+        holder.loadedHtml = target
+        wv.loadDataWithBaseURL("https://codeforge.local/", target, "text/html", "utf-8", null)
+    }
+}
+
 /**
- * SVG 块：直接渲染矢量图，并提供底色切换（白底/透明，防深色模式下黑色线条隐形）、
- * 源码查看/复制与全屏缩放查看。
+ * 统一的 SVG `WebView` 宿主：
+ * 1. 等视图获得非零宽高后再调用 `loadDataWithBaseURL`，避免 `LazyColumn` 首帧 0x0 布局下 `<svg>` 按 0 高度排版；
+ * 2. 无论是否交互态一律挂载 `WebViewClient` + `postVisualStateCallback` 与重挂/尺寸变化刷新，防止滚动离屏再滑回后空白；
+ * 3. `onRelease` 及时销毁 `WebView`，防止多轮长对话里多张 SVG 泄漏原生渲染表面。
+ */
+@Composable
+private fun SvgWebCanvas(
+    html: String,
+    canvasColor: Int,
+    modifier: Modifier = Modifier,
+    interactive: Boolean = false,
+    zoomable: Boolean = false,
+) {
+    val chatActions by rememberUpdatedState(LocalChatUiActions.current)
+    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+
+    key(interactive, zoomable) {
+        AndroidView(
+            modifier = modifier,
+            factory = { wctx ->
+                val holder = SvgWebHolder()
+                WebView(wctx).apply {
+                    tag = holder
+                    layoutParams = FrameLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                    )
+                    settings.javaScriptEnabled = interactive
+                    settings.allowFileAccess = false
+                    settings.allowContentAccess = false
+                    settings.loadWithOverviewMode = true
+                    settings.useWideViewPort = true
+                    if (zoomable) {
+                        settings.setSupportZoom(true)
+                        settings.builtInZoomControls = true
+                        settings.displayZoomControls = false
+                    }
+                    isVerticalScrollBarEnabled = false
+                    isHorizontalScrollBarEnabled = false
+                    setBackgroundColor(canvasColor)
+                    holder.lastBgColor = canvasColor
+
+                    if (interactive) {
+                        addJavascriptInterface(
+                            com.hxy.codeforge.ui.browser.PageBridge.AndroidBridge { ev ->
+                                when (ev.kind) {
+                                    "send" -> mainHandler.post { chatActions?.onSend?.invoke(ev.payload) }
+                                    "prefill" -> mainHandler.post { chatActions?.onPrefill?.invoke(ev.payload) }
+                                    "toast" -> mainHandler.post { chatActions?.onToast?.invoke(ev.payload) }
+                                }
+                            },
+                            "__cfAndroid",
+                        )
+                    }
+
+                    webViewClient = object : android.webkit.WebViewClient() {
+                        override fun onPageFinished(view: WebView, url: String?) {
+                            if (interactive) {
+                                view.evaluateJavascript(com.hxy.codeforge.ui.browser.PageBridge.SCRIPT, null)
+                            }
+                            view.postVisualStateCallback(
+                                0L,
+                                object : WebView.VisualStateCallback() {
+                                    override fun onComplete(requestId: Long) {
+                                        view.requestLayout()
+                                        view.postInvalidateOnAnimation()
+                                    }
+                                },
+                            )
+                            view.postInvalidateOnAnimation()
+                        }
+                    }
+
+                    addOnLayoutChangeListener { v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
+                        val wv = v as WebView
+                        val h = (wv.tag as? SvgWebHolder) ?: return@addOnLayoutChangeListener
+                        val newW = right - left
+                        val newH = bottom - top
+                        val oldW = oldRight - oldLeft
+                        val oldH = oldBottom - oldTop
+                        if (newW > 0 && newH > 0) {
+                            loadSvgIfLaidOut(wv, h)
+                            if (oldW != newW || oldH != newH) {
+                                wv.postInvalidateOnAnimation()
+                            }
+                        }
+                    }
+
+                    addOnAttachStateChangeListener(
+                        object : android.view.View.OnAttachStateChangeListener {
+                            override fun onViewAttachedToWindow(v: android.view.View) {
+                                val wv = v as WebView
+                                val h = wv.tag as? SvgWebHolder
+                                if (h != null) loadSvgIfLaidOut(wv, h)
+                                v.postInvalidateOnAnimation()
+                            }
+
+                            override fun onViewDetachedFromWindow(v: android.view.View) = Unit
+                        },
+                    )
+                }
+            },
+            update = { wv ->
+                val holder = (wv.tag as? SvgWebHolder) ?: SvgWebHolder().also { wv.tag = it }
+                if (holder.lastBgColor != canvasColor) {
+                    holder.lastBgColor = canvasColor
+                    wv.setBackgroundColor(canvasColor)
+                }
+                holder.pendingHtml = html
+                loadSvgIfLaidOut(wv, holder)
+            },
+            onRelease = { wv ->
+                runCatching { wv.stopLoading() }
+                runCatching { wv.destroy() }
+            },
+        )
+    }
+}
+
+/**
+ * SVG 块：无边框、无顶栏直接融入对话流呈现矢量图形，避免额外框线造成的视觉割裂。
+ * 非交互态轻触进入全屏查看器（支持双指缩放、暖白/深色底切换、源码预览与复制）；
+ * 交互态（`data-cf-send` 等）将点击保留给图元本身，仅在右上角留一枚轻量全屏角标。
  */
 @Composable
 fun MessageSvgBlock(
@@ -374,148 +581,65 @@ fun MessageSvgBlock(
     modifier: Modifier = Modifier,
     title: String = "SVG 矢量图",
 ) {
-    val ctx = LocalContext.current
-    val chatActions by rememberUpdatedState(LocalChatUiActions.current)
-    val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
     val normalized = remember(svg) { normalizeSvgForRender(svg) }
     val interactive = remember(normalized) { isInteractiveSvg(normalized) }
     val aspect = remember(normalized) { (svgAspect(normalized) ?: 1.5f).coerceIn(0.4f, 4f) }
-    var showSource by remember(svg) { mutableStateOf(false) }
-    var lightCanvas by remember(svg) { mutableStateOf(true) }
+    val isLightTheme = MaterialTheme.colorScheme.onBackground.luminance() < 0.5f
+    val needsDarkModeMat = remember(normalized, isLightTheme) {
+        !isLightTheme && needsLightBackdropInDarkMode(normalized)
+    }
     var fullscreen by remember(svg) { mutableStateOf(false) }
 
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(blockCardShape)
-            .border(0.8.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f), blockCardShape)
-            .background(MaterialTheme.colorScheme.surface),
-    ) {
-        // 顶部紧凑控制栏
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-                .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(4.dp))
-                    .background(Clay.copy(alpha = 0.16f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            ) {
-                Text(
-                    text = "SVG",
-                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                    color = Clay,
-                )
-            }
-            Text(
-                text = if (interactive) "$title · 可点击交互" else title,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            if (!showSource) {
-                SvgActionPill(label = if (lightCanvas) "暖白底" else "透明底") {
-                    lightCanvas = !lightCanvas
-                }
-            }
-            SvgActionPill(label = if (showSource) "预览" else "源码") {
-                showSource = !showSource
-            }
-            SvgActionPill(label = "复制") {
-                val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                cm?.setPrimaryClip(android.content.ClipData.newPlainText("svg", svg.trim()))
-                Toast.makeText(ctx, "已复制 SVG 源码", Toast.LENGTH_SHORT).show()
-            }
-            SvgActionPill(label = "全屏") {
-                fullscreen = true
+    val html = remember(normalized, isLightTheme, needsDarkModeMat) {
+        buildSvgHtmlDocument(
+            svg = normalized,
+            lightCanvas = isLightTheme || needsDarkModeMat,
+            transparentBg = true,
+            textColorHex = if (isLightTheme || needsDarkModeMat) "#1F1E1C" else "#EAE6DF",
+        )
+    }
+
+    val canvasModifier = modifier
+        .fillMaxWidth()
+        .padding(vertical = 4.dp)
+        .aspectRatio(aspect)
+        .let { mod ->
+            if (needsDarkModeMat) {
+                // 不对包着 WebView 的容器做 clip(RoundedCornerShape)，只垫背景 + 内边距，兼容硬件渲染层
+                mod.background(Color(0xFFF7F5EF), blockCardShape).padding(6.dp)
+            } else {
+                mod
             }
         }
 
-        if (showSource) {
-            Box(
+    Box(modifier = canvasModifier) {
+        SvgWebCanvas(
+            html = html,
+            canvasColor = android.graphics.Color.TRANSPARENT,
+            interactive = interactive,
+            zoomable = false,
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (interactive) {
+            Text(
+                text = "全屏",
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(10.dp),
-            ) {
-                Text(
-                    text = svg.trim(),
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 18.sp,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f))
+                    .noRippleClickable { fullscreen = true }
+                    .padding(horizontal = 7.dp, vertical = 3.dp),
+            )
         } else {
-            val canvasBg = if (lightCanvas) Color(0xFFFAF8F5) else Color.Transparent
+            // WebView 默认拦截触摸，非交互态用无波纹透明遮罩承接全屏手势，消除点击高亮闪烁
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(aspect)
-                    .background(canvasBg)
-                    .padding(6.dp),
-            ) {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { wctx ->
-                        WebView(wctx).apply {
-                            layoutParams = FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                            )
-                            settings.javaScriptEnabled = interactive
-                            settings.allowFileAccess = false
-                            settings.loadWithOverviewMode = true
-                            settings.useWideViewPort = true
-                            isVerticalScrollBarEnabled = false
-                            isHorizontalScrollBarEnabled = false
-                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                            if (interactive) {
-                                addJavascriptInterface(
-                                    com.hxy.codeforge.ui.browser.PageBridge.AndroidBridge { ev ->
-                                        when (ev.kind) {
-                                            "send" -> mainHandler.post { chatActions?.onSend?.invoke(ev.payload) }
-                                            "prefill" -> mainHandler.post { chatActions?.onPrefill?.invoke(ev.payload) }
-                                            "toast" -> mainHandler.post { chatActions?.onToast?.invoke(ev.payload) }
-                                        }
-                                    },
-                                    "__cfAndroid",
-                                )
-                                webViewClient = object : android.webkit.WebViewClient() {
-                                    override fun onPageFinished(view: WebView, url: String?) {
-                                        view.evaluateJavascript(com.hxy.codeforge.ui.browser.PageBridge.SCRIPT, null)
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    update = { wv ->
-                        wv.setBackgroundColor(
-                            if (lightCanvas) 0xFFFAF8F5.toInt() else android.graphics.Color.TRANSPARENT,
-                        )
-                        val html = buildSvgHtmlDocument(normalized, lightCanvas)
-                        if (wv.tag != html) {
-                            wv.tag = html
-                            wv.loadDataWithBaseURL("https://codeforge.local/", html, "text/html", "utf-8", null)
-                        }
-                    },
-                )
-                // WebView 默认吞掉点击事件，非交互态需上层透明遮罩承接全屏手势
-                if (!interactive) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clickable { fullscreen = true },
-                    )
-                }
-            }
+                    .fillMaxSize()
+                    .noRippleClickable { fullscreen = true },
+            )
         }
     }
 
@@ -523,7 +647,7 @@ fun MessageSvgBlock(
         FullscreenSvgViewer(
             svg = normalized,
             title = title,
-            initialLightCanvas = lightCanvas,
+            initialLightCanvas = isLightTheme || needsDarkModeMat,
             onClose = { fullscreen = false },
         )
     }
@@ -543,7 +667,7 @@ private fun SvgActionPill(label: String, onClick: () -> Unit) {
     )
 }
 
-/** 全屏 SVG 查看器：支持双指缩放、底色切换与源码复制。 */
+/** 全屏 SVG 查看器：支持双指缩放、底色切换、源码查看与复制。 */
 @Composable
 internal fun FullscreenSvgViewer(
     svg: String,
@@ -554,6 +678,8 @@ internal fun FullscreenSvgViewer(
     val ctx = LocalContext.current
     val normalized = remember(svg) { normalizeSvgForRender(svg) }
     var lightCanvas by remember(initialLightCanvas) { mutableStateOf(initialLightCanvas) }
+    var showSource by remember(svg) { mutableStateOf(false) }
+    val html = remember(normalized, lightCanvas) { buildSvgHtmlDocument(normalized, lightCanvas) }
 
     Dialog(
         onDismissRequest = onClose,
@@ -562,7 +688,8 @@ internal fun FullscreenSvgViewer(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color(0xFF141312)),
+                .background(Color(0xFF141312))
+                .safeDrawingPadding(),
         ) {
             Row(
                 modifier = Modifier
@@ -570,7 +697,7 @@ internal fun FullscreenSvgViewer(
                     .background(Color(0xFF22201E))
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Text(
                     text = title,
@@ -580,10 +707,15 @@ internal fun FullscreenSvgViewer(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                SvgActionPill(label = if (lightCanvas) "暖白底" else "深色底") {
-                    lightCanvas = !lightCanvas
+                if (!showSource) {
+                    SvgActionPill(label = if (lightCanvas) "暖白底" else "深色底") {
+                        lightCanvas = !lightCanvas
+                    }
                 }
-                SvgActionPill(label = "复制源码") {
+                SvgActionPill(label = if (showSource) "预览" else "源码") {
+                    showSource = !showSource
+                }
+                SvgActionPill(label = "复制") {
                     val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
                     cm?.setPrimaryClip(android.content.ClipData.newPlainText("svg", svg.trim()))
                     Toast.makeText(ctx, "已复制 SVG 源码", Toast.LENGTH_SHORT).show()
@@ -591,41 +723,40 @@ internal fun FullscreenSvgViewer(
                 SvgActionPill(label = "关闭", onClick = onClose)
             }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(if (lightCanvas) Color(0xFFFAF8F5) else Color(0xFF141312))
-                    .padding(12.dp),
-            ) {
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { wctx ->
-                        WebView(wctx).apply {
-                            layoutParams = FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                            )
-                            settings.javaScriptEnabled = false
-                            settings.allowFileAccess = false
-                            settings.setSupportZoom(true)
-                            settings.builtInZoomControls = true
-                            settings.displayZoomControls = false
-                            settings.useWideViewPort = true
-                            settings.loadWithOverviewMode = true
-                            setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                        }
-                    },
-                    update = { wv ->
-                        wv.setBackgroundColor(
-                            if (lightCanvas) 0xFFFAF8F5.toInt() else 0xFF141312.toInt(),
+            if (showSource) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color(0xFF1A1917))
+                        .verticalScroll(rememberScrollState())
+                        .padding(14.dp),
+                ) {
+                    SelectionContainer {
+                        Text(
+                            text = svg.trim(),
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontFamily = FontFamily.Monospace,
+                                lineHeight = 19.sp,
+                            ),
+                            color = Color(0xFFEAE6DF),
                         )
-                        val html = buildSvgHtmlDocument(normalized, lightCanvas)
-                        if (wv.tag != html) {
-                            wv.tag = html
-                            wv.loadDataWithBaseURL("https://codeforge.local/", html, "text/html", "utf-8", null)
-                        }
-                    },
-                )
+                    }
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(if (lightCanvas) Color(0xFFFAF8F5) else Color(0xFF141312))
+                        .padding(12.dp),
+                ) {
+                    SvgWebCanvas(
+                        html = html,
+                        canvasColor = if (lightCanvas) 0xFFFAF8F5.toInt() else 0xFF141312.toInt(),
+                        interactive = false,
+                        zoomable = true,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
             }
         }
     }
@@ -1087,43 +1218,31 @@ internal fun LocalAttachmentThumb(path: String, onClick: () -> Unit) {
             bmp = withContext(Dispatchers.IO) { decodeThumb(attachmentFile(ctx, path, root), 512) }
         }
     }
+    val loadedSvg = svgText
+    val b = bmp
     Box(
         modifier = Modifier
             .size(120.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surface)
+            .let { if (loadedSvg != null) it.background(Color(0xFFFAF8F5), RoundedCornerShape(12.dp)).padding(4.dp) else it.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface) }
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        val loadedSvg = svgText
-        val b = bmp
         when {
             loadedSvg != null -> {
                 val normalized = remember(loadedSvg) { normalizeSvgForRender(loadedSvg) }
-                AndroidView(
-                    modifier = Modifier.size(120.dp),
-                    factory = { wctx ->
-                        WebView(wctx).apply {
-                            layoutParams = FrameLayout.LayoutParams(
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                                ViewGroup.LayoutParams.MATCH_PARENT,
-                            )
-                            settings.javaScriptEnabled = false
-                            settings.allowFileAccess = false
-                            settings.loadWithOverviewMode = true
-                            settings.useWideViewPort = true
-                            isVerticalScrollBarEnabled = false
-                            isHorizontalScrollBarEnabled = false
-                            setBackgroundColor(0xFFFAF8F5.toInt())
-                        }
-                    },
-                    update = { wv ->
-                        val html = buildSvgHtmlDocument(normalized, lightCanvas = true)
-                        if (wv.tag != html) {
-                            wv.tag = html
-                            wv.loadDataWithBaseURL("https://codeforge.local/", html, "text/html", "utf-8", null)
-                        }
-                    },
+                val html = remember(normalized) { buildSvgHtmlDocument(normalized, lightCanvas = true) }
+                SvgWebCanvas(
+                    html = html,
+                    canvasColor = 0xFFFAF8F5.toInt(),
+                    interactive = false,
+                    zoomable = false,
+                    modifier = Modifier.fillMaxSize(),
+                )
+                // WebView 默认拦截触摸，需透明顶层遮罩承接点击全屏预览
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(onClick = onClick),
                 )
             }
             b != null -> {

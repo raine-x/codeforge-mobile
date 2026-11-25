@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -148,6 +147,7 @@ sealed interface UiFormField {
         override val label: String,
         val options: List<String>,
         val default: String = options.firstOrNull().orEmpty(),
+        val valuesByOption: Map<String, String> = emptyMap(),
     ) : UiFormField
 }
 
@@ -190,7 +190,7 @@ private fun parseUiBlock(o: JSONObject): UiBlock? {
                         UiChoiceOption(id = "opt_$i", label = it, value = it)
                     }
                     is JSONObject -> {
-                        val label = item.optString("label").ifBlank { item.optString("text") }.trim()
+                        val label = extractOptionLabel(item)
                         if (label.isEmpty()) return@mapNotNull null
                         val correct = if (item.has("correct") && !item.isNull("correct")) {
                             item.optBoolean("correct")
@@ -269,7 +269,10 @@ private fun parseUiBlock(o: JSONObject): UiBlock? {
             val fields = (0 until arr.length()).mapNotNull { i ->
                 val f = arr.optJSONObject(i) ?: return@mapNotNull null
                 val fType = f.optString("type").ifBlank { f.optString("kind") }.lowercase().trim()
-                val fLabel = f.optString("label").trim()
+                val fLabel = f.optString("label")
+                    .ifBlank { f.optString("title") }
+                    .ifBlank { f.optString("prompt") }
+                    .trim()
                 val fId = f.optString("id").ifBlank { fLabel.ifBlank { "field_$i" } }
                 if (fLabel.isEmpty()) return@mapNotNull null
                 when (fType) {
@@ -279,10 +282,21 @@ private fun parseUiBlock(o: JSONObject): UiBlock? {
                         default = f.optBoolean("default", false),
                     )
                     "slider", "number", "range" -> {
-                        val min = f.optDouble("min", 0.0).toFloat()
-                        val max = f.optDouble("max", 100.0).toFloat().coerceAtLeast(min + 1f)
+                        val hasDefault = f.has("default") && !f.isNull("default")
+                        val rawDefault = if (hasDefault) f.optDouble("default", 0.0).toFloat() else null
+                        val min = if (f.has("min") && !f.isNull("min")) {
+                            f.optDouble("min", 0.0).toFloat()
+                        } else {
+                            minOf(0f, rawDefault ?: 0f)
+                        }
+                        val rawMax = if (f.has("max") && !f.isNull("max")) {
+                            f.optDouble("max", 100.0).toFloat()
+                        } else {
+                            maxOf(100f, rawDefault ?: 100f)
+                        }
+                        val max = rawMax.coerceAtLeast(min + 1f)
                         val step = f.optDouble("step", 1.0).toFloat().coerceAtLeast(0.1f)
-                        val def = f.optDouble("default", min.toDouble()).toFloat().coerceIn(min, max)
+                        val def = (rawDefault ?: min).coerceIn(min, max)
                         UiFormField.NumberSlider(
                             id = fId,
                             label = fLabel,
@@ -293,11 +307,34 @@ private fun parseUiBlock(o: JSONObject): UiBlock? {
                             unit = f.optString("unit").trim(),
                         )
                     }
-                    "select", "enum", "chips" -> {
-                        val opts = jsonStrings(f.optJSONArray("options"))
-                        if (opts.isEmpty()) return@mapNotNull null
-                        val def = f.optString("default").trim().takeIf { it in opts } ?: opts.first()
-                        UiFormField.Select(id = fId, label = fLabel, options = opts, default = def)
+                    "select", "enum", "chips", "radio", "dropdown" -> {
+                        val selectOpts = parseSelectOptions(
+                            f.optJSONArray("options") ?: f.optJSONArray("items") ?: f.optJSONArray("choices"),
+                        )
+                        if (selectOpts.isEmpty()) return@mapNotNull null
+                        val rawDef = f.optString("default").trim()
+                        val matched = if (rawDef.isNotEmpty()) {
+                            selectOpts.firstOrNull {
+                                it.label == rawDef || it.id == rawDef || it.value == rawDef
+                            }
+                        } else {
+                            null
+                        }
+                        val labels = selectOpts.map { it.label }.distinct()
+                        val valuesMap = buildMap {
+                            selectOpts.forEach { opt ->
+                                if (opt.value.isNotEmpty() && opt.value != opt.label) {
+                                    put(opt.label, opt.value)
+                                }
+                            }
+                        }
+                        UiFormField.Select(
+                            id = fId,
+                            label = fLabel,
+                            options = labels,
+                            default = matched?.label ?: labels.first(),
+                            valuesByOption = valuesMap,
+                        )
                     }
                     else -> UiFormField.Text(
                         id = fId,
@@ -388,11 +425,60 @@ internal fun composeCardActionPayload(
     return "$combined\n\n${item.payload}"
 }
 
+private data class UiSelectOption(
+    val id: String,
+    val label: String,
+    val value: String,
+)
+
+private fun extractOptionLabel(o: JSONObject): String =
+    o.optString("label")
+        .ifBlank { o.optString("text") }
+        .ifBlank { o.optString("title") }
+        .ifBlank { o.optString("name") }
+        .trim()
+
+/**
+ * 解析表单选项数组：同时兼容纯字符串 `["华东","华南"]` 与模型常生成的对象数组
+ * `[{"id":"html","label":"只能交单文件 HTML 网页"}]`，避免 `JSONArray.optString`
+ * 把对象原样序列化成 JSON 文本直接渲染到选项胶囊上。
+ */
+private fun parseSelectOptions(arr: JSONArray?): List<UiSelectOption> {
+    if (arr == null) return emptyList()
+    return buildList {
+        for (i in 0 until arr.length()) {
+            when (val item = arr.opt(i)) {
+                is String -> item.trim().takeIf { it.isNotEmpty() }?.let {
+                    add(UiSelectOption(id = it, label = it, value = it))
+                }
+                is JSONObject -> {
+                    val id = item.optString("id").trim()
+                    val value = item.optString("value").trim()
+                    val label = extractOptionLabel(item).ifBlank { value }.ifBlank { id }
+                    if (label.isNotEmpty()) {
+                        add(
+                            UiSelectOption(
+                                id = id.ifEmpty { label },
+                                label = label,
+                                value = value.ifEmpty { label },
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun jsonStrings(arr: JSONArray?): List<String> {
     if (arr == null) return emptyList()
     return buildList {
         for (i in 0 until arr.length()) {
-            val s = arr.optString(i).trim()
+            val s = when (val item = arr.opt(i)) {
+                is String -> item.trim()
+                is JSONObject -> extractOptionLabel(item).ifBlank { item.optString("value").trim() }
+                else -> item?.toString()?.trim().orEmpty()
+            }
             if (s.isNotEmpty()) add(s)
         }
     }
@@ -986,7 +1072,10 @@ private fun FormBlockView(
                 val n = if (f.step >= 1f) v.roundToInt().toString() else "%.1f".format(v)
                 "$n${f.unit}"
             }
-            is UiFormField.Select -> values[f.id] as? String ?: f.default
+            is UiFormField.Select -> {
+                val chosenLabel = values[f.id] as? String ?: f.default
+                f.valuesByOption[chosenLabel] ?: chosenLabel
+            }
         }
         "- ${f.label}：$vStr"
     }
@@ -1021,18 +1110,22 @@ private fun FormBlockView(
 
                 is UiFormField.Text -> {
                     val txt = values[field.id] as? String ?: field.default
-                    OutlinedTextField(
-                        value = txt,
-                        onValueChange = { values[field.id] = it },
-                        label = { Text(field.label) },
-                        placeholder = if (field.placeholder.isNotEmpty()) {
-                            { Text(field.placeholder) }
-                        } else {
-                            null
-                        },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        // 与 Select / Slider 统一将题干放在控件上方，避免长中文问题挤进 OutlinedTextField 缺口折行或裁切
+                        Text(
+                            text = field.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        OutlinedTextField(
+                            value = txt,
+                            onValueChange = { values[field.id] = it },
+                            placeholder = { Text(field.placeholder.ifBlank { "请输入…" }) },
+                            minLines = 1,
+                            maxLines = 4,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
                 }
 
                 is UiFormField.NumberSlider -> {
@@ -1063,7 +1156,8 @@ private fun FormBlockView(
                             },
                             valueRange = field.min..field.max,
                             colors = SliderDefaults.colors(thumbColor = Clay, activeTrackColor = Clay),
-                            modifier = Modifier.height(32.dp),
+                            // 不硬钳 32.dp：M3 Slider 滑块与触控区需要自然高度，否则滑块会被垂直压扁或裁切
+                            modifier = Modifier.fillMaxWidth(),
                         )
                     }
                 }
@@ -1108,10 +1202,16 @@ private fun FormBlockView(
         }
 
         if (!suppressDefaultSubmit || block.explicitSubmit) {
-            Row(
+            FlowRow(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                if (block.submitAction != "prefill") {
+                    OutlinedButton(onClick = { actions?.onPrefill?.invoke(buildFormSummary()) }) {
+                        Text("填入输入框", style = MaterialTheme.typography.labelLarge)
+                    }
+                }
                 Button(
                     onClick = {
                         val summary = buildFormSummary()
@@ -1124,7 +1224,7 @@ private fun FormBlockView(
                     colors = ButtonDefaults.buttonColors(containerColor = Clay),
                 ) {
                     val suffix = if (block.submitAction == "send") " ↗" else ""
-                    Text("${block.submitLabel}$suffix")
+                    Text("${block.submitLabel}$suffix", style = MaterialTheme.typography.labelLarge)
                 }
             }
         }

@@ -482,3 +482,8 @@ Gradle 走代理必须写 `systemProp.*` 到 `~/.gradle/gradle.properties`；发
 ① `LazyColumn` 内的 SVG `WebView` 若未显式设置 `FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT)` 与 `useWideViewPort = true`，易在首帧按 `WRAP_CONTENT` 测量塌缩或裁剪；同时 `WebView` 会拦截触摸事件，非交互 SVG 的全屏手势需叠加透明顶层可点击遮罩而非放在底层 `Box`。
 ② `buildSvgHtmlDocument` 中的尺寸 CSS 只能作用于 `body>svg`，绝不能写全局 `svg{width:100%!important;height:100%!important}`，否则架构图里嵌套的 `<svg>` 小图标会被拉爆铺满整画布；`normalizeSvgForRender` 需自动补齐缺失的 `xmlns="http://www.w3.org/2000/svg"` 与内联 `style="width:...;height:..."` 推导的 `viewBox`，`parseSvgRootDimensions` 用 `(?<![-\w])` 避开 `stroke-width` 误匹配。
 ③ `splitProseAroundBareSvg` 必须做 `<svg>`/`</svg>` 嵌套深度配对（`findMatchingSvgCloseEnd`），行内反引号扫描不得跨 `\n\n` 空行吞掉后文裸 `<svg>`，`looksLikeSvgMarkup` 须忽略尾部 `<!-- ... -->` XML 注释。
+
+### P-066 · 表单 `select` 对象数组兼容、`Slider` 禁止压高度，SVG `WebView` 须非零尺寸延迟加载与禁外层圆角硬裁剪
+① `InteractiveUiBlock` 表单 `select`/`enum`/`chips`/`radio`/`dropdown` 的 `options` 常由模型输出为 `{"id","label","value"}` 对象数组：禁止直接 `JSONArray.optString`（会把对象序列化成字面 JSON 文本），须按 `parseSelectOptions` 抽取显示名并同时支持用 `id`/`value`/`label` 匹配 `default`；`Slider` 不允许硬设 `.height(32.dp)` 压扁滑块，未显式传 `min`/`max` 时按 `default` 自动外扩区间。
+② `MessageSvgBlock`/`FullscreenSvgViewer`/`LocalAttachmentThumb` 统一走 `SvgWebCanvas`：必须在 `wv.width > 0 && wv.height > 0` 后再调 `loadDataWithBaseURL`，全状态挂 `WebViewClient` + `postVisualStateCallback` 与 `OnLayoutChangeListener`/`OnAttachStateChangeListener` 唤醒重绘，补齐 `onRelease` 销毁 `WebView`，且外层不对包裹 `WebView` 的整卡做 `clip(RoundedCornerShape)`（避免硬件 `DrawFunctor` 在 `LazyColumn` 内空白）。
+③ 对话内联 `MessageSvgBlock` 去顶栏/去边框/透明底直出融入正文流，底色切换与源码查看收口到 `FullscreenSvgViewer`（仅交互式 SVG 保留右上角轻量全屏角标）；深色模式下对无自有底色且使用深色线条的 SVG 才垫无框 `#F7F5EF` 衬底。

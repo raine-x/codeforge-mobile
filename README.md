@@ -1,3 +1,5 @@
+**重要提示：手机操控（无障碍自动化）请谨慎用于微信，容易导致账号封禁，请勿使用主力微信测试！ · Warning: Use Phone Control (Accessibility automation) on WeChat with caution — it can easily trigger account bans; do not test with your primary WeChat account.**
+
 <div align="center">
 
 # CodeForge APP

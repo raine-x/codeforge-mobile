@@ -4,8 +4,10 @@ import com.hxy.codeforge.render.RenderBlock
 import com.hxy.codeforge.render.RenderSpan
 import com.hxy.codeforge.ui.chat.buildSvgHtmlDocument
 import com.hxy.codeforge.ui.chat.isSvgPathOrDataUri
+import com.hxy.codeforge.ui.chat.needsLightBackdropInDarkMode
 import com.hxy.codeforge.ui.chat.normalizeSvgForRender
 import com.hxy.codeforge.ui.chat.svgAspect
+import com.hxy.codeforge.ui.chat.svgHasOpaqueBackdrop
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -455,5 +457,34 @@ class HtmlDetectionTest {
         val html = buildSvgHtmlDocument(normalized, lightCanvas = true)
         assertTrue(html.contains("body>svg{"))
         assertFalse(html.contains("!important"))
+
+        // 对话流中仅声明 viewBox、未显式给 width/height 的 SVG 必须保住宽高比并输出合法包装文档
+        val viewBoxOnlySvg = """
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 430" font-family="system-ui, -apple-system, sans-serif">
+              <rect width="800" height="430" rx="12" fill="#0f172a"/>
+              <text x="40" y="34" fill="#f1f5f9" font-size="17">三种赢法</text>
+            </svg>
+        """.trimIndent()
+        assertEquals(800f / 430f, svgAspect(viewBoxOnlySvg)!!, 0.01f)
+        val viewBoxHtml = buildSvgHtmlDocument(normalizeSvgForRender(viewBoxOnlySvg), lightCanvas = true)
+        assertTrue(viewBoxHtml.contains("body>svg{width:100%;height:100%"))
+        assertTrue(viewBoxHtml.contains("""viewBox="0 0 800 430""""))
+
+        // 自带不透明背景卡片的 SVG 必须识别出底色且不触发深色模式外垫框
+        assertTrue(svgHasOpaqueBackdrop(viewBoxOnlySvg))
+        assertFalse(needsLightBackdropInDarkMode(viewBoxOnlySvg))
+
+        // 透明线框流程图（深色线条、无整卡底色）在浅色端保持透明无框，仅在深色模式下判定需垫柔白底
+        val transparentWireframe = """
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400">
+              <rect x="40" y="20" width="520" height="80" rx="12" fill="none" stroke="#333333"/>
+              <text x="300" y="66" fill="#1f1e1c" text-anchor="middle">Camera2 / ISP</text>
+            </svg>
+        """.trimIndent()
+        assertFalse(svgHasOpaqueBackdrop(transparentWireframe))
+        assertTrue(needsLightBackdropInDarkMode(transparentWireframe))
+
+        val seamlessHtml = buildSvgHtmlDocument(transparentWireframe, lightCanvas = true, transparentBg = true)
+        assertTrue(seamlessHtml.contains("background:transparent"))
     }
 }
