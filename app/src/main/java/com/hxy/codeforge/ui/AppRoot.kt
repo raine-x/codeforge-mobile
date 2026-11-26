@@ -121,7 +121,7 @@ import java.util.Calendar
  *
  * ## 空态与对话态
  *
- * 没有消息时显示 Claude 式问候页（星标 + 轮换问候语），有消息时交叉淡入
+ * 没有消息时显示极简问候页（星标 + 轮换问候语），有消息时交叉淡入
  * 消息列表 —— [AnimatedContent] 只切换中间那块区域，顶栏与输入卡保持原位，
  * 视觉上输入框像是从问候页「长」进对话页的。
  */
@@ -172,9 +172,7 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
         )
     }
 
-    // 附件/媒体块的相对路径根：与 ChatViewModel.applySessionSpace 的优先级逐字一致
-    //（会话元信息 workspace → 当前项目 → 应用私有 inbox）。消息里存的是内核 history
-    // 原样的相对路径，只有用**同一棵树**去解析，缩略图与播放器才找得到文件（问题 1）。
+    // 附件与媒体相对路径根：须与 ChatViewModel.applySessionSpace 优先级一致，确保缩略图与播放器路径同源
     val appCtx = androidx.compose.ui.platform.LocalContext.current
     val attachmentRoot = remember(state.currentSessionId, state.sessions, state.currentWorkspace) {
         state.sessions.firstOrNull { it.id == state.currentSessionId }
@@ -416,13 +414,9 @@ fun CodeForgeApp(viewModel: ChatViewModel) {
     }
 }
 
-// ---------------------------------------------------------------- 环境准备
-
 /**
  * 首次启动的环境准备遮罩（proot/Alpine 兼容环境）。
- *
- * 内置语音模型移除后只剩这一台准备器（4MB 环境包），原先「两台取较慢的」
- * 的逻辑不再需要。失败不挡屏（设置页里能看到原因并重试），成功即自动淡出。
+ * 失败时不阻塞主界面，可在设置页查看原因并重试。
  */
 @Composable
 private fun EnvPreparingOverlay() {
@@ -488,7 +482,7 @@ private fun EnvPreparingOverlay() {
     }
 }
 
-// ---------------------------------------------------------------- 竖屏单栏
+// 竖屏单栏
 
 @Composable
 private fun CompactLayout(
@@ -674,8 +668,7 @@ private fun CompactLayout(
                     },
                     onProjectLongPress = onProjectLongPress,
                     onNewSessionInProject = { workspace ->
-                        // 切项目与 new_session 必须是**一个原子序列**：先 POST 工作区、
-                        // 等成功后再建会话，否则新会话会落进上一个项目（问题 2）。
+                        // 切项目与建新会话须按序执行：先切工作区成功后再建会话，防止落进上一个项目
                         vm.newSessionInProject(workspace)
                         scope.launch { drawerState.close() }
                     },
@@ -753,9 +746,7 @@ private fun CompactLayout(
                 steerQueued = state.steerQueued,
                 permissionMode = state.permissionMode,
                 modelName = state.modelName,
-                // 供应商的真相在内核 config（问题 8）：弹层不再自己维护一个空字符串
-                // 内核 config.provider 是**协议族**（anthropic|openai），不是供应商 id ——
-                // 当前供应商由 Composer 按内核生效模型从模型库反查，别用这个字段。
+                // 内核 config.provider 是协议族名（anthropic|openai），当前供应商由模型库反查
                 activeProvider = state.kernelConfig?.provider.orEmpty(),
                 kernelModelId = state.kernelConfig?.model.orEmpty(),
                 modelInLibrary = state.kernelConfig?.modelInLibrary ?: true,
@@ -795,7 +786,7 @@ private fun CompactLayout(
     }
 }
 
-// ---------------------------------------------------------------- 横屏双栏
+// 横屏双栏
 
 @Composable
 private fun TwoPaneLayout(
@@ -1041,9 +1032,7 @@ private fun TwoPaneLayout(
                 steerQueued = state.steerQueued,
                 permissionMode = state.permissionMode,
                 modelName = state.modelName,
-                // 供应商的真相在内核 config（问题 8）：弹层不再自己维护一个空字符串
-                // 内核 config.provider 是**协议族**（anthropic|openai），不是供应商 id ——
-                // 当前供应商由 Composer 按内核生效模型从模型库反查，别用这个字段。
+                // 内核 config.provider 是协议族名（anthropic|openai），当前供应商由模型库反查
                 activeProvider = state.kernelConfig?.provider.orEmpty(),
                 kernelModelId = state.kernelConfig?.model.orEmpty(),
                 modelInLibrary = state.kernelConfig?.modelInLibrary ?: true,
@@ -1083,8 +1072,6 @@ private fun TwoPaneLayout(
     }
 }
 
-// ---------------------------------------------------------------- 中部：问候页 ↔ 消息列表
-
 @Composable
 private fun ChatBody(
     state: ChatUiState,
@@ -1092,9 +1079,7 @@ private fun ChatBody(
     listState: androidx.compose.foundation.lazy.LazyListState,
     modifier: Modifier = Modifier,
 ) {
-    // B4 消息流：编辑重发 / 原样重发 / 历史工具卡回放 —— 从 MessageList 一路透传
-    // running 时不回问候页：新会话首条消息的空窗期若切回问候页，
-    // AnimatedContent 快速抖动会崩（crash-1792934642977）且视觉闪白
+    // running 时不回退问候页，避免新会话首帧窗口期触发 AnimatedContent 快速切换闪烁
     val showGreeting = state.messages.isEmpty() && state.approvals.isEmpty() && !state.running
 
     AnimatedContent(
@@ -1131,7 +1116,7 @@ private fun ChatBody(
 
 /**
  * 空态问候页：星标 + 按时段问候，问候语每 7 秒轮换一次（淡出淡入）。
- * 对齐 Claude 空态的观感 —— 界面安静、有生命，但不催促。
+ * 极简空态视觉风格 —— 界面安静、有生命，但不催促。
  */
 @Composable
 private fun GreetingHome() {
@@ -1191,7 +1176,7 @@ private fun buildGreetings(): List<String> {
     ).map { "$base，$it" }
 }
 
-// ---------------------------------------------------------------- 公共件
+// 公共件
 
 /**
  * 顶栏：不等长三线菜单 + 居中小标题 + 右侧新建。
@@ -1344,8 +1329,7 @@ private fun TopBar(
                 androidx.compose.material3.DropdownMenu(
                     expanded = menuOpen,
                     onDismissRequest = { menuOpen = false },
-                    // 显式用主题表面色：Material3 默认取 surfaceContainer，而本项目
-                    // 的暖色主题没有为这套 token 配色，弹出菜单会与页面明显两个色系（问题 7）。
+                    // 显式指定主题表面色，避免暖色主题下 M3 默认 surfaceContainer 导致菜单与背景割裂
                     containerColor = MaterialTheme.colorScheme.surface,
                     tonalElevation = 0.dp,
                     shape = RoundedCornerShape(16.dp),
@@ -1396,8 +1380,7 @@ private fun TopBar(
                         text = { Text("文件管理") },
                         onClick = { menuOpen = false; onOpenFiles() },
                     )
-                    // 设置入口也放这里：平板上侧栏底部的头像按钮在部分 ROM 上
-                    // 会落在系统手势区里点不到（真机实测），菜单是更可靠的一条路。
+                    // 设置入口在平板手势区易被遮挡时，顶栏菜单作为保底入口
                     androidx.compose.material3.DropdownMenuItem(
                         text = { Text("设置") },
                         onClick = { menuOpen = false; onOpenSettings() },
@@ -1441,7 +1424,7 @@ private fun shareTranscript(context: android.content.Context, state: ChatUiState
     runCatching { context.startActivity(android.content.Intent.createChooser(send, "分享对话")) }
 }
 
-/** 三横线菜单图标：不等长（上短、中满、下中），对齐 Claude 的菜单符号。 */
+/** 三横线菜单图标：不等长（上短、中满、下中），极简线性菜单符号。 */
 @Composable
 private fun MenuGlyph() {
     val color = MaterialTheme.colorScheme.onSurface

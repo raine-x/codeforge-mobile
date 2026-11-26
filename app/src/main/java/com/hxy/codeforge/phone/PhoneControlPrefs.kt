@@ -7,10 +7,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 /**
- * 手机操控配置的持久化与观察中心（锚定 `SharedPreferences("phone_controls")`）。
- *
- * 自动兼容早期测试副本遗留键名（`volume` / `wifi` / `bluetooth` / `gestures` / `observe` / `excluded_packages`），
- * 不丢失用户已勾选的应用黑名单。
+ * 手机操控配置的持久化与观察中心（`SharedPreferences("phone_controls")`）。
+ * 兼容旧键名映射（`volume` / `wifi` / `bluetooth` / `gestures` / `observe` / `excluded_packages`），
+ * 保留已勾选的应用黑名单。
  */
 object PhoneControlPrefs {
 

@@ -14,49 +14,9 @@ import java.nio.file.Files
 import java.nio.file.Paths
 
 /**
- * 统一兼容环境（proot + Alpine rootfs）的构建与生命周期。
- *
- * ## 环境契约 —— 「跑 A 的地方必须看得到跑 B 的地方」
- *
- * 一切路径锚定应用沙盒单根（filesDir，下称 $CELL）：
- *
- * ```
- * $CELL/                     HOME（内核、工具、rootfs 全在这棵树上）
- * ├── workspace/             工作区（内核 -workdir；proot 内同路径可见）
- * ├── tmp/                   TMPDIR（proot 内绑定为 /tmp）
- * ├── mnt/android/           安卓侧存储的稳定入口（见下方映射表）
- * ├── usr/bin/proot          Termux 构建（bionic，可直接 exec）
- * ├── usr/libexec/proot/     proot 的 loader（与 bin 的相对布局保持原样）
- * ├── usr/bin/cfrun          统一执行入口（见 [cfrunScript]）
- * └── rootfs/                Alpine minirootfs（musl + apk 生态）
- * ```
- *
- * 对齐机制：proot 以 `-b $CELL:$CELL -b $CELL/tmp:/tmp` 把宿主目录按**同一路径**
- * 绑进 rootfs —— 内核在 $CELL/workspace 改文件，rootfs 里的 python/go 在
- * **同一路径**读写同一文件；反之亦然。不存在「A 跑在这、B 跑在那、互不相见」。
- *
- * ## 安卓侧存储映射（isolated 沙盒之外的世界）
- *
- * 候选按优先级排序，逐个 `[ -e ] && [ -r ]` 探测，不可用一律跳过 —— 不申请权限、
- * 不报错、不影响沙盒内命令（P-014：硬绑不存在的路径会告警并拖垮 glue rootfs）：
- *
- * ```
- * 宿主                              guest 可见位置
- * ────────────────────────────────────────────────────────────────────────
- * /storage/emulated/0          →    /storage/emulated/0   +  $CELL/mnt/android
- * /sdcard                      →    /sdcard
- * getExternalFilesDir(null)    →    同一绝对路径          +  $CELL/mnt/android
- * 全不可用                     →    都不绑；$CELL/mnt/android 是个空目录
- * ```
- *
- * 两条规则：① 候选**按自身绝对路径**绑 —— guest 里写死的 `/sdcard/foo` 与宿主
- * 内核看到的是同一份数据；② 首个可用者**叠绑**到 `$CELL/mnt/android` —— 这是
- * 给内核与脚本的稳定入口，换设备、换权限状态时路径不变，取不到时它只是空目录。
- * 首个可用者的判定顺序与 [androidStorage] 必须一致，否则 `CF_ANDROID_STORAGE`
- * 会和 guest 里的 `$CELL/mnt/android` 指向两处。
- *
- * 首启流水线（AGENTS §2.6）：语音模型解压之后跑本类，两步合计约 4.2 MB 资产
- * 解包，进度并入「环境准备中」遮罩。
+ * proot + Alpine rootfs 兼容环境生命周期管理。
+ * 所有路径锚定应用私有目录 `filesDir`（`$CELL`），通过 `proot -b` 保持宿主机与容器路径一致，
+ * 并按顺序探测可用 Android 存储目录绑定至 `$CELL/mnt/android`。
  */
 object EnvKit {
 
@@ -78,7 +38,7 @@ object EnvKit {
 
     val status = kotlinx.coroutines.flow.MutableStateFlow<Status>(Status.Idle)
 
-    // ---------------------------------------------------------------- 路径契约
+    // 路径契约
 
     fun cellRoot(context: Context): File = context.filesDir
     fun usrBin(context: Context): File = File(cellRoot(context), "usr/bin")
@@ -86,77 +46,35 @@ object EnvKit {
     fun tmpDir(context: Context): File = File(cellRoot(context), "tmp")
     fun cfrun(context: Context): File = File(usrBin(context), "cfrun")
 
-    /**
-     * rootfs 内（= 宿主同一路径，因为 $CELL 整体绑进 guest）的安卓存储稳定入口：
-     * 有可用存储时 cfrun 把首个可用候选叠绑到这里，没有就只是个空目录（见类注释映射表）。
-     */
     fun androidMnt(context: Context): File = File(cellRoot(context), "mnt/android")
 
-    // ---------------------------------------------------------------- 独立空间
-
-    /** 测试模型的专属空间（不与内核工作区混住）。 */
-
-    /**
-     * 会话独立空间：未显式选工作区的会话各拿一个小目录（附件与文件互不串台）。
-     * 目录名做保守清洗 —— sessionId 来自内核，拿来拼路径前必须过一遍白名单。
-     */
+    /** 为未关联项目的会话分配经过白名单清洗的独立子目录。 */
     fun sessionSpace(context: Context, sessionId: String): File {
         val safe = sessionId.replace(Regex("[^A-Za-z0-9_-]"), "_").take(48).ifEmpty { "default" }
         return ensureWr(File(File(cellRoot(context), "spaces"), safe))
     }
 
-    /**
-     * 未选择项目时的默认工作区（应用私有空间）。
-     *
-     * 为什么不再「每个会话一个空格子」：会话在**创建那一刻**就把当时的工作区
-     * 写进内核的 sessions.workspace，之后壳侧再切 /api/workspace 也改不回这条
-     * 记录。按会话 id 建目录必须先有 id，而会话正是要工作区才能建 —— 死循环。
-     * 统一用一个稳定目录，会话归属、附件落点、后续加载时的工作区切换三者同源。
-     */
+    /** 未选定项目时使用的默认稳定工作区，确保会话归属与附件相对路径同源。 */
     fun inboxSpace(context: Context): File =
         ensureWr(File(File(cellRoot(context), "spaces"), "inbox"))
 
-    /**
-     * 项目工作区的父目录（`$CELL/workspace`）。
-     *
-     * 也是内核历史上默认的工作区根；「不选文件夹的新项目」在它下面建独立子目录。
-     */
     fun workspaceRoot(context: Context): File = ensureWr(File(cellRoot(context), "workspace"))
 
-    /**
-     * 生成一个项目 id 作为文件夹名。
-     *
-     * 为什么不用会话 id：工作区在**会话创建之前**就要定好（`History.Create`
-     * 会把当时的 root 写进 `sessions.workspace`，事后改不回来），而会话 id
-     * 正是创建后才有的；另外项目会被多个会话共享，拿第一条会话的 id 当目录名
-     * 语义也不对。用项目自己的短 id，稳定、无碰撞、不随重命名变化。
-     */
+    /** 在创建会话前生成稳定的短项目目录标识（`p-<12位>`）。 */
     fun newProjectId(): String =
         "p-" + java.util.UUID.randomUUID().toString().replace("-", "").take(12)
 
-    /** 不选文件夹时的项目工作区：`$CELL/workspace/<项目id>`。 */
     fun newProjectWorkspace(context: Context, projectId: String): File =
         ensureWr(File(workspaceRoot(context), projectId))
 
-    /**
-     * 附件本地暂存区（应用私有，与内核工作区无关）。
-     *
-     * 选择器的 content:// URI 随时可能失效，必须先落盘；但落点不能猜工作区 ——
-     * 会话还没创建时工作区尚不存在。统一落到这里，发送时由 `/api/upload_file`
-     * 原子写进内核当前工作区（附件路径与读方从此一致，见问题 1）。
-     */
+    /** 附件私有暂存目录；因选择时会话可能尚未确立，发送时再通过接口或直写同步入工作区。 */
     fun outboxDir(context: Context): File =
         File(cellRoot(context), "outbox").apply { mkdirs() }
 
-    /**
-     * 若 [path] 是位于 [outboxDir] 内的已暂存文件则立即删除（用户撤回附件/清理草稿时用）。
-     * 绝不触碰工作区相对路径或外部文件。
-     */
     fun deleteOutboxFileIfStaged(context: Context, path: String) {
         deleteFileIfInDir(outboxDir(context), path)
     }
 
-    /** 仅当 [path] 为 [dir] 直属文件时删除；抽取为纯 File 逻辑便于单测。 */
     internal fun deleteFileIfInDir(dir: File, path: String): Boolean {
         val f = File(path)
         if (!f.isAbsolute || !f.isFile) return false
@@ -166,22 +84,12 @@ object EnvKit {
         return runCatching { f.delete() }.getOrDefault(false)
     }
 
-    /**
-     * 后台孤儿与临时缓存回收（冷启动异步执行，不阻塞主线程）。
-     */
     fun cleanupOrphansAsync(context: Context) {
         val files = context.filesDir
         val cache = context.cacheDir
         scope.launch { runCatching { cleanupOrphanDirs(files, cache) } }
     }
 
-    /**
-     * 清理暂存孤儿与过期缓存（纯 File 逻辑便于 JVM 单测）：
-     * - `outbox/`：未完成 `.tmp` 立即清理；其余暂存文件（如取消/崩溃遗留大视频）满 24h 清理；
-     * - `cacheDir/camera/`、`cacheDir/logs/`：满 24h 清理；
-     * - 应用托管工作区 `attachments/`（默认 `workspace`、`spaces/inbox`、`workspace/p-*`）：
-     *   保留 7 天缓冲供 regenerate 重读，仅清普通文件不递归删子目录。
-     */
     internal fun cleanupOrphanDirs(
         filesDir: File,
         cacheDir: File,
@@ -190,13 +98,7 @@ object EnvKit {
         StorageManager.enforceAutoQuota(filesDir, cacheDir, nowMs)
     }
 
-    /**
-     * content Uri → [outboxDir] 暂存。返回绝对路径，读取失败返回 null。
-     *
-     * 两个消费方共用一份口径：Composer 的附件选择器与入站分享
-     * （ChatViewModel.onExternalContent）。落盘用「同目录临时文件 + rename」：
-     * 进程被杀/写一半不会留半截附件；x 位保留，暂存的脚本/二进制才能直接执行。
-     */
+    /** 将 `content://` Uri 原子暂存至 [outboxDir]（同目录临时文件 + rename，并保留可执行位）。 */
     suspend fun stageUriToOutbox(
         context: Context,
         uri: Uri,
@@ -208,7 +110,6 @@ object EnvKit {
                 if (idx >= 0 && c.moveToFirst()) c.getString(idx) else null
             } ?: "file"
             name = sanitizeEntryName(name, "file")
-            // 时间戳前缀防重名；落点是应用私有暂存区（与内核工作区解耦）
             val out = File(outboxDir(context), System.currentTimeMillis().toString() + "_" + name)
             val tmp = File(out.parentFile, out.name + ".tmp")
             try {
@@ -226,7 +127,6 @@ object EnvKit {
         }.getOrNull()
     }
 
-    /** 把已有本地文件暂存到 outbox（供文件管理器「作为附件发送」走统一发送队列）。 */
     suspend fun stageFileToOutbox(
         context: Context,
         src: File,
@@ -249,11 +149,7 @@ object EnvKit {
         }.getOrNull()
     }
 
-    /**
-     * 把超限的 outbox 暂存文件直接写入工作区 `imports/`（跳过 /api/upload_file 与 WS Base64 20MiB 上限）。
-     *
-     * 用同目录 `.tmp` + rename 保证原子落盘，去掉 outbox 时间戳前缀并在重名时追加 `-2` 等序号。
-     */
+    /** 将超限 outbox 文件原子转存到工作区 `imports/` 目录。 */
     internal fun stageOutboxFileToWorkspaceImports(workspaceDir: File, srcFile: File): File? {
         if (!srcFile.isFile) return null
         val importsDir = File(workspaceDir, "imports").apply { mkdirs() }
@@ -298,16 +194,7 @@ object EnvKit {
         return candidate
     }
 
-    // ---------------------------------------------------------------- 文件传输（sdcard）
-
-    /**
-     * 手机侧公共下载目录：`/storage/emulated/0/Download` → `/sdcard/Download` →
-     * 应用外私目录 `Download`，取首个存在（或能建出来）且可写的。
-     *
-     * targetSdk 28 在 Android 10+ 仍按 legacy 存储处理，本进程与内核子进程
-     * （同一 uid）都能直接写公共目录，不需要 SAF 授权 —— 这是本项目既能
-     * 「产物跑在容器里」又能「文件落到用户可见处」的关键前提。
-     */
+    /** 按优先级解析首个可读外部/外私下载目录（targetSdk 28 可直接写入，无需 SAF 授权）。 */
     fun publicDownloadsDir(context: Context): File? {
         val candidates = buildList {
             add(File("/storage/emulated/0/Download"))
@@ -320,7 +207,7 @@ object EnvKit {
         }
     }
 
-    /** 把单个文件复制到 `Download/CodeForge/`；重名追加序号。返回落地文件。 */
+    /** 复制文件到 `Download/CodeForge/`（重名追加序号）。 */
     fun exportFileToDownloads(context: Context, src: File): File? {
         if (!src.isFile) return null
         val dir = File(publicDownloadsDir(context) ?: return null, "CodeForge").apply { mkdirs() }
@@ -333,11 +220,7 @@ object EnvKit {
         }.getOrNull()
     }
 
-    /**
-     * 把整个目录打包成 zip 复制到 `Download/CodeForge/`。
-     *
-     * 空目录不打包（返回 null）：用户点「导出」却拿到一个空文件只会更困惑。
-     */
+    /** 将非空目录打包导出至 `Download/CodeForge/`；目录内无文件返回 null。 */
     fun exportDirectoryAsZip(context: Context, dir: File, zipName: String): File? {
         if (!dir.isDirectory || dir.walkTopDown().none { it.isFile }) return null
         val outDir = File(publicDownloadsDir(context) ?: return null, "CodeForge").apply { mkdirs() }
@@ -358,12 +241,7 @@ object EnvKit {
         }.getOrNull()
     }
 
-    /**
-     * 从系统选择器（SAF / 相册）导入一个文件。
-     *
-     * 落点：[baseDir] 非空时写到 `baseDir/subdir`（`subdir` 为空则直接落进 `baseDir`），
-     * 否则用 [inboxSpace] 的 `subdir`。导入是用户显式动作，落到工作区里重启后仍能看到。
-     */
+    /** 将系统选择器返回的 Uri 持久化写入指定工作区子目录。 */
     fun importFileFromUri(context: Context, uri: Uri, baseDir: File? = null, subdir: String = "imports"): File? {
         val resolver = context.contentResolver
         val rawName = resolver.query(uri, null, null, null, null)?.use { c ->
@@ -381,7 +259,7 @@ object EnvKit {
         }.getOrNull()
     }
 
-    // ---------------------------------------------------------------- 文件管理原语
+    // 文件管理原语
 
     /** 校验新建目录 / 重命名目标名是否合法，拒绝路径穿越与特殊控制字符。 */
     internal fun isSafeEntryName(name: String): Boolean {
@@ -455,33 +333,19 @@ object EnvKit {
     private fun externalFilesDir(context: Context): File? =
         runCatching { context.getExternalFilesDir(null) }.getOrNull()
 
-    /**
-     * 安卓侧可共享的存储根：主外部存储 → /sdcard → 应用外部私有目录，取首个存在且可读的；
-     * 都拿不到返回 null。**不申请权限、不弹 UI**：没权限时 /storage/emulated/0 的
-     * canRead() 为假，自然落到免权限的外私目录，最差纯沙盒 —— 静默降级。
-     *
-     * 判定顺序必须与 [cfrunScript] 生成的候选列表逐项一致：内核拿到的
-     * `CF_ANDROID_STORAGE` 就是 guest 里 `$CELL/mnt/android` 的源。
-     */
+    /** 按优先级解析首个可读 Android 存储目录（顺序须与 [storageCandidates] 一致），无可用目录时静默回退 null。 */
     private fun androidStorage(context: Context): File? =
         listOf(File("/storage/emulated/0"), File("/sdcard"), externalFilesDir(context))
             .filterNotNull()
             .firstOrNull { it.exists() && it.canRead() }
 
-    /**
-     * 内核进程的完整环境（CoreService 启动内核时注入；内核 spawn 的命令继承之，
-     * 与 cfrun/rootfs 看到的世界完全一致）。
-     */
+    /** 构造内核及子进程共用的环境变量表，确保宿主与容器路径一致。 */
     fun kernelEnv(context: Context): Map<String, String> = buildMap {
         put("HOME", cellRoot(context).absolutePath)
         put("TMPDIR", tmpDir(context).absolutePath)
         put("PATH", usrBin(context).absolutePath + ":/system/bin")
-        // 兼容钩子：内核 run_command 读到它就把命令包一层 cfrun（见内核 terminal.go）
         put("CF_EXEC_WRAPPER", "/system/bin/sh " + cfrun(context).absolutePath)
-        // 防误判 Termux（IsTermux 唯一判据是 PREFIX）
         put("PROOT_TMP_DIR", tmpDir(context).absolutePath)
-        // 安卓侧存储的实际可用路径（与 guest 里 $CELL/mnt/android 同源）；空串 = 本次没有
-        // 可用存储，调用方据此降级（不申请权限、不重试）。供内核与诊断日志使用。
         put("CF_ANDROID_STORAGE", androidStorage(context)?.absolutePath.orEmpty())
     }
 
@@ -490,16 +354,7 @@ object EnvKit {
         status.value = if (isReady(context)) Status.Ready else Status.Idle
     }
 
-    // ---------------------------------------------------------------- 软件包
-
-    /**
-     * 环境软件包预设：apk 一条命令装进 rootfs（= 轻量工具链管理器 v1）。
-     *
-     * [probe] 是**存在性探测**：结论只看它的退出码，所以必须是「目标命令自己」的
-     * 退出码。**不能带管道** —— 管道的退出码取自最后一个命令（`head`），恒为 0，
-     * 目标命令不存在时也会被判成「已装」（真机实测：rootfs 里一个语言都没有，
-     * 设置页却把 C/C++、Java 17、FFmpeg 三项标成了已装）。
-     */
+    /** 环境软件包定义；[probe] 不得包含管道，需由目标命令自身退出码判定安装态（P-051）。 */
     data class EnvPackage(val label: String, val installCmd: String, val probe: String)
 
     val packages = listOf(
@@ -510,16 +365,12 @@ object EnvKit {
         EnvPackage("Rust", "apk add --no-cache cargo rust", "rustc --version"),
         EnvPackage("Git", "apk add --no-cache git", "git --version"),
         EnvPackage("Java 17", "apk add --no-cache openjdk17-jre-headless", "java -version"),
-        // ffmpeg 走 rootfs 而非 so 库（ffmpeg-kit 已停更）：apk 官方构建，
-        // 装完内核可直接 `ffmpeg -i ...` 处理工作区媒体
         EnvPackage("FFmpeg", "apk add --no-cache ffmpeg", "ffmpeg -version"),
-        // 逆向分析工具链：ELF/二进制段表符号（binutils/file/patchelf）、反汇编（radare2）、证书/ASN.1（openssl/cryptography）与 Python 指令级分析/仿真库
         EnvPackage(
             "逆向工具 (binutils/file/radare2)",
             "apk add --no-cache file binutils patchelf radare2 openssl py3-capstone py3-unicorn py3-cryptography",
             "r2 -v",
         ),
-        // APK 逆向与重签工具链：OpenJDK 17（含 keytool/jarsigner）+ zip/unzip/openssl + apktool（多源回退下载并生成 /usr/bin/apktool）
         EnvPackage(
             "APK 逆向 (apktool/签名)",
             "apk add --no-cache openjdk17-jre-headless zip unzip openssl ca-certificates && " +
@@ -532,12 +383,7 @@ object EnvKit {
         ),
     )
 
-    /**
-     * 在 rootfs 环境里执行命令（阻塞，须在 IO 线程调）。
-     * 输出逐行回调（apk 进度/版本探测都走这里），返回退出码。
-     * 网络命令前自动补 DNS —— Android 没有 /etc/resolv.conf 可复制，
-     * musl 的解析器又只认它，写成公共 DNS（国内优先 223.5.5.5）。
-     */
+    /** 在 rootfs 中阻塞执行命令（仅限 IO 线程调用），并确保 DNS 与软件源就绪。 */
     fun runInRootfs(
         context: Context,
         command: String,
@@ -562,20 +408,12 @@ object EnvKit {
         }
     }
 
-    /** 探测包是否已装（probe 命令退出码 0 = 已装）。 */
     fun isPackageInstalled(context: Context, pkg: EnvPackage): Boolean =
         runInRootfs(context, pkg.probe + " >/dev/null 2>&1") { } == 0
 
     /**
-     * 网络前提每次强制重写，不走「已有就不动」：
-     * - resolv.conf：Android 没有 /etc/resolv.conf 可复制，musl 的解析器只认它；
-     * - repositories：官方 dl-cdn 国内常超时，替换为中科大镜像（保留原版本号）。
-     *
-     * ⚠️ Alpine minirootfs 自带的 `repositories` 是**空文件**，不是不存在。
-     * 旧写法 `mirrored ?: 默认源` 只在 null 时兜底，空字符串会原样写回 ——
-     * 于是仓库源永远是空的，`apk add` 报 `unable to select packages: python3
-     * (no such package)`（真机实测，环境软件包全部装不上）。
-     * 现在用 `ifBlank` 兜底，空文件也能补上。
+     * 写入 DNS 与 Alpine 多源软件源配置。
+     * 注意 `repositories` 可能为空文件（用 ifBlank/格式检查处理）且镜像路径需带 `v` 前缀（P-020）。
      */
     private fun ensureNet(context: Context) {
         runCatching {
@@ -585,9 +423,6 @@ object EnvKit {
             val repo = File(etc, "apk/repositories")
             repo.parentFile?.mkdirs()
 
-            // 版本号从 rootfs 自己读，避免镜像升级后硬编码的 v3.24 对不上。
-            // ⚠️ alpine-release 的内容是 `3.24.3`（**不带 v**），而镜像目录名是
-            // `v3.24` —— 少了这个 v，所有镜像的 APKINDEX 全部 404（真机实测）。
             val branch = File(etc, "alpine-release")
                 .takeIf { it.exists() }
                 ?.readText()
@@ -600,14 +435,9 @@ object EnvKit {
                 ?: "v3.24"
 
             val existing = repo.takeIf { it.exists() }?.readText().orEmpty()
-            // 只有「含 /alpine/v 的合法镜像行」才沿用；否则（空文件、或历史版本
-            // 写坏的 `alpine/3.24` 这种缺 v 的路径）一律按默认多源重建。
             val content = if (existing.contains("/alpine/v")) {
                 existing.replace("dl-cdn.alpinelinux.org", "mirrors.ustc.edu.cn")
             } else {
-                // 多镜像并列：apk 会依次尝试，任一可用即可。
-                // 真机实测中科大在部分移动网络下对 APKINDEX 返回 404
-                // （同一 URL 从 PC 访问是 200），单源会让安装整体失败。
                 listOf(
                     "mirrors.aliyun.com",
                     "mirrors.ustc.edu.cn",
@@ -621,11 +451,7 @@ object EnvKit {
         }
     }
 
-    /**
-     * 执行前兜底同步 cfrun（幂等）：启动时 ensureReady 的重写若被错过或失败，
-     * 这里保证真正跑的一定是当前版本脚本 —— 生成脚本永不随 APK 自动更新的
-     * 漏洞由此彻底封死（P-014）。
-     */
+    /** 幂等同步 `cfrun` 脚本，保证应用更新后立即覆盖旧版脚本（P-014）。 */
     private fun syncCfrun(context: Context) {
         runCatching {
             val f = cfrun(context)
@@ -639,14 +465,11 @@ object EnvKit {
         }
     }
 
-    /** 幂等入口：Application 启动时调；失败可从设置页重试。 */
     fun ensureReady(context: Context) {
         val app = context.applicationContext
         when {
             isReady(app) -> {
                 status.value = Status.Ready
-                // 已就绪也要重写 cfrun：脚本随 app 版本演进（P-014 修复就靠这层下发），
-                // 不重跑整套解压也能让旧安装拿到新脚本
                 scope.launch { syncCfrun(app) }
             }
             status.value is Status.Preparing -> return
@@ -664,11 +487,7 @@ object EnvKit {
         }
     }
 
-    /**
-     * 重置（IO 线程执行删除）。⚠️ 绝不能在主线程 deleteRecursively ——
-     * rootfs 有 3800+ 文件，主线程删必 ANR 被系统杀（真机实测「点击重新准备
-     * 直接崩溃」即此因，且 ANR 不走异常处理器、崩溃日志不会有记录）。
-     */
+    /** 在 IO 线程清理 rootfs 与就绪标记，避免数千文件同步删除引发主线程 ANR。 */
     fun reset(context: Context) {
         val app = context.applicationContext
         status.value = Status.Idle
@@ -750,23 +569,12 @@ object EnvKit {
     }
 
     /**
-     * cfrun —— 内外统一的命令执行入口（内核 CF_EXEC_WRAPPER 指向它）。
-     *
-     * rootfs 就绪：一律经 proot 进 Alpine 执行（PATH=/usr/bin → python/go/gcc
-     * 由 apk 安装在 rootfs 里，与宿主同一棵 $CELL 树）；rootfs 缺席：退化为
-     * 直执行（静态/bionic 二进制仍可用）。`--` 后是原始命令字符串。
-     *
-     * [externalFiles] 应用外部私有目录（写进候选列表兜底）；null 表示本次拿不到。
+     * 生成统一命令包装脚本 `cfrun`：proot 可用时进入 Alpine rootfs 执行，
+     * 在 ptrace 受限设备上自动降级至 Android 原生 shell。
      */
     private fun cfrunScript(cell: File, externalFiles: File?): String = """
         #!/system/bin/sh
-        # 由 EnvKit 生成 —— 路径是 bake 死的绝对值，勿手工迁移目录。
-        # proot 离开 Termux 原生路径后必须显式给齐环境（坑记 AGENTS P-014）：
-        #   PROOT_TMP_DIR  glue rootfs 的临时目录 —— Android 没有可写的 /tmp，
-        #                   缺了必报 can't create glue rootfs，guest exec 连锁失败
-        #   PROOT_LOADER   Termux 构建把 loader 路径 bake 死在 com.termux 数据目录，
-        #                   换目录后必须重指，否则 guest 动态二进制起不来
-        #   LD_LIBRARY_PATH proot 自身的 libtalloc / libandroid-shmem
+        # 由 EnvKit 自动生成；显式指定 PROOT_TMP_DIR/PROOT_LOADER/LD_LIBRARY_PATH（P-014）
         CELL=${cell.absolutePath}
         ROOT=${'$'}CELL/rootfs
         USR=${'$'}CELL/usr
@@ -774,18 +582,8 @@ object EnvKit {
         export PROOT_TMP_DIR="${'$'}CELL/tmp"
         export PROOT_LOADER="${'$'}USR/libexec/proot/loader"
         export LD_LIBRARY_PATH="${'$'}USR/lib${'$'}{LD_LIBRARY_PATH:+:${'$'}LD_LIBRARY_PATH}"
-        # 第二个目录是安卓存储稳定入口的挂载点（宿主与 guest 同一路径）：有可用候选才
-        # 往上叠绑，没有就剩个空目录 —— 空目录不影响任何沙盒内命令。与 tmp 合并成一次
-        # mkdir，免得每条命令多 spawn 一个进程。
         mkdir -p "${'$'}PROOT_TMP_DIR" "${'$'}CELL/mnt/android"
-        # -0 = fake root：guest 里 geteuid() 返回 0。
-        # 缺了它，Alpine 的 apk 会以普通 uid 运行并拒绝写 /lib/apk/db
-        # （真机实测：35 个包全部下载安装完成，最后一步
-        #  "failed to write database: Permission denied" 整体失败）。
-        #
-        # 同时在执行 proot 前先做一次轻量探测（结果缓存到 .proot-probe，零 fork 复读）：
-        # x86_64 模拟器 ARM 转译层或受限 ROM 会拒绝 ptrace(TRACEME) 并打死全部命令行工具；
-        # 探测失败时自动退化到 Android 原生 /system/bin/sh，保住 unzip/readelf/strings/sha256sum 等宿主工具。
+        # 执行前探测 ptrace/proot 可用性并缓存至 .proot-probe，避免受限环境中工具整体失效
         PROOT_OK=0
         if [ -x "${'$'}ROOT/bin/busybox" ] && [ -x "${'$'}USR/bin/proot" ]; then
           CACHE="${'$'}PROOT_TMP_DIR/.proot-probe"
@@ -803,17 +601,9 @@ object EnvKit {
         fi
         if [ "${'$'}PROOT_OK" = "1" ]; then
           BINDS=""
-          # 条件绑定：宿主上不存在的路径硬绑会产生 warning 并拖垮 glue（部分 ROM 无 /system/lib64）
           for D in /system/bin /system/lib64 /system/lib /system/etc; do
             [ -e "${'$'}D" ] && BINDS="${'$'}BINDS -b ${'$'}D:${'$'}D"
           done
-          # 安卓侧存储：候选顺序与 EnvKit.androidStorage 一致（改顺序必须两边一起改）：
-          #   /storage/emulated/0  主外部存储；没有存储权限时 -r 为假 → 静默跳过
-          #   /sdcard              多数 ROM 是上者的符号链接，绑它只为让写死 /sdcard/xx
-          #                        的老脚本也能用（重复绑定无害）
-          #   应用外部私有目录     免权限可读写，最后兜底
-          # 判据 -e && -r：不可读的目录绑进去 guest 也进不去（权限在宿主侧判定）。
-          # 候选路径不含空格，故与上面系统目录一样按空格拼进 BINDS 即可。
           STORAGE=""
           for D in ${storageCandidates(externalFiles)}; do
             if [ -e "${'$'}D" ] && [ -r "${'$'}D" ]; then
@@ -821,13 +611,9 @@ object EnvKit {
               [ -n "${'$'}STORAGE" ] || STORAGE="${'$'}D"
             fi
           done
-          # 首个可用者叠绑到稳定入口：CELL 已整体绑进 guest，这里在其子目录上再叠一层
-          # （proot 后绑覆盖先绑），于是 guest 里 CELL/mnt/android 就是安卓存储根，
-          # 换设备、换权限状态时这个路径都不变。取不到就保持空目录。
           if [ -n "${'$'}STORAGE" ]; then
             BINDS="${'$'}BINDS -b ${'$'}STORAGE:${'$'}CELL/mnt/android"
           fi
-          # 环境在宿主侧 export，proot 原样带给 guest —— 不经 /usr/bin/env 中转，少一个 exec 失败点
           export HOME="${'$'}CELL"
           export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
           export TMPDIR=/tmp
@@ -849,26 +635,13 @@ object EnvKit {
         fi
     """.trimIndent() + "\n"
 
-    /**
-     * cfrun 的安卓存储候选列表（顺序 = 优先级，与 [androidStorage] 逐项对应）。
-     * 每项加引号，防路径含空格被按词拆开；null 候选直接不列。
-     */
     private fun storageCandidates(externalFiles: File?): String = listOfNotNull(
         "/storage/emulated/0",
         "/sdcard",
         externalFiles?.absolutePath,
     ).joinToString(" ") { "\"$it\"" }
 
-    // ---------------------------------------------------------------- tar.gz
-
-    /**
-     * 极简 tar 解包（std 库没有 tar，也不想为此引 commons-compress）。
-     *
-     * 进度按「已处理条目 / [weighEntries] 估算」—— tar 流单遍拿不到总条目数，
-     * 估算值只用于显示，钳到 99% 防止假完成。符号链接两类处理：
-     * 相对目标原样建；**绝对目标重写为 rootfs 内路径**（否则在宿主上悬空，
-     * proot 里也会解析到真实根导致串台）。
-     */
+    /** 流式解包 tar.gz；绝对路径符号链接统一重写至 [targetDir] 内。 */
     private fun extractTarGz(
         context: Context,
         asset: String,

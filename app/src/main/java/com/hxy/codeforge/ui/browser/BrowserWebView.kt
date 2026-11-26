@@ -99,8 +99,7 @@ object BrowserWeb {
             }
         }
 
-        // 允许 chrome://inspect 远程调试：把手机连上电脑就能用 DevTools 面板
-        // 看 DOM、断点、调 CSS —— 这是「Chrome 开发者调试常用接口」里最硬的一条。
+        // 启用 WebView 远程调试以支持 chrome://inspect
         runCatching { WebView.setWebContentsDebuggingEnabled(true) }
     }
 

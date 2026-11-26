@@ -97,7 +97,7 @@ internal fun modelSubRank(sub: String?): Int = when (sub) {
 }
 
 
-// ---------------------------------------------------------------- 模型
+// 模型
 
 /**
  * 模型服务：模型库（按供应商分组）、供应商双栏（列表 + 详情）、模型编辑表单、探测面板。
@@ -182,7 +182,7 @@ internal fun ModelSection(
                 .padding(bottom = 28.dp),
         ) {
             when (currentSub) {
-            // ---------------- 主入口 ----------------
+            // 主入口
             null -> {
                 SectionTitle("供应商与模型")
                 SubPageEntry("模型库", "${state.libraryModels.size} 个") { onNavigateSub("library", null) }
@@ -194,7 +194,7 @@ internal fun ModelSection(
                 }
             }
 
-            // ---------------- 模型库（按供应商分组） ----------------
+            // 模型库（按供应商分组）
             "library" -> {
                 BackRow { onNavigateSub(null, null) }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -252,7 +252,7 @@ internal fun ModelSection(
                 }
             }
 
-            // ---------------- 供应商（左列表 + 右详情） ----------------
+            // 供应商（左列表 + 右详情）
             "providers" -> {
                 BackRow { onNavigateSub(null, null) }
                 SectionTitle("供应商")
@@ -461,7 +461,7 @@ internal fun ModelSection(
                 }
             }
 
-            // ---------------- 添加 / 编辑供应商 ----------------
+            // 添加 / 编辑供应商
             "providerEdit" -> {
                 BackRow { onNavigateSub(returnSub, null) }
                 Text(
@@ -530,7 +530,7 @@ internal fun ModelSection(
                 }
             }
 
-            // ---------------- 添加 / 编辑模型 ----------------
+            // 添加 / 编辑模型
             "modelEdit" -> {
                 BackRow {
                     onNavigateSub(returnSub, null)

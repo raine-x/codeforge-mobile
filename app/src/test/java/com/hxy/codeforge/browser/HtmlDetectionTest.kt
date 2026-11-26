@@ -2,28 +2,25 @@ package com.hxy.codeforge.ui.browser
 
 import com.hxy.codeforge.render.RenderBlock
 import com.hxy.codeforge.render.RenderSpan
+import com.hxy.codeforge.render.RenderTable
 import com.hxy.codeforge.ui.chat.buildSvgHtmlDocument
+import com.hxy.codeforge.ui.chat.computeTableLayout
 import com.hxy.codeforge.ui.chat.isSvgPathOrDataUri
+import com.hxy.codeforge.ui.chat.needsDarkBackdropInLightMode
 import com.hxy.codeforge.ui.chat.needsLightBackdropInDarkMode
 import com.hxy.codeforge.ui.chat.normalizeSvgForRender
+import com.hxy.codeforge.ui.chat.scaleMicroSvgFontsForRender
+import com.hxy.codeforge.ui.chat.stripPlainLightCanvasBackdrop
 import com.hxy.codeforge.ui.chat.svgAspect
 import com.hxy.codeforge.ui.chat.svgHasOpaqueBackdrop
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * 「裸 HTML → 可交互网页」这条路的 JVM 单测。
- *
- * ## 为什么这些断言重要
- *
- * 引擎没有 Html 块类型 —— 裸 HTML 会以纯文本形式落在 paragraph 里。
- * 壳侧靠文本特征把它认出来，**认错了就是 bug**：
- * 把正文里贴的一小段 `<div>` 当整页渲染会吞掉周围的字；
- * 把整页当正文显示就是一屏尖括号。所以边界必须钉死。
- */
+/** 裸 HTML 识别与交互文档切分单元测试。 */
 class HtmlDetectionTest {
 
     private fun para(text: String): RenderBlock = RenderBlock(
@@ -156,15 +153,7 @@ class HtmlDetectionTest {
         assertEquals("元素1", el.ref)
     }
 
-    // ---------------------------------------------------------------- 原文级判定
-
-    /**
-     * 回归（真机）：整页 HTML 带缩进与空行时，markdown 会把它切成
-     * 「段落 + 缩进代码块」的碎片，壳侧再也拼不回原文。
-     *
-     * 修法是在**喂引擎之前**判定原文是不是一整份文档，认出来就直接挂页面。
-     * 这些断言守住那条判定线。
-     */
+    /** 含缩进与空行的整页 HTML 须在解析分块前完成原文级识别。 */
     @Test
     fun recognisesWholeHtmlDocumentWithIndentationAndBlankLines() {
         val page = """
@@ -207,15 +196,7 @@ class HtmlDetectionTest {
         assertFalse(looksLikeWholeHtmlDocument("前面有字 <div>x</div>"))
     }
 
-    /**
-     * 回归（真机）：元素挑选必须能在**触屏**上工作。
-     *
-     * 原实现靠 `mousemove` 记住当前悬停元素，click 时取用 ——
-     * 触屏设备根本没有 mousemove，于是 `current` 永远是 null，点什么都没反应。
-     *
-     * 现在改成：click / touchend 都按坐标现场 `elementFromPoint` 取元素。
-     * 这条断言守住「脚本里必须有 touchend 通路，且不依赖 mousemove」。
-     */
+    /** 元素选择脚本须基于 touchend/click 坐标调用 elementFromPoint，不依赖 hover 态。 */
     @Test
     fun elementPickerSupportsTouchEvents() {
         val script = PageBridge.SCRIPT
@@ -227,7 +208,7 @@ class HtmlDetectionTest {
         assertTrue("鼠标预览高亮应保留", script.contains("mousemove"))
     }
 
-    // ---------------------------------------------------------------- 元素 + 文字一起加
+    // 元素 + 文字一起加
 
     /**
      * 「添加到对话」气泡里同时输入的文字，必须随元素一起回传。
@@ -302,7 +283,7 @@ class HtmlDetectionTest {
         assertFalse(el.toWireBlock().contains("用户备注"))
     }
 
-    // ------------------------------------------------- 解说 + 文档 + 解说
+    // 解说 + 文档 + 解说
 
     @Test
     fun recognisesDocumentWrappedInProse() {
@@ -343,7 +324,7 @@ class HtmlDetectionTest {
         assertEquals("", split.after)
     }
 
-    // ------------------------------------------------- SVG 直接显示与切分
+    // SVG 直接显示与切分
 
     @Test
     fun recognisesSvgMarkupWithXmlPrologAndMultiLineBlankLines() {
@@ -450,6 +431,8 @@ class HtmlDetectionTest {
         val normalized = normalizeSvgForRender(withComment)
         assertTrue(normalized.contains("""xmlns="http://www.w3.org/2000/svg""""))
         assertTrue(normalized.contains("""viewBox="0 0 640 320""""))
+        // 补齐 viewBox 后须剥除根 style 中的固定 width/height 锁定，确保移动端流体自适应
+        assertFalse(normalized.contains("640px"))
 
         val pxViewBox = """<svg viewBox="0 0 900px 300px"><rect width="10" height="10"/></svg>"""
         assertEquals(3.0f, svgAspect(pxViewBox)!!, 0.01f)
@@ -458,7 +441,7 @@ class HtmlDetectionTest {
         assertTrue(html.contains("body>svg{"))
         assertFalse(html.contains("!important"))
 
-        // 对话流中仅声明 viewBox、未显式给 width/height 的 SVG 必须保住宽高比并输出合法包装文档
+        // 自带不透明深色背景卡片的 SVG 必须识别出底色且不触发深色模式外垫框
         val viewBoxOnlySvg = """
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 430" font-family="system-ui, -apple-system, sans-serif">
               <rect width="800" height="430" rx="12" fill="#0f172a"/>
@@ -469,10 +452,41 @@ class HtmlDetectionTest {
         val viewBoxHtml = buildSvgHtmlDocument(normalizeSvgForRender(viewBoxOnlySvg), lightCanvas = true)
         assertTrue(viewBoxHtml.contains("body>svg{width:100%;height:100%"))
         assertTrue(viewBoxHtml.contains("""viewBox="0 0 800 430""""))
+        assertTrue(viewBoxHtml.contains("""fill="#0f172a""""))
 
-        // 自带不透明背景卡片的 SVG 必须识别出底色且不触发深色模式外垫框
         assertTrue(svgHasOpaqueBackdrop(viewBoxOnlySvg))
         assertFalse(needsLightBackdropInDarkMode(viewBoxOnlySvg))
+
+        // 浅色主题下模型自带的纯白整卡背景与边框须在渲染文档中透明化以融入主题，且保留内部节点框
+        val whiteCardGraph = """
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 460">
+              <rect width="100%" height="100%" rx="12" fill="#ffffff" stroke="#e5e7eb"/>
+              <rect x="60" y="40" width="120" height="36" fill="#ffffff" stroke="#cbd5e1"/>
+              <text x="80" y="64" font-size="11" fill="#1f2937">y = 2x</text>
+            </svg>
+        """.trimIndent()
+        val stripped = stripPlainLightCanvasBackdrop(whiteCardGraph)
+        assertTrue(stripped.contains("""rx="12" fill="none" stroke="none""""))
+        // 内部卡片不得误伤
+        assertTrue(stripped.contains("""width="120" height="36" fill="#ffffff" stroke="#cbd5e1""""))
+
+        val lightSeamlessHtml = buildSvgHtmlDocument(whiteCardGraph, lightCanvas = true, transparentBg = true, injectBridge = true)
+        assertTrue(lightSeamlessHtml.contains("""rx="12" fill="none" stroke="none""""))
+        assertTrue(lightSeamlessHtml.contains("window.__cf"))
+        assertEquals(1, Regex("</script>", RegexOption.IGNORE_CASE).findAll(lightSeamlessHtml).count())
+        // 桌面级大画布的极小 11px 字号在渲染态应得到温和放大
+        val scaled = scaleMicroSvgFontsForRender(whiteCardGraph)
+        assertFalse(scaled.contains("""font-size="11""""))
+
+        // 未闭合流式 SVG 前缀识别（含 XML 序言 + 裸 <svg）
+        assertTrue(looksLikeStreamingSvgStart("""<?xml version="1.0" encoding="UTF-8"?><svg viewBox="0 0 400 300"><path"""))
+        assertTrue(looksLikeStreamingSvgStart("<svg"))
+        assertFalse(looksLikeStreamingSvgStart("<svgIcon/>"))
+        val streamingBareSegments = splitProseAroundBareSvg("说明文字：\n<?xml version=\"1.0\"?>\n<!-- draft -->\n<svg viewBox=\"0 0 400 300\"><line")
+        assertEquals(2, streamingBareSegments.size)
+        assertTrue(streamingBareSegments[1].isSvg)
+        assertFalse(streamingBareSegments[1].closed)
+        assertTrue(streamingBareSegments[1].text.startsWith("<?xml"))
 
         // 透明线框流程图（深色线条、无整卡底色）在浅色端保持透明无框，仅在深色模式下判定需垫柔白底
         val transparentWireframe = """
@@ -486,5 +500,131 @@ class HtmlDetectionTest {
 
         val seamlessHtml = buildSvgHtmlDocument(transparentWireframe, lightCanvas = true, transparentBg = true)
         assertTrue(seamlessHtml.contains("background:transparent"))
+
+        // 解说 + ```html 围栏不得被裸 HTML 提取器从围栏内部撕裂
+        val prosePlusFencedHtml = """
+            下面是网页代码示例：
+
+            ```html
+            <!DOCTYPE html>
+            <html><body><button>Hi</button></body></html>
+            ```
+
+            你可以复制使用。
+        """.trimIndent()
+        assertFalse(looksLikeWholeHtmlDocument(prosePlusFencedHtml))
+        assertFalse(looksLikeHtmlDocumentLoose(prosePlusFencedHtml))
+
+        // 浅色主题下：仅使用浅色文字且无全画布暗底的 SVG 需自动补暗色底垫防看不清
+        val lightInkNoBackdrop = """
+            <svg viewBox="0 0 400 320" xmlns="http://www.w3.org/2000/svg">
+              <text x="20" y="26" fill="#e2e8f0" font-size="17">标题</text>
+              <rect x="20" y="86" width="360" height="30" rx="7" fill="#1e293b"/>
+              <text x="34" y="106" fill="#e2e8f0" font-size="13">条目</text>
+            </svg>
+        """.trimIndent()
+        assertTrue(needsDarkBackdropInLightMode(lightInkNoBackdrop))
+        assertFalse(needsDarkBackdropInLightMode(transparentWireframe))
+        assertFalse(needsDarkBackdropInLightMode(viewBoxOnlySvg))
+
+        // 5 列长文宽表在窄屏自动启用横向滚动并维持列宽可读；2 列表则维持全宽填充
+        val fiveColTable = RenderTable(
+            align = List(5) { "none" },
+            header = listOf("#", "选题", "一句话", "赛道", "核心资产").map { listOf(RenderSpan("text", it)) },
+            rows = listOf(
+                listOf("1", "倒计时拆弹台", "把还剩37天考完五门变成可视化风险调度图", "学习科研", "倒排算法+崩盘预测模型")
+                    .map { listOf(RenderSpan("text", it)) },
+            ),
+        )
+        val fiveLayout = computeTableLayout(fiveColTable, cols = 5, availableDp = 328f, density = 3f)
+        assertTrue(fiveLayout.horizontalScroll)
+        assertTrue(fiveLayout.widthsDp.sum() > 328f)
+
+        // 4 列长介绍表（对应截图窄列高柱痛点）在 328dp 窄屏启用横向滚动，长描述列获得宽敞可读宽度
+        val fourColDenseTable = RenderTable(
+            align = listOf("none", "none", "none", "none"),
+            header = listOf("#", "题目", "简短介绍", "赛道").map { listOf(RenderSpan("text", it)) },
+            rows = listOf(
+                listOf(
+                    "1",
+                    "审稿意见拆解台",
+                    "贴上审稿意见 -> 每条定位到原稿段落并给出回应模板；区分必须修改项与可解释的误读",
+                    "学习科研",
+                ).map { listOf(RenderSpan("text", it)) },
+            ),
+        )
+        val fourLayout = computeTableLayout(fourColDenseTable, cols = 4, availableDp = 328f, density = 3f)
+        assertTrue(fourLayout.horizontalScroll)
+        assertTrue(fourLayout.widthsDp[2] >= 200f)
+
+        // 2 列长短悬殊表按 sqrt(desired) 配额，长列明显宽于短列而非五五对半切
+        val asymmetricTwoColTable = RenderTable(
+            align = listOf("none", "none"),
+            header = listOf("术语", "详细解释").map { listOf(RenderSpan("text", it)) },
+            rows = listOf(
+                listOf(
+                    "SM-2",
+                    "基于遗忘曲线的间隔重复调度算法，根据每次回忆评分动态调整下次复习间隔与难度系数，适合长周期备考记忆规划",
+                ).map { listOf(RenderSpan("text", it)) },
+            ),
+        )
+        val asymLayout = computeTableLayout(asymmetricTwoColTable, cols = 2, availableDp = 328f, density = 3f)
+        assertFalse(asymLayout.horizontalScroll)
+        assertEquals(328f, asymLayout.widthsDp.sum(), 0.5f)
+        assertTrue(asymLayout.widthsDp[1] > asymLayout.widthsDp[0] * 1.8f)
+
+        val twoColTable = RenderTable(
+            align = listOf("none", "none"),
+            header = listOf("元素", "含义").map { listOf(RenderSpan("text", it)) },
+            rows = listOf(listOf("红线", "斜率 k=2 的一次函数").map { listOf(RenderSpan("text", it)) }),
+        )
+        val twoLayout = computeTableLayout(twoColTable, cols = 2, availableDp = 328f, density = 3f)
+        assertFalse(twoLayout.horizontalScroll)
+        assertEquals(328f, twoLayout.widthsDp.sum(), 0.5f)
+    }
+
+    @Test
+    fun buildsIncrementalStreamingSvgPreviewSafely() {
+        // 起始 <svg ...> 本身尚未闭合时暂不生成碎片，避免丢失 viewBox
+        assertNull(buildStreamingSvgPreview("""<svg viewBox="0 0 400 320""""))
+
+        // 前半个图形已闭合，尾随残缺 <path 与未闭合 <g> 须被安全裁剪并自动补齐闭合标签
+        val partial = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <svg viewBox="0 0 400 320" xmlns="http://www.w3.org/2000/svg">
+              <defs><marker id="arr"><path d="M0,0 L4,2 L0,4"/></marker></defs>
+              <g id="axes">
+                <line x1="20" y1="160" x2="380" y2="160" stroke="#999"/>
+                <text x="360" y="150">x</text>
+                <path d="M 20 200 L 140 90
+        """.trimIndent()
+        val preview = buildStreamingSvgPreview(partial)
+        assertNotNull(preview)
+        assertTrue(preview!!.startsWith("<svg "))
+        assertTrue(preview.contains("""<line x1="20""""))
+        assertTrue(preview.contains("""<text x="360" y="150">x</text>"""))
+        assertFalse(preview.contains("L 140 90"))
+        assertTrue(preview.endsWith("</g></svg>"))
+
+        // 流式未闭合样式或脚本片段不应混入半成品，脚本在流式阶段剥除
+        val withStyleAndScript = """
+            <svg viewBox="0 0 300 200"><rect x="0" y="0" width="50" height="50"/><script>alert(1)</script><style>.cls{fill:
+        """.trimIndent()
+        val cleanPreview = buildStreamingSvgPreview(withStyleAndScript)!!
+        assertTrue(cleanPreview.contains("""<rect x="0""""))
+        assertFalse(cleanPreview.contains("<script"))
+        assertFalse(cleanPreview.contains("<style"))
+        assertTrue(cleanPreview.endsWith("</svg>"))
+
+        // 开启增量补丁脚本时注入 __cfPatchSvg 与渐显样式
+        val docHtml = buildSvgHtmlDocument(
+            svg = cleanPreview,
+            lightCanvas = true,
+            transparentBg = true,
+            injectBridge = false,
+            enableIncrementalPatch = true,
+        )
+        assertTrue(docHtml.contains("__cfPatchSvg"))
+        assertTrue(docHtml.contains("cf-svg-in"))
     }
 }

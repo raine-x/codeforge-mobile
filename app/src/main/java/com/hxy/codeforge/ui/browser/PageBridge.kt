@@ -5,22 +5,8 @@ import android.webkit.WebView
 import org.json.JSONObject
 
 /**
- * 注入到页面里的调试桥。
- *
- * ## 为什么要有它
- *
- * 内置浏览器要能被 AI 驱动，就得让页面**可被查询**而不是只能看：
- *  - 「布局查看」：列出页面上可交互元素及其矩形、样式、选择器；
- *  - 「元素选择」：人在页面上点一下，壳侧拿到该元素的结构化信息；
- *  - 「截图」：Android 侧把当前可见区域抓成 PNG。
- *
- * ## 安全边界
- *
- * [AndroidBridge] 只暴露一个 [post] 方法，且只认 "element" / "screenshot" /
- * "click" 三种事件 —— 页面能做的最坏的事就是提交一条假的元素描述。
- * 真正敏感的能力（读文件、发请求）都不在这里。
- *
- * `addJavascriptInterface` 只在 http(s) 与 data: 场景挂载，**file:// 一律不挂**。
+ * 注入到内置浏览器的 JS 调试桥，提供布局查询、元素选择与截图回调。
+ * [AndroidBridge] 仅暴露受限事件通道（不暴露文件或网络能力），且仅在非 `file://` 场景挂载。
  */
 object PageBridge {
 
@@ -92,8 +78,6 @@ object PageBridge {
       visible: !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
     };
   }
-
-  // ---- 调试接口 ----
 
   /** 查单个元素的布局信息。selector 为空则返回 null。 */
   P.inspect = function (selector) {
@@ -183,9 +167,24 @@ object PageBridge {
   document.addEventListener('click', function (ev) {
     if (ev && ev.isTrusted === false) return;
     var t = ev && ev.target;
-    if (!t || !t.closest) return;
-    var el = t.closest('[data-cf-send],[data-cf-prefill]');
+    while (t && t.nodeType !== 1) t = t.parentNode;
+    if (!t) return;
+    var el = null;
+    if (t.closest) {
+      el = t.closest('[data-cf-send],[data-cf-prefill]');
+    } else {
+      var cur = t;
+      while (cur && cur.nodeType === 1) {
+        if (cur.hasAttribute && (cur.hasAttribute('data-cf-send') || cur.hasAttribute('data-cf-prefill'))) {
+          el = cur;
+          break;
+        }
+        cur = cur.parentNode;
+      }
+    }
     if (!el) return;
+    if (ev.preventDefault) ev.preventDefault();
+    if (ev.stopPropagation) ev.stopPropagation();
     var sendText = el.getAttribute('data-cf-send');
     if (sendText && sendText.trim()) {
       P.send(sendText);
@@ -228,16 +227,12 @@ object PageBridge {
     } catch (e) {}
   };
 
-  // ---- 元素选择器 ----
-
   var pick = null;
 
   function stopPick() {
     if (!pick) return;
     try {
-      // 用 remove() 而不是 parentNode.removeChild() ——
-      // 后者要求元素还挂在树上，且多一层 parentNode 依赖。
-      // remove() 是标准 DOM 方法，元素已被移走时也不报错。
+      // 标准 DOM remove() 不依赖父节点引用，元素已被移走时亦不抛异常
       if (pick.overlay) pick.overlay.remove();
       if (pick.hi) pick.hi.remove();
       if (pick.tip) pick.tip.remove();
@@ -269,8 +264,7 @@ object PageBridge {
     var b = pick.bub;
     b.style.display = 'block';
     var w = b.offsetWidth, h = b.offsetHeight;
-    // 矩形用 x/y（rectOf 的字段名）—— 之前这里读 r.left/r.top，
-    // 而 describe 给的是 x/y，两者对不上，气泡就摆到了 undefined 的位置。
+    // rectOf 返回矩形字段名为 x/y，须与 describe 一致
     var left = r.x, top = r.y + r.height + 8;
     if (top + h > window.innerHeight - 8) top = Math.max(8, r.y - h - 8);
     if (left + w > window.innerWidth - 8) left = Math.max(8, window.innerWidth - w - 8);
@@ -464,8 +458,8 @@ object PageBridge {
     /**
      * 页面 → 壳侧的回调接口。
      *
-     * 只暴露 [post]。页面可以伪造事件，但最多只能伪造一条元素描述，
-     * 换不来任何越权能力。
+     * 只暴露 [post]，仅用于向宿主回传非特权元素描述数据，
+     * 不向页面开放原生能力边界之外的执行权限。
      */
     class AndroidBridge(private val onEvent: (BridgeEvent) -> Unit) {
 

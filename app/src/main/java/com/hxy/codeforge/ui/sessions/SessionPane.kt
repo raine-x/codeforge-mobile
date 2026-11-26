@@ -51,7 +51,7 @@ import com.hxy.codeforge.ui.theme.Clay
 import com.hxy.codeforge.ui.theme.SerifTitle
 
 /**
- * 会话侧栏，对齐 Claude 客户端的抽屉：
+ * 会话侧栏与抽屉布局：
  *
  *  - 顶部「新建项目」入口 + 导航（对话 / MCP）；
  *  - 中部按**工作区（项目）分组**：项目行带折叠箭头、项目名、＋新建会话、⋯菜单，
@@ -324,7 +324,7 @@ fun SessionPane(
     }
 }
 
-// ---------------------------------------------------------------- 导航
+// 导航
 
 @Composable
 private fun NavRow(label: String, glyph: Glyph, active: Boolean, onClick: (() -> Unit)?) {
@@ -358,7 +358,7 @@ private fun NavRow(label: String, glyph: Glyph, active: Boolean, onClick: (() ->
     }
 }
 
-// ---------------------------------------------------------------- 项目行
+// 项目行
 
 /** 项目名兜底：内核没给 name 时用目录末段，至少比空白可读。 */
 private fun projectLabel(project: ProjectItem): String =
@@ -482,7 +482,7 @@ private fun MoreDots(color: Color) {
     }
 }
 
-// ---------------------------------------------------------------- 会话行
+// 会话行
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -573,7 +573,7 @@ private fun SessionRow(
     }
 }
 
-// ---------------------------------------------------------------- 底栏
+// 底栏
 
 @Composable
 private fun BottomBar(

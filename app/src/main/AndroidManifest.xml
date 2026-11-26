@@ -51,9 +51,7 @@
         android:theme="@style/Theme.CodeForge"
         android:usesCleartextTraffic="true">
 
-        <!-- launchMode 必须与 onNewIntent 的注释一致：应用在前台点通知也要走
-             onNewIntent 而不是叠一个新实例（standard 会新开，deep-link 逻辑失效）。
-             不锁 screenOrientation：跟随系统原生旋转，让输入法与三点菜单等独立窗口同步横竖屏。 -->
+        <!-- singleTop 确保应用在前台点击通知时走 onNewIntent；不锁方向以同步系统旋转 -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -65,9 +63,7 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-            <!-- 入站分享：浏览器/微信/相册「分享到 CodeForge」→ 预填输入卡。
-                 特意不收 ACTION_VIEW http —— 那会让本应用出现在所有链接的
-                 「打开方式」里，用户误设默认后链接全被劫持 -->
+            <!-- 入站分享仅接文本/图片/视频，避免注册 http VIEW 劫持系统默认打开方式 -->
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />
                 <action android:name="android.intent.action.SEND_MULTIPLE" />
@@ -142,8 +138,7 @@
             android:name=".phone.PhoneActionReceiver"
             android:exported="false" />
 
-        <!-- 相机附件：TakePicture 经 FileProvider 出片 URI。
-             未声明 CAMERA 权限 —— 走系统相机应用代拍时不需要（声明了反而必须先授权） -->
+        <!-- 拍照走系统相机 + FileProvider，无需声明 CAMERA 权限 -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

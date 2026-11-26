@@ -48,7 +48,7 @@ class KernelApi(private val host: String, private val port: Int) {
 
     private var handshaked = false
 
-    /** GET / 收 Cookie（P-003：没有这步一切 401）。幂等。 */
+    /** GET / 获取鉴权 Cookie（见 P-003），幂等。 */
     suspend fun init(): ApiResult<Unit> = withContext(Dispatchers.IO) {
         runCatching {
             client.newCall(Request.Builder().url("$base/").build()).execute().use { resp ->
@@ -60,9 +60,7 @@ class KernelApi(private val host: String, private val port: Int) {
         )
     }
 
-    // ---------------------------------------------------------------- 配置
-
-    /** GET /api/config → 设置页展示用的摘要（只取我们要的字段，其余忽略）。 */
+    /** GET /api/config → 设置页配置摘要。 */
     suspend fun getConfig(): ApiResult<KernelConfigSummary> =
         get("/api/config") { body ->
             val o = JSONObject(body)
@@ -99,7 +97,7 @@ class KernelApi(private val host: String, private val port: Int) {
             )
         }
 
-    /** POST /api/config：部分更新（null 字段不下发）。model/provider 用于弹层选择模型与供应商。 */
+    /** POST /api/config：部分更新（null 字段不下发）。 */
     suspend fun updateConfig(
         retryMaxAttempts: Int? = null,
         retryMode: String? = null,
@@ -115,14 +113,14 @@ class KernelApi(private val host: String, private val port: Int) {
         provider?.let { put("provider", it) }
         maxSteps?.let { put("max_steps", it) }
     }) { body ->
-        // 与 saveModelFull 同理：200 + ok:false 不是成功
+        // 与 saveModelFull 同理：HTTP 200 且 ok:false 仍视为失败
         val o = runCatching { JSONObject(body) }.getOrNull()
         if (o != null && !o.optBoolean("ok", true)) {
             throw IllegalStateException(o.optString("error").ifEmpty { "配置保存失败" })
         }
     }
 
-    // ---------------------------------------------------------------- 后台任务
+    // 后台任务
 
     /**
      * GET /api/tasks：全部后台脚本任务（含最近输出尾部）。
@@ -172,23 +170,15 @@ class KernelApi(private val host: String, private val port: Int) {
     suspend fun killTask(id: String): ApiResult<Unit> =
         post("/api/tasks/kill", JSONObject().put("id", id)) { }
 
-    // ---------------------------------------------------------------- 权限
+    // 权限
 
     /** POST /api/perm：readonly / ask / auto 三档，热生效。 */
     suspend fun setPerm(mode: String): ApiResult<Unit> =
         post("/api/perm", JSONObject().put("mode", mode)) { }
 
-    // ---------------------------------------------------------------- 附件
+    // 附件
 
-    /**
-     * POST /api/upload_file（multipart）：把本地文件原子写入**内核当前工作区**的
-     * `attachments/`，返回相对工作区路径（staged_path）。
-     *
-     * 为什么不让壳侧直接猜落点：工作区在会话创建那一刻才固定（还可能是项目目录），
-     * 壳侧按会话 id 拼出来的目录与内核读附件用的 `FS.root()` 不是同一棵 ——
-     * 这正是「发送后图片转圈、路径不对」的根因（问题 1）。交给内核落盘，
-     * 写入方与读取方天然同一个根。
-     */
+    /** POST /api/upload_file：将本地文件原子写入当前工作区的 attachments/ 并返回相对路径（staged_path）。 */
     suspend fun uploadFile(file: java.io.File): ApiResult<String> = withContext(Dispatchers.IO) {
         if (!handshaked) {
             (init() as? ApiResult.Err)?.let { return@withContext it as ApiResult<String> }
@@ -233,9 +223,7 @@ class KernelApi(private val host: String, private val port: Int) {
         }
 
     /**
-     * POST /api/shutdown：让内核优雅收尾（会话落盘、审计 flush）。
-     * 该端点不吃 Cookie，认 X-CodeForge-Token 头 —— 值就是 Cookie 里的令牌，
-     * 从 jar 里取（cookieJar 对本类可见）。
+     * POST /api/shutdown：请求内核优雅退出（需带与 Cookie 同源的 X-CodeForge-Token 请求头）。
      */
     suspend fun shutdown(): ApiResult<Unit> = withContext(Dispatchers.IO) {
         runCatching {
@@ -258,7 +246,7 @@ class KernelApi(private val host: String, private val port: Int) {
         }.getOrElse { ApiResult.Err(it.message ?: it.javaClass.simpleName) }
     }
 
-    // ---------------------------------------------------------------- 上下文
+    // 上下文
 
     /** POST /api/context/compress：手动压缩当前会话。结果同时会经 WS compress 帧进消息流。 */
     suspend fun compressContext(sessionId: String?): ApiResult<String> =
@@ -271,7 +259,7 @@ class KernelApi(private val host: String, private val port: Int) {
             "已压缩：${o.optLong("before")} → ${o.optLong("after")} tokens（摘要 +${o.optLong("added")}）"
         }
 
-    // ---------------------------------------------------------------- 会话
+    // 会话
 
     /** PATCH /api/sessions：重命名 / 归档（archived=true）或取消归档。 */
     suspend fun patchSession(id: String, title: String? = null, archived: Boolean? = null): ApiResult<Unit> =
@@ -285,7 +273,7 @@ class KernelApi(private val host: String, private val port: Int) {
     suspend fun deleteSession(id: String): ApiResult<Unit> =
         request("DELETE", "/api/sessions?id=$id", null) { }
 
-    // ---------------------------------------------------------------- 子智能体
+    // 子智能体
 
     suspend fun getSubagentPolicy(): ApiResult<SubagentPolicy> =
         get("/api/subagents") { body ->
@@ -310,7 +298,7 @@ class KernelApi(private val host: String, private val port: Int) {
             put("allow_memory", p.allowMemory)
         }) { }
 
-    // ---------------------------------------------------------------- 通知 / 工作区
+    // 通知 / 工作区
 
     suspend fun setNotifyEnabled(enabled: Boolean): ApiResult<Unit> =
         post("/api/notify", JSONObject().put("enabled", enabled)) { ApiResult.Ok(Unit) }
@@ -330,9 +318,7 @@ class KernelApi(private val host: String, private val port: Int) {
             JSONObject(body).optString("root")
         }
 
-    // ---------------------------------------------------------------- 模型库 / 供应商 / 思考规格
-    // 以下端点的响应形态按「{items:[…]} 或裸数组」双形态防御解析；字段名以
-    // models 命令行实测为准，联调期允许显示降级（Err 落到界面可见处）。
+    // 以下端点兼容 {items:[…]} 与裸数组两种响应形态
 
     data class ModelEntry(
         val id: String,
@@ -416,18 +402,7 @@ class KernelApi(private val host: String, private val port: Int) {
         val keySource: String,
         val keyName: String,
         val disabled: Boolean,
-        /**
-         * 供应商自己的明文密钥（内核 `/api/providers/list` **每个供应商都回填**）。
-         *
-         * ## 为什么必须留着
-         *
-         * 内核的 `applyProviderDefaults` 只在「请求里既没有变量名也没有明文」时才继承
-         * 供应商；供应商**自己没有密钥**时，`handleModelDiscover` 会回退到
-         * **当前生效模型**的密钥（响应里的 `key_from_active`）——
-         * 于是「探测供应商 A」实际用了模型 B 的密钥，界面却看不出来。
-         *
-         * 拿到这份明文，探测时就能把它带上，绕开那次回退。
-         */
+        /** 供应商明文密钥（探测时须携带，避免内核 `handleModelDiscover` 回退到当前生效模型的密钥）。 */
         val keyPlain: String = "",
     )
 
@@ -502,22 +477,10 @@ class KernelApi(private val host: String, private val port: Int) {
     suspend fun applyModel(id: String): ApiResult<Unit> =
         post("/api/models/apply", JSONObject().put("model", id)) { }
 
-    /** POST /api/models/test：连接测试（返回 {ok, latency_ms|error}）。 */
     /**
-     * POST /api/models/test —— 连通性测试（**所见即所测**）。
-     *
-     * ## 字段名必须与内核的 `modelTestReq` 一致
-     *
-     * 内核的请求体是 `provider_id / protocol / base_url / model /
-     * key_source / key_name / key_value`，**没有 `id` 字段**。
-     * Go 的 JSON 解码器**静默忽略未知字段** —— 早先这里发的是 `{"id": …}`，
-     * 内核收到的是一片空：模型 id 空、地址空、密钥空，于是每次都回
-     * 「API Key 为空」。按钮看着能点，实际从来没测过任何东西。
-     *
-     * @param model 模型 id（要原样传给上游的 model 字段）。
-     * @param providerId 归属供应商 id；给了它，内核就用**该供应商**的地址/协议/密钥。
-     * @param keyValue 供应商的明文密钥。带上它就不必依赖内核进程的环境变量，
-     *        也不会回退到「当前生效模型」的密钥。
+     * POST /api/models/test：连通性测试。
+     * 字段名须与内核 modelTestReq 一致（provider_id / protocol / base_url / model /
+     * key_source / key_name / key_value），传 providerId 与 keyValue 可直接按编辑中表单测试。
      */
     suspend fun testModel(
         model: String,
@@ -541,19 +504,9 @@ class KernelApi(private val host: String, private val port: Int) {
             else error(o.optString("error", "测试失败"))
         }
 
-    /** POST /api/models/discover：上游模型发现 → 模型 id 列表。 */
     /**
-     * POST /api/models/discover —— 列出上游可用模型。
-     *
-     * [provider] 非空时，内核用**该供应商真实生效**的地址/协议/密钥去探测
-     * （`applyProviderDefaults`），前端不必重复提交这些字段。
-     *
-     * ## 为什么这里要能带上密钥
-     *
-     * 内核的 `handleModelDiscover` 在「请求里没有可用密钥」时会**回退到当前生效模型的
-     * 密钥**（`s.cfg.LLM.APIKey`），并用 `key_from_active` 如实回报。
-     * 供应商自己没配密钥时，那次回退就会让「探测 A 供应商」实际用上 B 模型的密钥。
-     * 把供应商的明文密钥带上，就绕开了这��回退。
+     * POST /api/models/discover：列出上游可用模型。
+     * 传 [provider] 或 [keyValue] 可防止无密钥配置触发内核回退到当前生效模型的密钥。
      */
     suspend fun discoverModels(
         provider: String = "",
@@ -682,7 +635,7 @@ class KernelApi(private val host: String, private val port: Int) {
             ),
         ) { }
 
-    // ---------------------------------------------------------------- 归档 / diff
+    // 归档 / diff
 
     /**
      * GET /api/sessions?archived=1：已归档会话（归档管理页）。
@@ -739,7 +692,7 @@ class KernelApi(private val host: String, private val port: Int) {
             diff to output
         }
 
-    // ---------------------------------------------------------------- 诊断 / 记忆 / 技能 / 插件
+    // 诊断 / 记忆 / 技能 / 插件
 
     /** GET /api/health：原始 JSON 美化后给诊断页。 */
     suspend fun getHealth(): ApiResult<String> =
@@ -811,7 +764,6 @@ class KernelApi(private val host: String, private val port: Int) {
             }
         }
 
-    /** GET /api/plugins：MCP 插件（{items:[{id,name,enabled}]}）。 */
     /**
      * 一个 MCP 插件的状态。
      *
@@ -863,14 +815,7 @@ class KernelApi(private val host: String, private val port: Int) {
             }
         }
 
-    /** POST /api/plugins：开关单个插件。 */
-    /**
-     * 启停一个插件。
-     *
-     * ⚠️ 必须走 **PATCH** 且字段名是 `name`：内核 `/api/plugins` 的 POST 分支是
-     * 「添加插件」（要求 name + type + command/endpoint），拿 POST 发 {id,enabled}
-     * 会撞上「名称不能为空」直接失败 —— 之前 MCP 开关点了一点反应都没有就是这个。
-     */
+    /** PATCH /api/plugins：按 name 字段启停插件（POST 为新增插件，不可混用）。 */
     suspend fun setPlugin(id: String, enabled: Boolean): ApiResult<Unit> =
         request("PATCH", "/api/plugins", JSONObject().put("name", id).put("enabled", enabled)) { }
 
@@ -923,9 +868,7 @@ class KernelApi(private val host: String, private val port: Int) {
             }
         }
 
-    /** POST /api/builtin-plugins：开关内置功能。 */
-    // 内置插件启停是 PATCH（同 P-025）：POST 在该端点没有定义，会被 405 拒掉，
-    // 表现为「开关点了没反应」。
+    /** PATCH /api/builtin-plugins：启停内置功能（见 P-025）。 */
     suspend fun setBuiltinPlugin(id: String, enabled: Boolean): ApiResult<Unit> =
         request("PATCH", "/api/builtin-plugins", JSONObject().put("id", id).put("enabled", enabled)) { }
 
@@ -1061,7 +1004,7 @@ class KernelApi(private val host: String, private val port: Int) {
     /** query 参数必须编码：工作区是绝对路径，含 `/`、`: `、中文与空格。 */
     private fun encode(s: String): String = java.net.URLEncoder.encode(s, "UTF-8")
 
-    // ---------------------------------------------------------------- 通用
+    // 通用
 
     private suspend fun <T> get(path: String, parse: (String) -> T): ApiResult<T> =
         request("GET", path, null, parse)

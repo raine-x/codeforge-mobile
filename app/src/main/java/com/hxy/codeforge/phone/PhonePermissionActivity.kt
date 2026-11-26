@@ -87,7 +87,7 @@ internal object PhonePermissionBridge {
     }
 
     private fun launchHostIntent(context: Context, intent: Intent) {
-        // 若无障碍服务在线，由无障碍服务上下文拉起可绕过后台启动 Activity 限制
+        // 若无障碍服务在线，优先通过当前前景授权服务上下文统一拉起授权或系统选择器界面
         val starter: Context = PhoneObservationService.active ?: context
         starter.startActivity(intent)
     }

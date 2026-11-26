@@ -128,7 +128,7 @@ import kotlin.math.PI
 import kotlin.math.min
 
 
-// ---------------------------------------------------------------- 附件面板
+// 附件面板
 
 /**
  * DeepSeek 式附件面板：上半是「最近文件」横滑选择（点选即入待发列表，
@@ -346,7 +346,7 @@ private fun AttachCell(
 }
 
 
-// ---------------------------------------------------------------- 内嵌附件片
+// 内嵌附件片
 
 /** 按扩展名归类上色：不同类型一眼可辨。 */
 private fun attachCategoryColor(rel: String): Color {
@@ -512,7 +512,7 @@ internal fun ElementChipInline(ref: String, summary: String, onRemove: () -> Uni
 }
 
 
-// ---------------------------------------------------------------- Skills 和技能
+// Skills 和技能
 
 /** 附件面板里的一个二级入口行（标题 + 说明 + 圆底图标）。 */
 @Composable

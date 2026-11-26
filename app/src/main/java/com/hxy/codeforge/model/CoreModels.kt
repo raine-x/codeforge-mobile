@@ -1,29 +1,13 @@
 package com.hxy.codeforge.model
 
-/**
- * 消息角色。内核只有 user / assistant 两种会渲染到界面，system 不进列表；
- * Notice 是壳自己折出来的「通知行」（重试/压缩/回滚等事件），不是内核消息。
- */
+/** 消息角色；Notice 为客户端合成的流程提示行（重试/压缩/回滚等）。 */
 enum class MsgRole { User, Assistant, Notice }
 
-/** 通知行种类：对应内核 retry / compress / rewind / steer / info / warn 事件。 */
 enum class NoticeKind { Info, Retry, Compress, Rewind, Steer, Warn }
 
-/**
- * 工具调用状态。
- *
- * [Interrupted] 是壳侧的收尾兜底态：一轮结束（Idle/手动停止/失败）时还没等到
- * tool_result 的调用 —— 内核没回结果，既不该假标成功也不该标失败；
- * 迟到的结果仍会按 id 命中覆盖成真实状态。
- */
+/** 工具调用状态；[Interrupted] 表示回合结束时仍未返回结果的调用（后续若到达会按 id 覆盖）。 */
 enum class ToolState { Running, Ok, Failed, Interrupted }
 
-/**
- * 一次工具调用。
- *
- * 字段对应内核 agent.Event 的 tool_call_id / tool_name / tool_input / result /
- * diff_stats / diff —— 原生 UI 只是换了个呈现方式，数据一字不改。
- */
 data class ToolCall(
     val id: String,
     val name: String,
@@ -35,26 +19,13 @@ data class ToolCall(
     val diff: String? = null,
 )
 
-/**
- * 真实对话流片段：思考 / 工具 / 正文按**发生顺序**排列。
- *
- * 内核一轮里可能是「思考 → 工具 → 思考 → 正文 → 工具」，旧的
- * `thinking/tools/text` 三个字段各存一份，渲染时工具总是被堆到正文前面。
- * `segments` 保留原始顺序，`thinking/tools/text` 继续维护只为兼容旧界面。
- */
+/** 按实际发生顺序排列的对话流片段，避免工具卡一律前置遮挡正文。 */
 sealed interface MessageSegment {
     data class Thinking(val text: String) : MessageSegment
     data class Tool(val call: ToolCall) : MessageSegment
     data class Text(val text: String) : MessageSegment
 }
 
-/**
- * 一条聊天消息。
- *
- * [streaming] 为 true 时界面显示光标动画并禁用「复制」；流结束置 false。
- * [isWarn] 对应内核的 warn 事件（限流等），与 [isError] 分开：
- * error 要改东西才能好，warn 等一下重试就好 —— 两者在界面上必须长得不一样。
- */
 data class ChatMessage(
     val id: String,
     val role: MsgRole,
@@ -65,38 +36,24 @@ data class ChatMessage(
     val isError: Boolean = false,
     val isWarn: Boolean = false,
     val time: Long = 0L,
-    /** [MsgRole.Notice] 时的种类，气泡据此选图标与配色。 */
     val kind: NoticeKind? = null,
-    /**
-     * 原样输出：模型输出 markdown 源码本身（比如被要求「给我看源文件」）时，
-     * 按纯文本等宽展示而不是渲染成富文本 —— 渲染会把「代码」变成「版式」。
-     */
+    /** 为 true 时按等宽纯文本原样展示源码，不交由富文本渲染。 */
     val verbatim: Boolean = false,
-    /** 用户消息附件（相对工作区路径 attachments/xxx）；气泡渲染缩略图/文件片。 */
     val attachments: List<String> = emptyList(),
-    /** 真实对话流片段（按发生顺序）；空 = 旧字段渲染，历史消息暂不填。 */
     val segments: List<MessageSegment> = emptyList(),
 )
 
-/** 会话列表项。 */
 data class SessionItem(
     val id: String,
     val title: String,
     val updatedAt: Long,
     val busy: Boolean = false,
-    /** 归属工作区（= 磁盘绝对路径，分组键；空 = 未选择工作区）。 */
     val workspace: String = "",
-    /** 项目显示名（内核 workspace_names 表；空时界面回落路径末段）。 */
     val workspaceName: String = "",
-    /** 已归档（archived_at > 0）；侧栏不展示，归档页消费。 */
     val archived: Boolean = false,
 )
 
-/**
- * 侧栏项目（按会话的 workspace 分组聚合出来，不是独立存储）。
- *
- * [busy] = 组内任意会话在跑；[archived] = 组内全部会话都已归档。
- */
+/** 侧栏项目聚合视图（按会话 [workspace] 分组生成）。 */
 data class ProjectItem(
     val workspace: String,
     val name: String,
@@ -105,7 +62,6 @@ data class ProjectItem(
     val archived: Boolean = false,
 )
 
-/** 工作区文件树的一项（内核 treeNode：name/path/is_dir/size）。 */
 data class TreeEntry(
     val name: String,
     val path: String,
@@ -113,16 +69,13 @@ data class TreeEntry(
     val size: Long = 0,
 )
 
-/** @plan 回合结束后弹出的计划书操作面板（默认选中计划书正文）。 */
 data class ActionPanelState(
     val title: String = "计划书已生成",
     val content: String,
 )
 
-/** 任务项状态：pending / in_progress / completed / cancelled。 */
 enum class TodoStatus { Pending, InProgress, Completed, Cancelled }
 
-/** 内核 todo 帧的一项（store.TodoRow）。 */
 data class TodoItem(
     val content: String,
     val status: TodoStatus,
@@ -130,7 +83,6 @@ data class TodoItem(
     val sort: Int = 0,
 )
 
-/** 子智能体任务（tools/scope.go 的 SubagentEvent）。 */
 data class SubagentTask(
     val id: String,
     val mode: String,
@@ -139,29 +91,17 @@ data class SubagentTask(
     val summary: String = "",
 )
 
-/** 上下文占用（context 帧）。percent 可能超过 100（超预算），展示时再夹取。 */
 data class ContextUsage(
     val used: Long,
     val budget: Long,
     val percent: Float,
     val model: String = "",
     val overBudget: Boolean = false,
-    /**
-     * 模型声明的输入上下文窗口（tokens）。
-     *
-     * 0 = 模型库里没填输入上限 —— 内核此时退回默认预算（实测 120000），
-     * 于是「1M 的模型」也会在 12 万左右触发压缩。设置页要据此提示用户。
-     */
+    /** 输入上下文窗口（0 表示模型库未声明，内核将按默认预算 120K 估算）。 */
     val window: Long = 0,
-    /** 本会话是否已经做过摘要压缩（内核 compressed 标志）。 */
     val compressed: Boolean = false,
 ) {
-    /**
-     * 展示用占比：有真实窗口就按窗口算，否则退回内核预算。
-     *
-     * 内核的 percent 是「对预算」算的（预算 ≈ (窗口 - 输出保留) × 0.8），
-     * 用户看的是「占模型窗口多少」，两者在压缩线附近会差 20%。
-     */
+    /** 优先按模型真实窗口算展示占比，无窗口时回落内核预算百分比。 */
     val displayFraction: Float
         get() = when {
             window > 0 && used > 0 -> (used.toFloat() / window).coerceIn(0f, 1f)
@@ -169,20 +109,10 @@ data class ContextUsage(
         }
 }
 
-/** GET /api/config 的设置页摘要（只取壳要展示/可写的字段）。 */
 data class KernelConfigSummary(
     val model: String,
     val displayName: String,
-    /**
-     * 内核 `llm.provider` —— **协议族，不是供应商 id**。
-     *
-     * 内核 `config/default.yaml` 里默认就是 `"anthropic"`（取值 anthropic | openai），
-     * 它决定请求走哪种协议，与供应商库里那些（id 如 `deepseek`、带显示名的）记录
-     * **是两个命名空间**。早先壳侧把它当供应商 id 用，界面上就出现了
-     * 「anthropic」与「DeepSeek 官方」并存 —— 详见 AGENTS P-045。
-     *
-     * **当前生效的供应商要从模型库条目上取**，别用这个字段。
-     */
+    /** 内核 `llm.provider` 为协议族（anthropic | openai），非供应商 id（P-045）。 */
     val provider: String,
     val maxTokens: Int,
     val temperature: Double,
@@ -193,23 +123,10 @@ data class KernelConfigSummary(
     val permMode: String,
     val workDir: String,
     val apiKeySet: Boolean,
-    /**
-     * 当前生效的模型**是否还在模型库里**（内核 `model_in_library`）。
-     *
-     * 内核提供这个字段就是为了这一种情况：模型库被清空后，`local.yaml` 里的
-     * 生效配置还在（对话照样能用），但界面上不该照常显示模型名，
-     * 而应提示「库已空、去设置里添加」。
-     */
     val modelInLibrary: Boolean = true,
-    /**
-     * 内核当前已注册的全部工具名（`/api/config` 的 `tools` 数组）。
-     *
-     * 用途：① 插件安装前与内置工具撞名校验；② 插件详情页按 `<id>.` 前缀过滤展示已加载工具。
-     */
     val tools: List<String> = emptyList(),
 )
 
-/** 子智能体策略（/api/subagents）。 */
 data class SubagentPolicy(
     val enabled: Boolean,
     val maxConcurrent: Int,
@@ -219,12 +136,6 @@ data class SubagentPolicy(
     val allowMemory: Boolean,
 )
 
-/**
- * 待审批的工具调用（HITL）。
- *
- * 字段与内核 hitl_request 帧一一对应。subagentId 非空表示这是子智能体发起的，
- * 并行委派时会同时挂多张卡片，界面上要能区分。
- */
 data class ApprovalCard(
     val id: String,
     val tool: String,
@@ -235,14 +146,12 @@ data class ApprovalCard(
     val subagentId: String? = null,
 )
 
-/** 权限模式：只读 / 请求 / 自主。对应内核的权限策略三档。 */
 enum class PermissionMode(val label: String) {
     ReadOnly("只读"),
     Ask("请求"),
     Auto("自主"),
 }
 
-/** 检查点步骤（checkpoints 帧 steps[]）：回滚菜单的候选行。 */
 data class CheckpointStep(
     val step: Int,
     val files: Int,
@@ -250,18 +159,11 @@ data class CheckpointStep(
     val sample: String = "",
 )
 
-/** 可编辑的用户消息（checkpoints 帧 editables[]）：back 是编辑重发的截断锚点。 */
 data class EditableUserMessage(
     val back: Int,
     val text: String,
 )
 
-/**
- * 目标模式账本（内核 Session.Goal 的快照）。
- *
- * 与 `pkg/tools/goal.go` 的 GoalState 一一对应；Kotlin 只读，
- * 轮次预算与 PASS/FAIL 判定全部由内核算。
- */
 data class GoalStatus(
     val goal: String = "",
     val round: Int = 0,
@@ -274,49 +176,26 @@ data class GoalStatus(
 )
 
 /**
- * 模型库条目（/api/models/list 的 models[]）。
- *
- * 字段与内核 `config.sanitizeEntries` 的 map 字面量逐键对齐（P-008：按写方代码核对，
- * 不按相似端点类推）。**明文密钥永不下发**，只有 [keySet] 这个布尔。
- *
- * [vision] / [video] 是**三态**：null = 未声明（≠ 不支持）。内核把未声明当乐观发送、
- * 撞上游拒收再记忆；false 才是发之前就拦 —— 表单必须能表达中间态。
+ * 模型库条目（`/api/models/list`）。
+ * [vision] / [video] 为三态：null 表示未声明（乐观放行），false 表示明确不支持。
  */
 data class LibraryModel(
     val id: String,
     val name: String,
-    /** 归属供应商 id（内核 provider_id，分组键；空 = 未归属/旧格式自带连接信息）。 */
     val provider: String = "",
-    /** 供应商显示名（内核 provider_name；空则界面回落 id）。 */
     val providerName: String = "",
-    /** 输入上下文上限（tokens，0 = 未设置）。 */
     val ctxIn: Int = 0,
-    /** 输出上限（tokens，0 = 未设置）。 */
     val ctxOut: Int = 0,
-    /** 图片能力三态：null 未声明 / true 支持 / false 不支持。 */
     val vision: Boolean? = null,
-    /** 视频能力三态，语义同 [vision]。 */
     val video: Boolean? = null,
-    /** 客户端节流上限（每分钟请求数，0 = 不限）。 */
     val rpm: Int = 0,
-    /** 密钥来源覆盖：env | plain；空 = 继承供应商。 */
     val keySource: String = "",
-    /** 环境变量名（[keySource] = env 时有效）。 */
     val keyName: String = "",
-    /** 是否已有可用密钥（env 变量已设置或明文非空）。 */
     val keySet: Boolean = false,
-    /** 实际会用的请求地址（内核已用供应商补齐，留空 = 继承）。 */
     val baseUrl: String = "",
-    /** 实际会用的协议（openai | anthropic）。 */
     val protocol: String = "",
 )
 
-/**
- * 内核技能（GET /api/skills 的 items[]）。
- *
- * [slug] 是 SKILL.md 的目录名，也是输入框 @ 补全的 token；[name] 是内核下发的
- * display_name（未配置显示名时内核已回退成 slug）。
- */
 data class SkillInfo(
     val slug: String,
     val name: String,
@@ -325,29 +204,18 @@ data class SkillInfo(
     val enabled: Boolean = true,
 )
 
-/** 内置插件（GET /api/builtin-plugins 的 items[]）：带用途与使用场景说明。 */
 data class BuiltinPluginInfo(
     val id: String,
     val name: String,
     val purpose: String = "",
     val whenToUse: String = "",
     val enabled: Boolean = false,
-    /**
-     * @ 触发词（内核触发词数据化之后才下发；无常驻触发词或旧内核为空）。
-     * 旧内核不下发此键或下发了 null——与三态布尔同理，缺失 ≠ 否定，一律按空处理。
-     */
     val triggers: List<String> = emptyList(),
-    /** 修改与重打包子开关（仅逆向分析等插件下发；null 表示不支持或旧内核，P-031）。 */
+    /** 授权重构子开关；null 表示不支持或旧内核未下发（P-031）。 */
     val allowModify: Boolean? = null,
 )
 
-/**
- * 内核后台脚本任务（GET /api/tasks 的 items[]，pkg/tasks.Task 的镜像）。
- *
- * [status] 是内核原样的三个取值：running / exited / killed。
- * [exitCode] 只在结束后有效（被信号结束时可能为 -1）。
- * [output] 是内核保留的最近 128KiB 输出尾部，不是完整日志。
- */
+/** 后台任务快照；[output] 为最近 128KiB 尾部输出。 */
 data class BackgroundTask(
     val id: String,
     val label: String,

@@ -60,13 +60,7 @@ import com.hxy.codeforge.ui.theme.SerifDisplay
 import com.hxy.codeforge.ui.uninstallPlugin
 
 /**
- * 侧栏「插件」管理面板（铺满整个侧栏 / 屏幕）。
- *
- * 统一承载三类扩展形态（§1.3 / §2.4）：
- * 1. **已安装插件包**（`.cfplugin`，有 `install.json` 记录）：支持可执行包（`mcp` / `mcp-http`）与
- *    纯文本技能包（`skill`）同包共存，支持导入、启停、详情、密钥配置、版本升级与卸载；
- * 2. **手动添加的 MCP**（仅 `config/plugins.yaml` 条目）：保留无包快速接入表单；
- * 3. **内置功能**（C 类编译进内核的能力）：只读展示状态与触发词，指向设置页管理。
+ * 侧栏「插件」管理面板，统一承载已安装 `.cfplugin` 插件包、手动 MCP 条目与内置只读功能列表。
  */
 @Composable
 fun McpSidebarPanel(
@@ -264,7 +258,7 @@ fun McpSidebarPanel(
                 }
             }
 
-            // ---------------- 分组 1：已安装插件包 ----------------
+            // 分组 1：已安装插件包
             item(key = "__header_installed__") {
                 GroupSectionHeader(
                     title = "已安装插件包（${installedPlugins.size}）",
@@ -292,7 +286,7 @@ fun McpSidebarPanel(
                 }
             }
 
-            // ---------------- 分组 2：手动添加的 MCP ----------------
+            // 分组 2：手动添加的 MCP
             item(key = "__header_manual__") {
                 GroupSectionHeader(
                     title = "手动添加（${manualPlugins.size}）",
@@ -328,7 +322,7 @@ fun McpSidebarPanel(
                 }
             }
 
-            // ---------------- 分组 3：内置功能（C 类，只读） ----------------
+            // 分组 3：内置功能（C 类，只读）
             if (builtinPlugins.isNotEmpty()) {
                 item(key = "__header_builtin__") {
                     GroupSectionHeader(

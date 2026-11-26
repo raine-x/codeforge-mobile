@@ -72,7 +72,7 @@ fun ToolCard(
     modifier: Modifier = Modifier,
 ) {
     var expanded by rememberSaveable(tool.id) { mutableStateOf(false) }
-    // B4：diff 全屏查看器（内联只渲染前 120 行，大 diff 进全屏无截断）
+    // diff 全屏查看器（内联渲染前 120 行，全屏无截断）
     var fullscreenDiff by rememberSaveable(tool.id) { mutableStateOf(false) }
 
     val statusColor = when (tool.state) {
@@ -240,7 +240,7 @@ fun ToolCard(
     }
 }
 
-// ---------------------------------------------------------------- 探索分组
+// 探索分组
 
 /**
  * 只读工具判定：探索阶段的「看」类工具可以折叠成一行。

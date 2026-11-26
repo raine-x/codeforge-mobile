@@ -269,7 +269,7 @@ object PhoneAppSkillStore {
         }
     }
 
-    // ---------- 经验沉淀、行级索引与最近成功路径 ----------
+    // 经验沉淀、行级索引与最近成功路径
 
     internal const val EXPERIENCE_HEADING = "## 自动沉淀的经验"
     internal const val RECENT_FLOW_HEADING = "## 最近成功路径"

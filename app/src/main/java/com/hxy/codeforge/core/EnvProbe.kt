@@ -4,13 +4,7 @@ import android.content.Context
 import android.os.Build
 import java.io.File
 
-/**
- * 接入内核前必须确认的环境项。
- *
- * 这些值不是"参考信息"，而是决定内核能不能启动的硬条件：
- *  - nativeLibraryDir 是可 exec 的唯一位置（app 私有目录在 targetSdk 29+ 被 SELinux 拒绝 exec）
- *  - /system/bin/sh 是 run_command 依赖的 shell（Android 没有 /bin/sh）
- */
+/** 内核启动前提环境探测项（nativeLibraryDir 可执行约束、/system/bin/sh、ABI 等）。 */
 object EnvProbe {
 
     data class Item(

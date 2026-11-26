@@ -26,34 +26,9 @@ import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 内核宿主前台服务：拉起 libcodeforge.so、端口握手、保活重启。
- *
- * ## 启动握手（协议的另一半在内核 cmd/agent/main.go）
- *
- *  1. `ProcessBuilder` 启动 `${nativeLibraryDir}/libcodeforge.so`，参数
- *     `-config <filesDir>/kernel-config -workdir <filesDir>/workspace -no-open`，
- *     环境 `HOME=<filesDir>`（SQLite 库落在 ~/.codeforge）、`CODEFORGE_PORT=0`
- *     （随机端口模式）；
- *  2. 内核绑定成功后把 `PORT=xxxxx` 打到 stdout，这里逐行扫描该前缀；
- *  3. 拿到端口即 [KernelState.Ready]，ChatViewModel 据此创建 HttpCoreTransport；
- *  4. 内核意外退出按 1→2→4→8s 退避重启（Ready 满 60s 后计数清零，连续 6 次失败停手）。
- *
- * ## stdout 必须一直有人读
- *
- * PORT 行到手后 reader 线程**不能退**：管道缓冲区塞满后内核会阻塞在日志写上，
- * 表现为「握手成功、聊两句整个卡死」。所以排水线程与内核进程同寿命，
- * 顺带把全部输出镜像到 `filesDir/logs/kernel.log`（每次启动截断）——
- * 内核起不来时唯一线索就在这份文件里，Failed 的 reason 会带日志尾部。
- *
- * ## 前台服务类型是 specialUse 不是 dataSync
- *
- * targetSdk 35+ 的 dataSync 有每天 6 小时的系统配额（AGENTS P-005），
- * 内核要全天候常驻，必须走 specialUse 并在 manifest 声明用途。
- */
-/**
- * 内核进程状态。独立于 companion 声明成文件级 sealed class ——
- * 埋在 companion 里的嵌套类型跨文件只能以 `CoreService.Companion.X` 引用，
- * 消费方（ChatViewModel）写起来又长又脆。
+ * 内核宿主前台服务：拉起 `libcodeforge.so`，监听 `PORT=` 握手并维护保活与退避重启。
+ * stdout 排水线程必须与内核进程同寿命，否则缓冲区满后内核阻塞在日志输出；
+ * 全天候常驻使用 `specialUse` 前台服务类型以规避 `dataSync` 配额限制（P-005）。
  */
 sealed class KernelState {
     data object Starting : KernelState()
@@ -66,8 +41,6 @@ class CoreService : LifecycleService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
         ensureChannel()
-        // SPECIAL_USE 类型要求 targetSdk>=34：target 28（侧载版）在 Android 14+ 上
-        // 传它会抛 IllegalArgumentException —— 按 target 分支，老 target 走无类型
         val fgType = if (Build.VERSION.SDK_INT >= 34 &&
             applicationInfo.targetSdkVersion >= 34
         ) {
@@ -75,9 +48,7 @@ class CoreService : LifecycleService() {
         } else {
             0
         }
-        // 每次 startForegroundService 都必须调 startForeground，但文案必须反映当前真实状态：
-        // MainActivity.onStart() 每次回前台都会再发 Intent；若硬编码「内核启动中…」，
-        // 已 Ready 的常驻通知会被覆写成「启动中」且因 _state 未变、observeState 不会再刷新。
+        // 每次回前台都会触发 onStartCommand，通知正文需按当前 _state 生成，避免覆盖已有 Ready 文案
         ServiceCompat.startForeground(
             this,
             NOTIF_ID,
@@ -85,55 +56,52 @@ class CoreService : LifecycleService() {
             fgType,
         )
         if (intent?.action == ACTION_STOP) {
+            shuttingDown.set(true)
             lifecycleScope.launch(Dispatchers.IO) {
-                KernelProcess.destroy()
-                stopSelf()
+                KernelProcess.destroyAndAwait()
+                withContext(Dispatchers.Main) {
+                    ServiceCompat.stopForeground(this@CoreService, ServiceCompat.STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
             return START_NOT_STICKY
         }
+        shuttingDown.set(false)
         val firstBootstrap = bootstrapped.compareAndSet(false, true)
         if (firstBootstrap) {
             observeState()
             lifecycleScope.launch(Dispatchers.IO) { superviseLoop() }
         }
         if (intent?.action == ACTION_RESTART && !firstBootstrap) {
-            // 只杀当前进程：监督循环退避后自动按新配置重启（local.yaml 已被调用方改好）
             lifecycleScope.launch(Dispatchers.IO) { KernelProcess.destroy() }
         }
         return START_STICKY
     }
 
-    /**
-     * 用户从最近任务划掉 App（B5-6）：内核不能变野进程，随服务收掉。
-     * Process.destroy 即 SIGTERM，内核信号处理会做会话落盘与审计 flush。
-     */
+    /** 划除最近任务时同步终止内核子进程（SIGTERM 触发内核落盘收敛）。 */
     override fun onTaskRemoved(rootIntent: android.content.Intent?) {
-        KernelProcess.destroy()
+        shuttingDown.set(true)
+        KernelProcess.destroyAndAwait()
+        stopSelf()
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        // 服务被系统回收或停止：内核进程不能变野进程，跟着收掉；并复位引导状态，
-        // 避免同进程再次 startForegroundService 时因 bootstrapped=true 跳过 superviseLoop。
-        // 直接同步调 destroy（lifecycleScope 在 onDestroy 时已取消，协程不会执行）
+        // onDestroy 时 lifecycleScope 已取消，同步终止子进程并复位引导标记
+        shuttingDown.set(true)
         KernelProcess.destroy()
         bootstrapped.set(false)
         _state.value = KernelState.Starting
         super.onDestroy()
     }
 
-    // ---------------------------------------------------------------- 内核监督
-
-    /**
-     * 监督循环：启动 → 等 PORT 握手 → 等退出 → 退避重启。
-     * [bootstrapped] 保证随 Service 生命周期只跑一次（onStartCommand 可能多次到达）。
-     */
     private suspend fun superviseLoop() {
         var backoff = 1_000L
         var restarts = 0
         var readyAtMs = 0L
-        while (true) {
+        while (!shuttingDown.get()) {
             val port = KernelProcess.startAndAwaitHandshake(this)
+            if (shuttingDown.get()) break
             if (port != null) {
                 _state.value = KernelState.Ready(port)
                 readyAtMs = System.currentTimeMillis()
@@ -145,10 +113,11 @@ class CoreService : LifecycleService() {
                 )
             }
 
-            KernelProcess.exited.first { it } // 挂起直到内核退出（或被 destroy 置位）
+            KernelProcess.exited.first { it }
+            if (shuttingDown.get()) return
 
             if (readyAtMs > 0 && System.currentTimeMillis() - readyAtMs > 60_000) {
-                restarts = 0 // 起来过一分钟以上，不算「启动即崩」
+                restarts = 0
             }
             restarts++
             if (restarts > 5) {
@@ -160,8 +129,6 @@ class CoreService : LifecycleService() {
             backoff = (backoff * 2).coerceAtMost(8_000L)
         }
     }
-
-    // ---------------------------------------------------------------- 状态与通知
 
     private fun observeState() {
         lifecycleScope.launch {
@@ -192,7 +159,6 @@ class CoreService : LifecycleService() {
             @Suppress("DEPRECATION")
             Notification.Builder(this)
         }
-        // 点击通知打开应用（跳回会话）；通知条上加「新建对话 / 停止内核」两个快捷操作
         val openApp = android.app.PendingIntent.getActivity(
             this, 0,
             Intent(this, com.hxy.codeforge.MainActivity::class.java),
@@ -220,23 +186,17 @@ class CoreService : LifecycleService() {
             .build()
     }
 
-    // ---------------------------------------------------------------- 进程容器
-
-    /**
-     * 内核进程的启动/排水/退出信号。独立成 object 是因为 onDestroy 与
-     * superviseLoop 都要碰它，且生命周期长于单个 Process 实例。
-     */
+    /** 独立容器对象，跨服务生命周期管理子进程句柄、日志排水与退出状态。 */
     private object KernelProcess {
         var process: Process? = null
         var exited = MutableStateFlow(true)
         private var logFile: File? = null
 
-        /** 启动内核并等 PORT= 握手。成功返回端口；起不来/20 秒没握手返回 null。 */
         fun startAndAwaitHandshake(service: CoreService): Int? {
             try {
                 val exe = File(service.applicationInfo.nativeLibraryDir, "libcodeforge.so")
                 if (!exe.canExecute()) {
-                    appendLog("可执行文件不存在或不可执行：$exe（E1：nativeLibraryDir exec 被拦？）")
+                    appendLog("可执行文件不存在或不可执行：$exe")
                     exited.value = true
                     return null
                 }
@@ -244,11 +204,9 @@ class CoreService : LifecycleService() {
                 val workspace = File(service.filesDir, "workspace").apply { mkdirs() }
                 val log = File(service.filesDir, "logs").apply { mkdirs() }
                     .resolve("kernel.log")
-                    .apply { writeText("") } // 截断：只保留最近一次启动的完整现场
+                    .apply { writeText("") }
                 logFile = log
 
-                // 先取 DNS：apply 块里的 receiver 是 ProcessBuilder，
-                // 直接调外部成员函数会被 Kotlin 判成 receiver 不匹配。
                 val dnsServer = systemDns(service)
 
                 val proc = ProcessBuilder(
@@ -258,18 +216,12 @@ class CoreService : LifecycleService() {
                     "-no-open",
                 )
                     .apply {
-                        // 统一环境契约（EnvKit）：HOME/TMPDIR/PATH 三处同源，
-                        // 内核 spawn 的任何命令与 proot/rootfs 看到同一棵目录树
                         EnvKit.kernelEnv(service).forEach { (k, v) ->
                             environment()[k] = v
                         }
                         environment()["CODEFORGE_PORT"] = "0"
-                        // Android 没有 /etc/resolv.conf，纯 Go 解析器会回退到
-                        // 127.0.0.1:53 并失败（lookup api.deepseek.com on [::1]:53）。
-                        // 现代 Android 的 DNS 只在 ConnectivityManager 里拿得到，
-                        // 这里取当前网络的 DNS 注入，内核侧 netdns 包据此装 resolver。
+                        // Android 无 /etc/resolv.conf，需注入系统活动网络的 IPv4 DNS 供内核解析器使用
                         dnsServer?.let { environment()["CODEFORGE_DNS"] = it }
-                        // IsTermux 的唯一判据是 PREFIX —— 清掉，防止宿主环境误带
                         environment().remove("PREFIX")
                         redirectErrorStream(true)
                         directory(workspace)
@@ -279,7 +231,6 @@ class CoreService : LifecycleService() {
                 exited.value = false
 
                 val handshake = MutableStateFlow<Int?>(null)
-                // 排水线程：与内核同寿命。握手完成也不退，否则 stdout 塞满后内核卡死
                 Thread {
                     val reader = BufferedReader(InputStreamReader(proc.inputStream, Charsets.UTF_8))
                     try {
@@ -291,7 +242,6 @@ class CoreService : LifecycleService() {
                             }
                         }
                     } catch (_: Exception) {
-                        // 进程被 destroy 时流会断，这里无需处理
                     } finally {
                         exited.value = true
                     }
@@ -303,7 +253,7 @@ class CoreService : LifecycleService() {
                     handshake.value?.let { return it }
                     Thread.sleep(100)
                 }
-                proc.destroy() // 握手超时：收掉这个哑进程
+                proc.destroy()
                 exited.value = true
                 return null
             } catch (e: Exception) {
@@ -316,6 +266,24 @@ class CoreService : LifecycleService() {
         fun destroy() {
             process?.destroy()
             process = null
+            exited.value = true
+        }
+
+        /** 先发送 SIGTERM 让内核落盘收敛，超时未退则强杀，避免退出应用后残留孤儿进程。 */
+        fun destroyAndAwait(timeoutMs: Long = 800L) {
+            val proc = process ?: run {
+                exited.value = true
+                return
+            }
+            process = null
+            runCatching { proc.destroy() }
+            runCatching {
+                if (!proc.waitFor(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                    proc.destroyForcibly()
+                    proc.waitFor(300L, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }
+            }
+            exited.value = true
         }
 
         fun logTail(): String {
@@ -341,34 +309,32 @@ class CoreService : LifecycleService() {
         const val EXTRA_APPROVAL_ID = "com.hxy.codeforge.core.APPROVAL_ID"
         const val EXTRA_APPROVAL_ALLOWED = "com.hxy.codeforge.core.APPROVAL_ALLOWED"
 
-        /** 设置页保存 LLM 配置后调用：杀掉内核进程，监督循环按新 local.yaml 拉起。 */
+        /** 使用 startForegroundService 拉起，避免超后备重试窗口时因后台限制抛异常。 */
         fun restart(context: android.content.Context) {
+            shuttingDown.set(false)
             val intent = android.content.Intent(context, CoreService::class.java)
                 .setAction(ACTION_RESTART)
-            // 用 startForegroundService 而不是 startService：调用方可能是
-            // 「25 秒还没 Ready」的超时兜底，那时 Service 很可能根本没起来，
-            // 后台 startService 在 Android 8+ 会抛 IllegalStateException。
             androidx.core.content.ContextCompat.startForegroundService(context, intent)
+        }
+
+        /** 主动停掉内核子进程、通知与前台服务，阻止监督循环自动拉起。 */
+        fun stopNow(context: android.content.Context) {
+            shuttingDown.set(true)
+            KernelProcess.destroyAndAwait()
+            runCatching { context.stopService(Intent(context, CoreService::class.java)) }
+            cancelAllApprovalNotifications(context)
+            runCatching {
+                context.getSystemService(NotificationManager::class.java)?.cancelAll()
+            }
         }
 
         private val _state = MutableStateFlow<KernelState>(KernelState.Starting)
         val state: StateFlow<KernelState> = _state.asStateFlow()
 
         private val bootstrapped = AtomicBoolean(false)
+        private val shuttingDown = AtomicBoolean(false)
 
-        /**
-         * 任务/会话完成通知（壳侧发送）。
-         *
-         * 内核是 Go 二进制，调不到 Android 的 NotificationManager —— 完成通知
-         * 的系统投递只能在壳侧做（原先注释说「由内核负责」是错的：没有任何
-         * 通道能把内核的意图送进通知栏，所以用户永远等不到）。
-         *
-         * 用独立渠道（IMPORTANCE_DEFAULT，带声音/横幅）而非前台服务的 LOW
-         * 渠道：常驻通知静音，任务完成要让用户感知。点通知开应用并跳到
-         * [sessionId] 那个会话（空 = 只开应用）。
-         *
-         * 权限未授予时系统静默丢弃（target 28 不抛异常），runCatching 只是保底。
-         */
+        /** 后台任务/会话完成时投递系统通知（使用 DEFAULT 独立渠道，点击回跳指定会话）。 */
         fun postDoneNotification(
             context: android.content.Context,
             title: String,
@@ -411,18 +377,8 @@ class CoreService : LifecycleService() {
         }
 
         /**
-         * 审批请求通知（HITL，壳侧发送）：应用在后台时把审批顶到通知栏，
-         * 批准/拒绝不用进 App。前台不发 —— 卡片就在屏幕上，通知是打扰
-         * （判定在 ChatViewModel.maybeNotifyApproval）。
-         *
-         * 渠道用 IMPORTANCE_HIGH：审批挂着内核就停在那等（15 分钟超时），
-         * 锁屏/走路的人必须被 heads-up 打到，DEFAULT 的静默横幅等于没发。
-         * 通知 tag 用 approval_id —— 子智能体并行委派会同时挂多张卡，逐条可撤。
-         *
-         * action 发广播给 [ApprovalReceiver] 而不是返回 Activity：后台不能启
-         * Activity，决定走已连的 WS（LiveTransport），Activity 不需要在场。
-         * setAutoCancel(false)：点正文进 App 看了没决定又退出的话，审批确实
-         * 还挂着，通知必须还在 —— 取消只走代码路径（决定/解决/超时/断线/销毁）。
+         * 应用在后台时通过 HIGH 渠道投递待审批通知（按 `card.id` 打 tag 隔离多并发卡），
+         * 按钮经 [ApprovalReceiver] 走当前活动 WS 提交决定，仅由代码路径显式撤销。
          */
         fun postApprovalNotification(
             context: android.content.Context,
@@ -460,7 +416,6 @@ class CoreService : LifecycleService() {
                 )
                 val text = card.action.ifBlank { card.tool } +
                     (card.subagentId?.let { " · 子任务 $it" } ?: "")
-                // 展开后给 reason + detail 全文，diff 太大塞通知会截断成乱块，不放
                 val big = listOf(text, card.reason, card.detail)
                     .filter { it.isNotBlank() }
                     .joinToString("\n")
@@ -481,13 +436,11 @@ class CoreService : LifecycleService() {
                     .addAction(android.R.drawable.ic_menu_close_clear_cancel, "拒绝", decide(false, 6))
                     .setAutoCancel(false)
                     .build()
-                // requestCode 5/6/4 与前台通知（0/1）、停止（2）、完成通知（3）错开：
-                // 同 requestCode 的 PendingIntent 会被 UPDATE_CURRENT 互相覆盖
+                // requestCode 需与其它 PendingIntent 错开，避免 UPDATE_CURRENT 互相覆盖
                 mgr.notify(card.id, APPROVAL_NOTIF_ID, notif)
             }
         }
 
-        /** 撤掉某一条审批通知（tag=approval_id，与 postApprovalNotification 成对）。 */
         fun cancelApprovalNotification(context: android.content.Context, approvalId: String) {
             runCatching {
                 context.getSystemService(NotificationManager::class.java)
@@ -495,37 +448,24 @@ class CoreService : LifecycleService() {
             }
         }
 
-        /** 撤掉全部审批通知：断线（服务端 pending 失效）/ ViewModel 销毁时调用。 */
         fun cancelAllApprovalNotifications(context: android.content.Context) {
             runCatching {
                 val mgr = context.getSystemService(NotificationManager::class.java) ?: return
-                // cancel(id) 不带 tag 撤不掉带 tag 的通知：逐条按各自 tag 撤
                 mgr.activeNotifications
                     .filter { it.id == APPROVAL_NOTIF_ID }
                     .forEach { mgr.cancel(it.tag, it.id) }
             }
         }
     }
-
 }
 
-/** 前台常驻通知正文，供 onStartCommand 与状态流收集器共用同一状态映射，避免回前台覆写成「启动中」。 */
 internal fun notificationTextFor(state: KernelState): String = when (state) {
     is KernelState.Starting -> "内核启动中…"
     is KernelState.Ready -> "内核运行中 · 127.0.0.1:${state.port}"
     is KernelState.Failed -> "内核异常：${state.reason.take(60)}"
 }
 
-/**
- * 当前活动网络的 DNS 服务器地址。
- *
- * 只取第一个 IPv4：IPv6 的 `hostAddress` 带 `%wlan0` 作用域后缀，
- * Go 的 net.JoinHostPort 拼出来不是合法地址；DNS 走 IPv4 已经够用。
- *
- * 放在顶层而不是 CoreService 内部：调用点在 `ProcessBuilder.apply {}` 里，
- * 那里的 receiver 是 ProcessBuilder，访问外部类成员会报
- * 「Outer class ... cannot be used as receiver」。
- */
+/** 获取首个 IPv4 DNS 地址（过滤带接口作用域后缀的 IPv6 地址，避免内核拼地址报错）。 */
 private fun systemDns(service: android.app.Service): String? = runCatching {
     val cm = service.getSystemService(android.net.ConnectivityManager::class.java) ?: return null
     val net = cm.activeNetwork ?: return null

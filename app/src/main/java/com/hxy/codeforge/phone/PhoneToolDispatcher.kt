@@ -161,9 +161,7 @@ object PhoneToolDispatcher {
 
     fun isServerRunning(): Boolean = server.isRunning
 
-    /**
-     * 核心工具路由。在真机执行全量策略检查与能力分发。
-     */
+    /** 核心工具路由，执行全量策略检查与能力分发。 */
     suspend fun dispatch(toolName: String, args: JSONObject): PhoneMcpServer.ToolCallOutcome {
         val ctx = PhoneRuntime.appContext
             ?: return fail("宿主上下文尚未初始化")
@@ -292,7 +290,7 @@ object PhoneToolDispatcher {
         "screen_analyze",
     )
 
-    // ---------------------------------------------------------------- 具体工具实现
+    // 具体工具实现
 
     private fun executeTaskControl(args: JSONObject): PhoneMcpServer.ToolCallOutcome {
         val action = args.optString("action").lowercase().trim()
@@ -1349,7 +1347,7 @@ object PhoneToolDispatcher {
         )
     }
 
-    // ---------------------------------------------------------------- 序列化与辅助
+    // 序列化与辅助
 
     private fun snapshotToJson(snap: ScreenSnapshot): JSONObject {
         val nodesArr = JSONArray()

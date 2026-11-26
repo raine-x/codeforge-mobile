@@ -27,7 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * 配色对齐 Claude 客户端的暖色系：
+ * 暖米色调品牌配色体系：
  * 背景是米白（不是纯白），主色是陶土橘，文字近黑偏暖。
  * 表面层次靠「背景 → 卡片 → 灰胶囊」三级暖灰拉开，不靠阴影。
  */
@@ -95,8 +95,8 @@ private val DarkColors = darkColorScheme(
 /**
  * 字体：正文用系统无衬线，展示性文本（问候语、助手回复、标题）用衬线。
  *
- * 不引入第三方字体 —— 中文衬线由系统 Noto Serif 承担，与 Claude 客户端
- * 的衬线观感一致；代码与工具输出用等宽。
+ * 不引入第三方字体 —— 中文衬线由系统 Noto Serif 承担，提供舒适清晰的
+ * 展示阅读体验；代码与工具输出用等宽。
  */
 private val AppTypography = Typography().let { base ->
     base.copy(
@@ -145,7 +145,6 @@ fun CodeForgeTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit,
 ) {
-    // B4 深色手动切换：设置页三档（跟随系统/浅色/深色）覆盖系统取值
     val dark = when (com.hxy.codeforge.ui.settings.AppSettings.darkMode.value) {
         1 -> false
         2 -> true
@@ -158,33 +157,12 @@ fun CodeForgeTheme(
     )
 }
 
-// ---------------------------------------------------------------- 自定义背景
-
-/**
- * 当前生效的「背景上的文字色」（null = 用配色方案自己的取值）。
- *
- * 由 [AppBackground] 提供：需要直接压在背景图上画字的组件可以读它，
- * 不必各自再算一遍亮度。
- */
+/** 当前背景上的文字颜色覆盖值（null 表示跟随配色方案）。 */
 val LocalAppTextColor = staticCompositionLocalOf<Color?> { null }
 
 /**
- * 外观层入口：背景图 + 模糊 + 亮度 + 文字色。
- *
- * 由 B 在 AppRoot 里包住整棵界面（`AppBackground { ... }`），本文件不碰 AppRoot。
- *
- * 规则（对应用户要求）：
- *  - 背景图：从 [AppSettings.backgroundImagePath] 读本地文件，等比裁满；
- *  - 模糊：`Modifier.blur`，RenderEffect 需要 API 31+，低版本系统级忽略（不崩、不报错）；
- *  - 亮度：低于 100 叠黑、高于 100 叠白 —— 用覆盖层而不是调色板，
- *    因为图片是位图、没法像矢量那样改色；
- *  - 文字色：手动设置的优先；没设就按**背景有效亮度**自动判定，
- *    亮度低（< 0.46）切白字，其余保持主题默认（浅色主题的本就是近黑）。
- *    判定用「原图平均亮度 × 亮度百分比」，不是屏幕像素采样 —— 屏幕采样拿不到
- *    模糊后的值，且每帧重算代价太大。
- *
- * 设了背景图时，surface 角色会带一点透明度，让背景透出来；同时若背景偏暗，
- * 整套配色切到深色方案 —— 否则浅色卡面 + 白字会变成白底白字。
+ * 外观背景层入口：加载自定义背景图并应用模糊、亮度与自适应文字色。
+ * 按原图平均亮度 × 亮度百分比判定有效亮度（< 0.46 切白字并启用深色配色）。
  */
 @Composable
 fun AppBackground(

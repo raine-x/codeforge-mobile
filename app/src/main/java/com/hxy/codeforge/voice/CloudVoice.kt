@@ -158,7 +158,7 @@ class CloudVoiceEngine(private val context: Context) {
         scope.cancel()
     }
 
-    // ---------------------------------------------------------------- 采集
+    // 采集
 
     private fun captureLoop(rec: AudioRecord, file: File, bufferSize: Int) {
         val buf = ByteArray(bufferSize)
@@ -206,7 +206,7 @@ class CloudVoiceEngine(private val context: Context) {
         }
     }
 
-    // ---------------------------------------------------------------- 上传
+    // 上传
 
     private suspend fun transcribe(file: File) {
         try {
@@ -249,7 +249,7 @@ class CloudVoiceEngine(private val context: Context) {
         }
     }
 
-    // ---------------------------------------------------------------- 工具
+    // 工具
 
     private fun emitError(message: String) {
         main.post { onError?.invoke(message) }

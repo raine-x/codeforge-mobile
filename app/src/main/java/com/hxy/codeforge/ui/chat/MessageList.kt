@@ -37,6 +37,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
@@ -65,29 +66,10 @@ import kotlinx.coroutines.launch
  *    根本滚不动，任何「是否到底」的判断都没有意义，一律视为在底部；
  *  - 用户**手指拖动**即停止自动跟随（[autoFollow] = false），不管当时是否在底部；
  *  - 拖动结束且回到底部 → 恢复跟随；
- *  - 流式输出增长时，只在跟随状态下滚动，且用**瞬时**滚动（`scrollToItem`），
- *    因为每 20ms 一次动画会互相打断、看起来在抖；
- *  - 新消息到达时：跟随时用动画滚到底；不跟随时**不动视口**，只点亮「回到最新」
- *    按钮（主色描边）提示有新内容；
- *  - 出现审批卡片时**强制**滚到底 —— 它阻塞 agent，看不到就没法继续。
- *
- * ## 为什么末尾要放一个 spacer item
- *
- * `scrollToItem(lastIndex)` 会把最后一项的**顶部**对齐视口顶部。若最后一条
- * 消息比一屏还高（长代码块、长 diff），这样滚完还是看不到它的结尾。
- * 末尾垫一个 1dp 的哨兵 item 再滚到它，才是真正的「滚到底」；它**只是哨兵**，
- * 不撑高内容，所以回复不会被拉到屏幕顶部去。
- *
- * ## 探索分组为什么在列表层做
- *
- * 内核事件里「一次工具调用 = 一条助手消息」的情况仍然存在（segments 为空）。
- * 只把连续只读工具收成一行必须在**跨消息**的顺序上判断，所以这里先把
- * `messages` 摊成 [FeedRow]：连续「只有只读工具、没有正文/思考」的消息合并成一个
- * [FeedRow.Explore]。合并只在相邻消息之间发生，遇到任何正文消息立刻断开 ——
- * 用户永远知道「这些工具是在回答哪句话时跑的」。
- *
- * 空状态不在这里渲染：外层（AppRoot）用 AnimatedContent 在「问候页 ↔ 列表」
- * 之间做交叉淡入，这里只负责有内容的情况。
+ *  - 流式增高时仅在跟随状态使用瞬时 `scrollToItem`，避免高频动画互相打断抖动；
+ *  - 新消息到达时若未跟随则不动视口，只高亮「回到最新」按钮；出现审批卡片时强制滚到底；
+ *  - 末尾放置 1dp 哨兵 item，确保长消息的底部能完整滚入视口（见 P-002）；
+ *  - 将连续纯只读工具消息跨消息折叠为 [FeedRow.Explore]（遇正文立即断开）。
  */
 @Composable
 fun MessageList(
@@ -202,6 +184,20 @@ fun MessageList(
         }
     }
 
+    // 帧节奏平滑吐字与表格动态舒展可能在末包抵达后的几帧继续增高气泡，持续追踪布局底边防止末行溢出视口外
+    LaunchedEffect(autoFollow, lastMessage?.streaming, itemCount) {
+        if (!autoFollow || lastMessage?.streaming != true) return@LaunchedEffect
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            Triple(info.totalItemsCount, last?.index ?: -1, (last?.offset ?: 0) + (last?.size ?: 0))
+        }.collect {
+            if (listState.canScrollForward) {
+                listState.scrollToItem((itemCount - 1).coerceAtLeast(0))
+            }
+        }
+    }
+
     // 审批卡出现：无条件滚到底，否则用户根本不知道 agent 在等他
     LaunchedEffect(approvals.size) {
         if (approvals.isNotEmpty()) {
@@ -247,9 +243,7 @@ fun MessageList(
                         val isLast = row.index == messages.lastIndex
                         MessageBubble(
                             message = msg,
-                            // 操作栏只在 agent loop 收尾后、且只挂在最后一条助手消息上。
-                            // 之前每个中间轮次（每次工具调用一条）都会挂一排，一屏能出现
-                            // 三四组「复制/分享/点赞」，噪音很大。
+                            // 仅在回合收尾的最后一条助手消息下方挂载操作栏
                             showActions = msg.role == MsgRole.Assistant &&
                                 !msg.streaming &&
                                 isLast &&
@@ -264,8 +258,7 @@ fun MessageList(
                             onEditResend = onEditResend,
                             onResendUser = onResendUser,
                             onFetchOutput = onFetchOutput,
-                            // 不用 animateItem：键盘开合/流式增高的列表重排会被它
-                            // 当成位移动画（淡出+弹簧），真机上表现为整屏闪烁
+                            // 禁用 animateItem，防止键盘开合或流式增高重排时触发位移动画闪烁
                             modifier = modifier,
                         )
                     }
@@ -288,16 +281,13 @@ fun MessageList(
                 }
             }
 
-            // 等待 AI 首段输出的真空期提示（发送后至首字/思考/工具到达前）
             if (effectivePending.isNotEmpty()) {
                 item(key = "__pending__") {
                     PendingResponseRow(stage = effectivePending)
                 }
             }
 
-            // 尾部哨兵：1dp，只用于让 scrollToItem 能滚到「最后一条的结尾」。
-            // 之前这里撑到 0.92 屏高，导致内容不足一屏时也能被拉出近一屏空白，
-            // 回复因此能被拉到屏幕顶部 —— 用户明确不认可这种布局。
+            // 1dp 尾部哨兵，供 scrollToItem 滚到最后一条结尾且不留大段空白（见 P-002）
             item(key = "__tail__") {
                 Box(
                     modifier = Modifier
@@ -411,7 +401,7 @@ private fun PendingResponseRow(stage: String) {
     }
 }
 
-// ---------------------------------------------------------------- 行模型
+// 行模型
 
 /**
  * 列表行。两类合并：

@@ -30,23 +30,12 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
- * 手绘图形库：火焰 Logo（轮廓自动描摹自系统 🔥 emoji，见 FlameMark 注释）与全套线性图标。
- *
- * 不引 material-icons（约 10 MB）—— 全部图标用 24 单位坐标系手绘，
- * 统一 1.7dp 圆头描边，观感与 Claude 的 outline 图标一致。
+ * 手绘线性图标库与火焰 Logo（24 单位坐标系、1.7dp 圆头描边，免除 material-icons 依赖体积）。
  */
 
 /**
- * 火焰标志：轮廓自动描摹自系统 🔥 emoji 的真实剪影（2026-10-25 定稿，
- * 描摹管线 = 位图 alpha → 像素裂缝跟踪 → RDP → Catmull-Rom，1.10× 横向适配，
- * 详见改动历史），内部三笔舌焰 + 三颗火星，替换早期均匀放射的星芒。
- *
- * [animated] 复刻定稿的燃烧动效：三焰绕各自根部异相摇曳 + 明暗闪烁，
- * 整体呼吸（1↔1.03）+ ±1.2° 微摆，火星上飘淡出；轮廓几乎静止只做极缓胀缩。
- * [color] 陶土橘主色（轮廓 / 中焰 / 右焰 / 两颗火星），[deepColor] 左焰深色。
- *
- * 全部几何定义在 200 单位坐标系里，与启动图标 res/drawable/ic_launcher_foreground.xml 同源，
- * 两处路径务必同步修改。
+ * 应用火焰 Logo（200 单位坐标系，需与 `ic_launcher_foreground.xml` 轮廓保持同步）。
+ * [animated] 开启三焰异相摇曳、微摆与火星上飘动画；[color] 为主色，[deepColor] 为左焰深色。
  */
 @Composable
 fun FlameMark(
@@ -181,10 +170,7 @@ fun FlameMark(
     }
 }
 
-/**
- * 轮廓 d 值：从系统 🔥 emoji 位图自动描摹（2026-10-25）。
- * 机器输出，仅含绝对 M/C/Z 指令；与 ic_launcher_foreground.xml 同源，两处同步修改。
- */
+/** 轮廓 SVG 路径（200 单位坐标系，与 `ic_launcher_foreground.xml` 保持同步）。 */
 private const val FLAME_OUTLINE_D =
     "M43.8,117.5C43.7,121.1 44.0,124.3 44.5,127.6C45.1,130.9 45.9,134.0 47.1,137.1C48.3,140.2 50.0,143.5 51.8,146.3" +
         "C53.6,149.2 55.7,151.9 57.9,154.2C60.1,156.6 62.3,158.5 65.1,160.3C67.8,162.2 71.0,163.9 74.3,165.5" +
@@ -274,7 +260,7 @@ enum class Glyph {
     Sidebar,
 }
 
-/** 按 Claude outline 风格绘制一枚图标（圆头描边，线宽随尺寸微调）。 */
+/** 按统一极简线性风格绘制一枚图标（圆头描边，线宽随尺寸微调）。 */
 @Composable
 fun GlyphIcon(
     glyph: Glyph,

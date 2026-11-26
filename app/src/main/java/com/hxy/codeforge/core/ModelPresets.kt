@@ -1,12 +1,8 @@
 package com.hxy.codeforge.core
 
 /**
- * 常见国内外开闭源模型的上下文规格内置表与默认兜底。
- *
- * 解决「新增/探测模型时不填 ctx_in 就传 0，导致内核退回 120K 默认预算且界面提示未声明」的问题：
- * - 命中内置规则时自动回填已知输入/输出上限（以及图片/视频多模态标记）；
- * - 输出上限未公开的条目设为 `0`（不强行发 `ctx_out`，只补足输入上限与能力）；
- * - 未命中任何规则的未知模型兜底给至少 [MIN_DEFAULT_CTX_IN]（128K），避免以 0 入库。
+ * 常见模型的上下文规格内置预设表与 128K 默认兜底。
+ * 未公开输出上限的条目设为 `0`（不覆盖服务端默认）。
  */
 data class ModelSpecPreset(
     val ctxIn: Int,
@@ -24,10 +20,9 @@ object ModelPresets {
         val spec: ModelSpecPreset,
     )
 
-    // 重要：按「长串/具体后缀优先，短前缀/家族兜底在后」排序，
-    // 例如 glm-5.3-flash 必须在 glm-5.3 与 glm-5 之前，避免短串抢先命中。
+    // 按长串/具体后缀优先排序，避免短前缀抢先命中
     private val rules: List<Rule> = listOf(
-        // -------- OpenAI --------
+        // OpenAI
         Rule(
             listOf("gpt-6-astra", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-luna"),
             ModelSpecPreset(1_050_000, 128_000, vision = true, video = false),
@@ -40,7 +35,7 @@ object ModelPresets {
         Rule(listOf("gpt-4-turbo"), ModelSpecPreset(128_000, 4_096, vision = true, video = false)),
         Rule(listOf("gpt-oss"), ModelSpecPreset(128_000, 32_768, vision = false, video = false)),
 
-        // -------- Anthropic / Claude --------
+        // Anthropic / Claude
         Rule(
             listOf(
                 "claude-fable-5-2", "claude-fable-5.2",
@@ -75,7 +70,7 @@ object ModelPresets {
         Rule(listOf("claude-3-5", "claude-3.5"), ModelSpecPreset(200_000, 8_192, vision = true, video = false)),
         Rule(listOf("claude"), ModelSpecPreset(200_000, 16_384, vision = true, video = false)),
 
-        // -------- Google / Gemini & Gemma --------
+        // Google / Gemini & Gemma
         Rule(
             listOf("gemini-4-carbon", "gemini-4-argon", "gemini-4-hydrogen", "gemini-4"),
             ModelSpecPreset(1_000_000, 65_536, vision = true, video = true),
@@ -99,7 +94,7 @@ object ModelPresets {
         ),
         Rule(listOf("gemma-3"), ModelSpecPreset(128_000, 16_384, vision = true, video = false)),
 
-        // -------- DeepSeek --------
+        // DeepSeek
         Rule(listOf("deepseek-flash"), ModelSpecPreset(1_000_000, 384_000, vision = true, video = false)),
         Rule(listOf("deepseek-v4-pro", "deepseek-v4"), ModelSpecPreset(1_000_000, 384_000, vision = false, video = false)),
         Rule(listOf("deepseek-reasoner", "deepseek-r1"), ModelSpecPreset(128_000, 64_000, vision = false, video = false)),
@@ -107,7 +102,7 @@ object ModelPresets {
         Rule(listOf("deepseek-coder"), ModelSpecPreset(128_000, 16_384, vision = false, video = false)),
         Rule(listOf("deepseek"), ModelSpecPreset(128_000, 16_384)),
 
-        // -------- Moonshot / Kimi --------
+        // Moonshot / Kimi
         Rule(
             listOf("kimi-k3.1-pro-highspeed", "kimi-k3.1-pro", "kimi-k3"),
             ModelSpecPreset(1_048_576, 1_048_576, vision = true, video = true),
@@ -119,7 +114,7 @@ object ModelPresets {
         Rule(listOf("kimi-k2", "kimi"), ModelSpecPreset(128_000, 32_768)),
         Rule(listOf("moonshot-v1-128k", "moonshot"), ModelSpecPreset(128_000, 16_384)),
 
-        // -------- 智谱 / GLM --------
+        // 智谱 / GLM
         Rule(
             listOf("glm-5.3-flashx-legal", "glm-5.3-flashx", "glm-5.3-flash"),
             ModelSpecPreset(1_000_000, 128_000, vision = true, video = true),
@@ -142,7 +137,7 @@ object ModelPresets {
         Rule(listOf("glm-4v"), ModelSpecPreset(128_000, 16_000, vision = true, video = true)),
         Rule(listOf("glm-4", "glm-z1", "glm"), ModelSpecPreset(128_000, 16_000, vision = false, video = false)),
 
-        // -------- MiniMax --------
+        // MiniMax
         Rule(listOf("minimax-m3.1-flash-preview"), ModelSpecPreset(1_000_000, 0, vision = true, video = true)),
         Rule(listOf("minimax-m3.1-flash", "minimax-m3"), ModelSpecPreset(1_000_000, 512_000, vision = true, video = true)),
         Rule(listOf("minimax-m2.7"), ModelSpecPreset(200_000, 128_000, vision = false, video = false)),
@@ -153,7 +148,7 @@ object ModelPresets {
         Rule(listOf("minimax-m1"), ModelSpecPreset(1_000_000, 64_000, vision = false, video = false)),
         Rule(listOf("minimax", "abab6.5"), ModelSpecPreset(200_000, 32_768)),
 
-        // -------- Meta / Muse & Llama --------
+        // Meta / Muse & Llama
         Rule(listOf("muse-ember-1.0", "muse-ember"), ModelSpecPreset(1_048_576, 524_288, vision = true, video = true)),
         Rule(
             listOf(
@@ -170,17 +165,17 @@ object ModelPresets {
         Rule(listOf("llama-4-scout"), ModelSpecPreset(1_000_000, 32_768, vision = true, video = false)),
         Rule(listOf("llama-4", "llama-3.3", "llama-3.1", "llama"), ModelSpecPreset(128_000, 16_384)),
 
-        // -------- xAI Grok --------
+        // xAI Grok
         Rule(listOf("grok-4"), ModelSpecPreset(256_000, 64_000, vision = true, video = false)),
         Rule(listOf("grok-3", "grok"), ModelSpecPreset(131_072, 32_768, vision = true, video = false)),
 
-        // -------- 阿里 Qwen / 通义千问 --------
+        // 阿里 Qwen / 通义千问
         Rule(listOf("qwen-long"), ModelSpecPreset(1_000_000, 32_768, vision = false, video = false)),
         Rule(listOf("qwen3-coder", "qwen3-max", "qwen3"), ModelSpecPreset(262_144, 32_768)),
         Rule(listOf("qwen-vl", "qvq", "qwen2.5-vl"), ModelSpecPreset(128_000, 16_384, vision = true, video = true)),
         Rule(listOf("qwen-max", "qwen-plus", "qwen-turbo", "qwen2.5", "qwq", "qwen"), ModelSpecPreset(131_072, 16_384)),
 
-        // -------- 百度 / 腾讯 / 字节 / 阶跃 / 零一 / 小米 / Mistral --------
+        // 百度 / 腾讯 / 字节 / 阶跃 / 零一 / 小米 / Mistral
         Rule(listOf("doubao-seed-1.6", "doubao-seed-1-6", "doubao-pro-256k"), ModelSpecPreset(256_000, 32_768, vision = true)),
         Rule(listOf("doubao-1.5", "doubao-1-5", "doubao"), ModelSpecPreset(128_000, 16_384)),
         Rule(listOf("ernie-4.5", "ernie-x1", "ernie"), ModelSpecPreset(128_000, 16_384)),

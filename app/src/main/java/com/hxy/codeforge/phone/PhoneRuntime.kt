@@ -7,14 +7,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import java.io.File
 
 /**
- * 手机操控模块的进程级运行时持有者（遵循 AGENTS §2.3，不依赖 Compose/ViewModel）。
+ * 手机操控模块的进程级运行时持有者（纯状态容器，不依赖 Compose/ViewModel）。
  *
  * 维护：
  * - [appContext]：Application 上下文；
- * - [activeWorkspace]：当前会话对应的工作区目录（产物优先落进 `<workspace>/phone_artifacts/`）；
- * - [visionModelConfig]：可选视觉识别模型配置（来自内核生效模型 + 供应商密钥）；
+ * - [activeWorkspace]：当前会话工作区目录（产物优先落进 `<workspace>/phone_artifacts/`）；
+ * - [visionModelConfig]：可选视觉识别模型配置（来自内核生效模型与供应商密钥）；
  * - [mcpStatus]：内置 HTTP MCP 服务的端口与端点状态；
- * - [onStopAgentTurn]：用户在设置或悬浮条点「立即停止」时同步中止内核当前回合。
+ * - [onStopAgentTurn]：用户在界面点击停止时同步中止内核当前回合。
  */
 object PhoneRuntime {
 

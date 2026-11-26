@@ -108,7 +108,7 @@ fun KernelSettingsSection(vm: ChatViewModel) {
         modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
     )
 
-    // ---------------- 重试机制 ----------------
+    // 重试机制
     SettingsLabel("重试机制")
     Text(
         text = "上游限流/抖动时自动重试；间隔模式 backoff = 1×→2×→3×→6× 封顶。",
@@ -179,11 +179,10 @@ fun KernelSettingsSection(vm: ChatViewModel) {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 上下文压缩 ----------------
+    // 上下文压缩
     SettingsLabel("上下文")
     if (usage != null) {
-        // 真实窗口（模型库 ctx_in）与内核压缩预算分开显示：
-        // 窗口 0 时内核退回默认预算（实测 120000），这正是「1M 模型 12 万就压缩」的原因
+        // 窗口为 0 时内核按默认预算（120000）执行压缩
         val windowText = if (usage.window > 0) {
             "${usage.window} tokens 窗口，压缩线 ${usage.budget}"
         } else {
@@ -242,7 +241,7 @@ fun KernelSettingsSection(vm: ChatViewModel) {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 子智能体策略 ----------------
+    // 子智能体策略
     val policy = state.subagentPolicy
     SettingsLabel("子智能体")
     if (policy == null) {
@@ -261,7 +260,7 @@ fun KernelSettingsSection(vm: ChatViewModel) {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 权限三档 ----------------
+    // 权限三档
     SettingsLabel("权限")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(
@@ -300,7 +299,7 @@ fun KernelSettingsSection(vm: ChatViewModel) {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 智能体（步数上限） ----------------
+    // 智能体（步数上限）
     SettingsLabel("智能体")
     var maxSteps by rememberSaveable(cfg.maxSteps) {
         mutableStateOf(cfg.maxSteps.takeIf { it > 0 }?.toString() ?: "")
@@ -322,7 +321,7 @@ fun KernelSettingsSection(vm: ChatViewModel) {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 通知 & 工作区 ----------------
+    // 通知 & 工作区
     SettingsLabel("通知与工作区")
     var notifyOn by rememberSaveable { mutableStateOf(AppSettings.notifyEnabled.value) }
     SwitchRow(
@@ -339,7 +338,7 @@ fun KernelSettingsSection(vm: ChatViewModel) {
     )
 }
 
-// ---------------------------------------------------------------- 记忆
+// 记忆
 
 /**
  * 记忆管理（独立子页）。
@@ -463,7 +462,7 @@ fun MemorySection(vm: ChatViewModel) {
     }
 }
 
-// ---------------------------------------------------------------- 技能
+// 技能
 
 /**
  * 技能独立页。
@@ -545,7 +544,7 @@ fun SkillsSection(vm: ChatViewModel) {
     }
 }
 
-// ---------------------------------------------------------------- 内置插件
+// 内置插件
 
 /**
  * 内置插件页。
@@ -724,7 +723,7 @@ private fun builtinSubtitle(purpose: String, whenToUse: String): String {
     return if (parts.isEmpty()) "内核未提供用途说明" else parts.joinToString("；")
 }
 
-// ---------------------------------------------------------------- MCP
+// MCP
 
 /**
  * MCP 服务页（完整表单）。
@@ -1076,7 +1075,7 @@ fun McpPluginsSection(vm: ChatViewModel) {
     }
 }
 
-// ---------------------------------------------------------------- 子件
+// 子件
 
 @Composable
 private fun SettingsLabel(text: String) {

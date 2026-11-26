@@ -1,16 +1,8 @@
 package com.hxy.codeforge.render
 
 /**
- * `libopenrender.so` 的最小 JNI 封装。
- *
- * 与上游 `ai.openrender.NativeEngine` 等价，但包名换成 CodeForge 自己的命名空间
- * （Rust 侧对应 `app_jni.rs` 导出的 `Java_app_codeforge_render_OpenRenderNative_*`）。
- *
- * 引擎是**增量**的：每次只喂入新增文本，返回一个 JSON delta；宿主按 `block_id`
- * 应用 put/append/close/remove。这正是替换旧「每 20ms 全量重解析」渲染器的原因。
- *
- * 加载失败（16KB 页、ABI 不符、库缺失）时 [available] 为 false 且不抛异常 ——
- * 与 P-016 同款处理：原生库失败一次后本进程内不再尝试，界面走纯文本兜底。
+ * `libopenrender.so` 的最小 JNI 封装：增量喂入文本并输出 IR delta。
+ * 原生库加载失败时 [available] 置 false，界面退回纯文本兜底（P-016）。
  */
 internal class OpenRenderNative(
     throttleMs: Int = 0,
@@ -32,17 +24,10 @@ internal class OpenRenderNative(
         if (handle != 0L) nativeReset(handle)
     }
 
-    /**
-     * 开启公式 PNG 渲染（RaTeX，内嵌 KaTeX 字体，离线、无 WebView）。
-     *
-     * [cacheDir] 用来落地 Unicode 回退字体：RaTeX 内嵌的 KaTeX 字体只覆盖拉丁与
-     * 数学符号，公式里的中文需要回退字体，而 Android 上没有可发现的系统字体
-     * （见 `app_jni.rs` 的 `install_unicode_font`）。传应用 cacheDir 即可。
-     */
+    /** 开启公式 PNG 渲染（RaTeX）；[cacheDir] 用于缓存 Unicode 回退字体。 */
     fun useRatex(fontSize: Float, devicePixelRatio: Float, cacheDir: String): Boolean =
         if (handle != 0L) nativeUseRatex(handle, fontSize, devicePixelRatio, cacheDir) else false
 
-    /** 解析开关与上限；与上游 `configure()` 字段一致。 */
     fun configure(
         parserFlags: Int = PARSE_DEFAULT,
         softBreakAsSpace: Boolean = false,
@@ -97,9 +82,8 @@ internal class OpenRenderNative(
 
     companion object {
         /**
-         * 进程级可用性：`System.loadLibrary` 失败后再引用该类会抛
-         * NoClassDefFoundError（LinkageError 家族），所以失败一次就判定本进程
-         * 不可用，后续直接走纯文本兜底，绝不重试。
+         * System.loadLibrary 失败后类初始化状态会被标记为失败，后续引用会抛 NoClassDefFoundError；
+         * 因此只尝试加载一次并做进程级降级。
          */
         val available: Boolean = try {
             System.loadLibrary("openrender")

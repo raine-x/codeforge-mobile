@@ -7,6 +7,8 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.VideoView
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -45,6 +47,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -76,6 +79,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.TimeUnit
 import kotlin.math.roundToInt
+import org.json.JSONObject
 
 /**
  * 消息正文渲染入口。
@@ -88,7 +92,7 @@ import kotlin.math.roundToInt
  * ```svg / ```image / ```video / ```audio；普通 markdown 与公式不再经过 WebView。
  */
 
-// ---------------------------------------------------------------- 正文入口
+// 正文入口
 
 /**
  * 消息正文块序列渲染。[caret] 为 true 表示仍处于流式输出：由引擎增量解析，
@@ -121,17 +125,36 @@ internal fun StreamingTailBlock(text: String) {
     )
 }
 
-// ---------------------------------------------------------------- 公共件
+/** 流式 SVG 生成占位：生成期间隐藏原始 XML 源码刷屏，完成后直接切换为无框矢量图。 */
+@Composable
+internal fun SvgLoadingBlock(modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            color = Clay,
+            strokeWidth = 2.dp,
+        )
+        Text(
+            text = "正在绘制矢量图…",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+// 公共件
 
 private val blockCardShape = RoundedCornerShape(12.dp)
 
-/**
- * 当前消息所属工作区的根（绝对路径），由 AppRoot 在消息区外提供。
- *
- * 附件在消息里存的是**工作区相对路径**（`attachments/xxx`，内核 history 的原样），
- * 而工作区可能是项目目录、也可能是应用私有 inbox —— 不能用固定的
- * `filesDir/workspace` 去猜（问题 1：发送后缩略图一直转圈就是猜错了根）。
- */
+/** 当前消息所属工作区根目录，由 AppRoot 注入以正确解析相对路径附件。 */
 val LocalAttachmentRoot = androidx.compose.runtime.staticCompositionLocalOf { "" }
 
 /** 播放器/读取器用的真实数据源：http(s) 原样，其余解析到工作区真实文件。 */
@@ -211,7 +234,7 @@ private sealed interface ImgState {
     data object Err : ImgState
 }
 
-// ---------------------------------------------------------------- SVG
+// SVG
 
 /** 判定路径或 URI 是否为 SVG 文件或 `data:image/svg+xml` 内联矢量图。 */
 fun isSvgPathOrDataUri(url: String): Boolean {
@@ -260,7 +283,8 @@ internal suspend fun loadMediaSvg(
  * 规范化 SVG 源码以确保在响应式容器中完整等比缩放：
  * - 截取 `<svg ...>...</svg>` 主体（剥除前置 `<?xml ...?>` 或 `<!DOCTYPE ...>`）；
  * - 若根 `<svg>` 标签未声明 `viewBox`，但带有数值型 `width` 与 `height`，自动补齐 `viewBox="0 0 w h"`，
- *   防止 CSS `width:100%;height:100%` 下只拉伸视口而不缩放坐标系导致图形被裁切。
+ *   防止 CSS `width:100%;height:100%` 下只拉伸视口而不缩放坐标系导致图形被裁切；
+ * - 补齐 `viewBox` 后剥除根 `style` 中的固定像素 `width`/`height` 锁定，使 `body>svg` 流体适配屏宽。
  */
 internal fun normalizeSvgForRender(rawSvg: String): String {
     val trimmed = rawSvg.trim()
@@ -274,14 +298,15 @@ internal fun normalizeSvgForRender(rawSvg: String): String {
     }
     val tagEnd = core.indexOf('>')
     if (tagEnd < 0) return core
-    val openTag = core.substring(0, tagEnd + 1)
+    var openTag = core.substring(0, tagEnd + 1)
 
+    val hasViewBox = Regex("""(?<![-\w])viewBox\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(openTag)
     val extraAttrs = buildString {
         // 裸 SVG 常省略 xmlns；注入默认 SVG 命名空间以保证内嵌与独立解析一致
         if (!Regex("""(?<![-\w])xmlns\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(openTag)) {
             append(""" xmlns="http://www.w3.org/2000/svg"""")
         }
-        if (!Regex("""(?<![-\w])viewBox\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(openTag)) {
+        if (!hasViewBox) {
             val dims = parseSvgRootDimensions(openTag)
             if (dims != null) {
                 val (w, h) = dims
@@ -291,8 +316,47 @@ internal fun normalizeSvgForRender(rawSvg: String): String {
             }
         }
     }
-    if (extraAttrs.isEmpty()) return core
-    return openTag.substring(0, 4) + extraAttrs + openTag.substring(4) + core.substring(tagEnd + 1)
+    if (hasViewBox || extraAttrs.contains("viewBox=")) {
+        openTag = stripFixedDimensionsFromRootStyle(openTag)
+    }
+    val patchedOpen = if (extraAttrs.isEmpty()) {
+        openTag
+    } else {
+        openTag.substring(0, 4) + extraAttrs + openTag.substring(4)
+    }
+    return patchedOpen + core.substring(tagEnd + 1)
+}
+
+/** 剥除根 `<svg style="...">` 中写死的固定 `width`/`height`（仅在已有 `viewBox` 时调用，避免干扰 CSS 等比适配）。 */
+private fun stripFixedDimensionsFromRootStyle(openTag: String): String {
+    val styleRegex = Regex("""\s*(?<![-\w])style\s*=\s*(["'])([^"']*)\1""", RegexOption.IGNORE_CASE)
+    return styleRegex.replace(openTag) { m ->
+        val quote = m.groupValues[1]
+        val body = m.groupValues[2]
+        val kept = body.split(';')
+            .map { it.trim() }
+            .filter { decl ->
+                if (decl.isEmpty()) return@filter false
+                val prop = decl.substringBefore(':').trim().lowercase()
+                if (prop != "width" && prop != "height") return@filter true
+                val valPart = decl.substringAfter(':', "").trim().lowercase()
+                // 仅保留 100% / auto，移除固定 px 等写死尺寸
+                valPart.endsWith("%") || valPart == "auto"
+            }
+        if (kept.isEmpty()) "" else " style=$quote${kept.joinToString("; ")}$quote"
+    }
+}
+
+private fun parseSvgRootBox(openTag: String): Pair<Float, Float>? {
+    val vbMatch = Regex("""(?<![-\w])viewBox\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(openTag)
+    val vbParts = vbMatch?.groupValues?.get(1)?.trim()?.split(Regex("""[,\s]+"""))
+    if (vbParts != null && vbParts.size == 4) {
+        val vbNum = Regex("""^([0-9]+(?:\.[0-9]+)?)(?:px)?$""", RegexOption.IGNORE_CASE)
+        val w = vbNum.find(vbParts[2])?.groupValues?.get(1)?.toFloatOrNull()
+        val h = vbNum.find(vbParts[3])?.groupValues?.get(1)?.toFloatOrNull()
+        if (w != null && h != null && w > 0f && h > 0f) return w to h
+    }
+    return parseSvgRootDimensions(openTag)
 }
 
 /**
@@ -305,25 +369,22 @@ internal fun svgAspect(svg: String): Float? {
     val tagEnd = svg.indexOf('>', startIdx)
     if (tagEnd < 0) return null
     val openTag = svg.substring(startIdx, tagEnd + 1)
-
-    val vbMatch = Regex("""(?<![-\w])viewBox\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(openTag)
-    val vbParts = vbMatch?.groupValues?.get(1)?.trim()?.split(Regex("""[,\s]+"""))
-    if (vbParts != null && vbParts.size == 4) {
-        val vbNum = Regex("""^([0-9]+(?:\.[0-9]+)?)(?:px)?$""", RegexOption.IGNORE_CASE)
-        val w = vbNum.find(vbParts[2])?.groupValues?.get(1)?.toFloatOrNull()
-        val h = vbNum.find(vbParts[3])?.groupValues?.get(1)?.toFloatOrNull()
-        if (w != null && h != null && w > 0f && h > 0f) return w / h
-    }
-
-    val dims = parseSvgRootDimensions(openTag)
-    return if (dims != null) dims.first / dims.second else null
+    val box = parseSvgRootBox(openTag) ?: return null
+    return box.first / box.second
 }
 
 private fun parseSvgDimNumber(raw: String?): Float? {
     val v = raw?.trim() ?: return null
     if (v.isEmpty() || v.endsWith("%") || v.equals("auto", ignoreCase = true)) return null
+    if (v.startsWith("-")) return null
     val num = Regex("""^([0-9]+(?:\.[0-9]+)?)""").find(v)?.groupValues?.get(1)?.toFloatOrNull()
     return if (num != null && num > 0f) num else null
+}
+
+private fun parseSvgCoordNumber(raw: String?): Float? {
+    val v = raw?.trim() ?: return null
+    if (v.isEmpty() || v.endsWith("%")) return null
+    return Regex("""^(-?[0-9]+(?:\.[0-9]+)?)""").find(v)?.groupValues?.get(1)?.toFloatOrNull()
 }
 
 private fun parseSvgRootDimensions(openTag: String): Pair<Float, Float>? {
@@ -345,24 +406,256 @@ private fun parseSvgRootDimensions(openTag: String): Pair<Float, Float>? {
     return w to h
 }
 
+/**
+ * 判定颜色值是否为「纯白或极浅灰中性底色」（如 `#fff`、`#ffffff`、`#f8fafc`、`white`），
+ * 用于识别模型额外铺上的整卡白底板；深色面板（如 `#0f172a`）或彩色背景返回 false。
+ */
+internal fun isPlainLightNeutralColor(rawColor: String?): Boolean {
+    val s = rawColor?.trim()?.lowercase() ?: return false
+    if (s == "white") return true
+    val (r, g, b) = when {
+        s.startsWith("#") -> {
+            val hex = s.substring(1)
+            when (hex.length) {
+                3 -> {
+                    val r = hex[0].digitToIntOrNull(16) ?: return false
+                    val g = hex[1].digitToIntOrNull(16) ?: return false
+                    val b = hex[2].digitToIntOrNull(16) ?: return false
+                    Triple(r * 17, g * 17, b * 17)
+                }
+                6, 8 -> {
+                    val r = hex.substring(0, 2).toIntOrNull(16) ?: return false
+                    val g = hex.substring(2, 4).toIntOrNull(16) ?: return false
+                    val b = hex.substring(4, 6).toIntOrNull(16) ?: return false
+                    val alpha = if (hex.length == 8) (hex.substring(6, 8).toIntOrNull(16) ?: 255) / 255f else 1f
+                    if (alpha < 0.7f) return false
+                    Triple(r, g, b)
+                }
+                else -> null
+            }
+        }
+        s.startsWith("rgb") -> {
+            val parts = Regex("""rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)(?:\s*,\s*([0-9.]+))?\s*\)""")
+                .matchEntire(s)?.groupValues
+            if (parts != null) {
+                val r = parts[1].toIntOrNull()?.coerceIn(0, 255) ?: return false
+                val g = parts[2].toIntOrNull()?.coerceIn(0, 255) ?: return false
+                val b = parts[3].toIntOrNull()?.coerceIn(0, 255) ?: return false
+                val alpha = parts.getOrNull(4)?.takeIf { it.isNotBlank() }?.toFloatOrNull() ?: 1f
+                if (alpha < 0.7f) return false
+                Triple(r, g, b)
+            } else {
+                null
+            }
+        }
+        else -> null
+    } ?: return false
+    val maxC = maxOf(r, g, b)
+    val minC = minOf(r, g, b)
+    val lum = (0.2126f * r + 0.7152f * g + 0.0722f * b) / 255f
+    return lum >= 0.88f && (maxC - minC) <= 24
+}
+
+/**
+ * 剥离浅色主题下铺在最外层的整卡纯白/浅灰底板（只做渲染 HTML 变换，不改原 SVG 源码文本），
+ * 让函数图像与示意图自然融入宿主暖白或当前浅色主题底色，同时完整保留深色/彩色画板与内部卡片。
+ */
+internal fun stripPlainLightCanvasBackdrop(svg: String): String {
+    val startIdx = svg.indexOf("<svg", ignoreCase = true)
+    if (startIdx < 0) return svg
+    val tagEnd = svg.indexOf('>', startIdx)
+    if (tagEnd < 0) return svg
+    var openTag = svg.substring(startIdx, tagEnd + 1)
+    val rootDims = parseSvgRootBox(openTag)
+
+    // 根 <svg style="background: #fff"> 若为纯白浅灰底色则一并改为透明
+    val rootBgMatch = Regex("""(?<![-\w])background(?:-color)?\s*:\s*([^;"']+)""", RegexOption.IGNORE_CASE)
+        .find(openTag)
+    if (rootBgMatch != null && isPlainLightNeutralColor(rootBgMatch.groupValues[1])) {
+        openTag = openTag.replaceRange(rootBgMatch.range, "background:transparent")
+    }
+
+    val bodyStart = tagEnd + 1
+    var body = svg.substring(bodyStart)
+    // 跳过 <defs>/<clipPath>/<mask>/<pattern> 定义块，避免误伤内部裁剪或阴影遮罩
+    val hiddenRanges = ArrayList<IntRange>()
+    for (tag in listOf("defs", "clipPath", "mask", "pattern")) {
+        val openPat = Regex("""<$tag\b[^>]*>""", RegexOption.IGNORE_CASE)
+        val closePat = Regex("""</$tag\s*>""", RegexOption.IGNORE_CASE)
+        for (m in openPat.findAll(body)) {
+            val endM = closePat.find(body, m.range.last + 1)
+            if (endM != null) hiddenRanges.add(m.range.first..endM.range.last)
+        }
+    }
+    fun insideHiddenDef(pos: Int): Boolean = hiddenRanges.any { pos in it }
+
+    val firstDrawingIdx = Regex("""<(?:path|circle|ellipse|line|polyline|polygon|text)\b""", RegexOption.IGNORE_CASE)
+        .findAll(body)
+        .firstOrNull { !insideHiddenDef(it.range.first) }
+        ?.range?.first ?: body.length
+
+    val rectRegex = Regex("""<rect\b([^>]{0,500})/?>""", RegexOption.IGNORE_CASE)
+    for (m in rectRegex.findAll(body).take(4)) {
+        if (m.range.first > firstDrawingIdx) break
+        if (insideHiddenDef(m.range.first)) continue
+        val attrs = m.groupValues[1]
+        if (Regex("""(?<![-\w])transform\s*=""", RegexOption.IGNORE_CASE).containsMatchIn(attrs)) continue
+
+        val xVal = parseSvgCoordNumber(
+            Regex("""(?<![-\w])x\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(1),
+        ) ?: 0f
+        val yVal = parseSvgCoordNumber(
+            Regex("""(?<![-\w])y\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE).find(attrs)?.groupValues?.get(1),
+        ) ?: 0f
+        if (xVal < -12f || yVal < -12f || xVal > 24f || yVal > 24f) continue
+
+        val wRaw = Regex("""(?<![-\w])width\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(attrs)?.groupValues?.get(1)?.trim()
+        val hRaw = Regex("""(?<![-\w])height\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+            .find(attrs)?.groupValues?.get(1)?.trim()
+        val coversWidth = wRaw == "100%" || (
+            rootDims != null && (parseSvgDimNumber(wRaw) ?: 0f) >= rootDims.first * 0.88f
+        )
+        val coversHeight = hRaw == "100%" || (
+            rootDims != null && (parseSvgDimNumber(hRaw) ?: 0f) >= rootDims.second * 0.88f
+        )
+        if (!coversWidth || !coversHeight) continue
+
+        val fillAttrMatch = Regex("""(?<![-\w])fill\s*=\s*(["'])([^"']+)\1""", RegexOption.IGNORE_CASE).find(attrs)
+        val styleFillMatch = Regex("""(?<![-\w])fill\s*:\s*([^;"']+)""", RegexOption.IGNORE_CASE).find(attrs)
+        val fillColor = fillAttrMatch?.groupValues?.get(2) ?: styleFillMatch?.groupValues?.get(1)
+        if (!isPlainLightNeutralColor(fillColor)) continue
+
+        var cleanedTag = m.value
+        cleanedTag = Regex("""(?<![-\w])fill\s*=\s*["'][^"']+["']""", RegexOption.IGNORE_CASE)
+            .replace(cleanedTag, """fill="none"""")
+        cleanedTag = Regex("""(?<![-\w])fill\s*:\s*[^;"']+""", RegexOption.IGNORE_CASE)
+            .replace(cleanedTag, "fill:none")
+        cleanedTag = Regex("""(?<![-\w])stroke\s*=\s*["'][^"']+["']""", RegexOption.IGNORE_CASE)
+            .replace(cleanedTag, """stroke="none"""")
+        cleanedTag = Regex("""(?<![-\w])stroke\s*:\s*[^;"']+""", RegexOption.IGNORE_CASE)
+            .replace(cleanedTag, "stroke:none")
+        body = body.substring(0, m.range.first) + cleanedTag + body.substring(m.range.last + 1)
+        break
+    }
+
+    return svg.substring(0, startIdx) + openTag + body
+}
+
+/**
+ * 温和放大桌面级大画布（`viewBox` 宽 ≥ 540）中过小的字号（`< 2%` 画布宽），
+ * 改善未按移动端尺寸输出时的极小刻度与文字可读性，同时避免破坏常规卡片排版。
+ */
+internal fun scaleMicroSvgFontsForRender(svg: String): String {
+    val startIdx = svg.indexOf("<svg", ignoreCase = true)
+    if (startIdx < 0) return svg
+    val tagEnd = svg.indexOf('>', startIdx)
+    if (tagEnd < 0) return svg
+    val vbW = parseSvgRootBox(svg.substring(startIdx, tagEnd + 1))?.first ?: return svg
+    if (vbW < 540f) return svg
+
+    val threshold = vbW * 0.020f
+    val targetCap = vbW * 0.024f
+    fun boostValue(raw: Float): String {
+        if (raw <= 0f || raw >= threshold) return if (raw % 1f == 0f) raw.toInt().toString() else raw.toString()
+        val boosted = minOf(raw * 1.38f, targetCap)
+        return ((boosted * 10f).roundToInt() / 10f).let {
+            if (it % 1f == 0f) it.toInt().toString() else it.toString()
+        }
+    }
+
+    var out = Regex("""(?<![-\w])font-size\s*=\s*(["'])([0-9]+(?:\.[0-9]+)?)(px)?\1""", RegexOption.IGNORE_CASE)
+        .replace(svg) { m ->
+            val q = m.groupValues[1]
+            val num = m.groupValues[2].toFloatOrNull() ?: return@replace m.value
+            val unit = m.groupValues[3]
+            if (num <= 0f || num >= threshold) return@replace m.value
+            "font-size=$q${boostValue(num)}$unit$q"
+        }
+    out = Regex("""(?<![-\w])font-size\s*:\s*([0-9]+(?:\.[0-9]+)?)(px)?(?=[;\s"']|$)""", RegexOption.IGNORE_CASE)
+        .replace(out) { m ->
+            val num = m.groupValues[1].toFloatOrNull() ?: return@replace m.value
+            val unit = m.groupValues[2]
+            if (num <= 0f || num >= threshold) return@replace m.value
+            "font-size:${boostValue(num)}$unit"
+        }
+    return out
+}
+
+private val STREAMING_SVG_SCRIPT_REGEX =
+    Regex("""<script\b[^>]*>[\s\S]*?</script>""", RegexOption.IGNORE_CASE)
+
+private const val SVG_DOM_PATCH_SCRIPT =
+    """<script>(function(){if(window.__cfPatchSvg)return;""" +
+        """function mark(n){if(!n)return;n.__cfSrc=n.outerHTML;for(var i=0;i<n.children.length;i++)mark(n.children[i]);}""" +
+        """function patch(curP,newP){var cur=Array.prototype.slice.call(curP.children);var inc=Array.prototype.slice.call(newP.children);var i=0;""" +
+        """while(i<cur.length&&i<inc.length){var s=inc[i].outerHTML;""" +
+        """if(cur[i].tagName===inc[i].tagName&&cur[i].__cfSrc===s){i++;continue;}""" +
+        """if(cur[i].tagName===inc[i].tagName&&cur[i].children.length>0&&inc[i].children.length>=cur[i].children.length&&i===cur.length-1){""" +
+        """patch(cur[i],inc[i]);cur[i].__cfSrc=s;i++;continue;}""" +
+        """var rep=document.importNode(inc[i],true);rep.__cfSrc=s;rep.classList.add('cf-svg-in');curP.replaceChild(rep,cur[i]);i++;}""" +
+        """while(curP.children.length>inc.length){curP.removeChild(curP.lastElementChild);}""" +
+        """for(;i<inc.length;i++){var add=document.importNode(inc[i],true);add.__cfSrc=inc[i].outerHTML;add.classList.add('cf-svg-in');curP.appendChild(add);}}""" +
+        """window.__cfPatchSvg=function(svgStr){var live=document.body&&document.body.querySelector('svg');""" +
+        """var tmp=document.createElement('div');tmp.innerHTML=svgStr;var next=tmp.querySelector('svg');if(!next)return;""" +
+        """if(!live){mark(next);if(document.body)document.body.appendChild(next);return;}""" +
+        """if(!live.__cfInited){live.__cfInited=true;mark(live);}""" +
+        """for(var i=0;i<next.attributes.length;i++){var a=next.attributes[i];if(live.getAttribute(a.name)!==a.value)live.setAttribute(a.name,a.value);}""" +
+        """var rm=[];for(var i=0;i<live.attributes.length;i++){var nm=live.attributes[i].name;if(!next.hasAttribute(nm))rm.push(nm);}""" +
+        """for(var i=0;i<rm.length;i++)live.removeAttribute(rm[i]);""" +
+        """patch(live,next);};})();</script>"""
+
+internal fun prepareSvgRenderBody(
+    svg: String,
+    lightCanvas: Boolean,
+    transparentBg: Boolean,
+    allowScripts: Boolean,
+): String {
+    val withoutWhiteBox = if (transparentBg && lightCanvas) stripPlainLightCanvasBackdrop(svg) else svg
+    val scaled = scaleMicroSvgFontsForRender(withoutWhiteBox)
+    return if (allowScripts) scaled else STREAMING_SVG_SCRIPT_REGEX.replace(scaled, "")
+}
+
 internal fun buildSvgHtmlDocument(
     svg: String,
     lightCanvas: Boolean,
     transparentBg: Boolean = false,
     textColorHex: String? = null,
+    injectBridge: Boolean = false,
+    enableIncrementalPatch: Boolean = false,
 ): String {
     val bg = if (transparentBg || !lightCanvas) "transparent" else "#FAF8F5"
-    val fg = textColorHex ?: if (lightCanvas) "#1F1E1B" else "#EAE6DF"
+    val fg = textColorHex ?: if (lightCanvas) "#1F1E1C" else "#EAE6DF"
+    val renderSvg = prepareSvgRenderBody(
+        svg = svg,
+        lightCanvas = lightCanvas,
+        transparentBg = transparentBg,
+        allowScripts = injectBridge,
+    )
+    val bridgeHead = buildString {
+        if (injectBridge) {
+            append("<script>").append(com.hxy.codeforge.ui.browser.PageBridge.SCRIPT).append("</script>")
+        }
+        if (enableIncrementalPatch) {
+            append(SVG_DOM_PATCH_SCRIPT)
+        }
+    }
     // 只约束顶层 `body > svg`，避免 `svg{width:100%!important}` 把架构图里嵌套的小 `<svg>` 图标拉爆
     return "<!DOCTYPE html><html><head><meta charset=\"utf-8\">" +
         "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes\">" +
+        bridgeHead +
         "<style>" +
         "html,body{margin:0;padding:0;width:100%;height:100%;background:$bg;color:$fg;overflow:hidden;" +
-        "display:flex;align-items:center;justify-content:center;}" +
+        "display:flex;align-items:center;justify-content:center;" +
+        "font-family:system-ui,-apple-system,'Noto Sans SC',sans-serif;}" +
         "body>svg{width:100%;height:100%;max-width:100%;max-height:100%;display:block;}" +
-        "[data-cf-send],[data-cf-prefill]{cursor:pointer;}" +
+        "@keyframes cfSvgReveal{from{opacity:0;transform:translateY(2px) scale(.985)}to{opacity:1;transform:none}}" +
+        ".cf-svg-in{animation:cfSvgReveal 220ms cubic-bezier(.22,1,.36,1) both}" +
+        "[data-cf-send],[data-cf-prefill],[onclick]{cursor:pointer;" +
+        "-webkit-tap-highlight-color:rgba(217,119,87,0.22);touch-action:manipulation;}" +
+        "[data-cf-send]:active,[data-cf-prefill]:active{opacity:0.65;}" +
         "</style></head><body>" +
-        svg +
+        renderSvg +
         "</body></html>"
 }
 
@@ -378,13 +671,7 @@ internal fun svgHasOpaqueBackdrop(svg: String): Boolean {
         .find(openTag)?.groupValues?.get(1)?.trim()?.lowercase()
     if (rootStyleBg != null && rootStyleBg != "none" && rootStyleBg != "transparent") return true
 
-    val rootDims = parseSvgRootDimensions(openTag) ?: run {
-        val vb = Regex("""(?<![-\w])viewBox\s*=\s*["']([^"']+)["']""", RegexOption.IGNORE_CASE)
-            .find(openTag)?.groupValues?.get(1)?.trim()?.split(Regex("""[,\s]+"""))
-        val w = vb?.getOrNull(2)?.removeSuffix("px")?.toFloatOrNull()
-        val h = vb?.getOrNull(3)?.removeSuffix("px")?.toFloatOrNull()
-        if (w != null && h != null && w > 0f && h > 0f) w to h else null
-    }
+    val rootDims = parseSvgRootBox(openTag)
 
     val rectRegex = Regex("""<rect\b([^>]{0,400})/?>""", RegexOption.IGNORE_CASE)
     for (m in rectRegex.findAll(svg).take(3)) {
@@ -425,6 +712,20 @@ internal fun needsLightBackdropInDarkMode(svg: String): Boolean {
     return !hasExplicitLightInk
 }
 
+/**
+ * 浅色模式下判断无全画布底色的 SVG 是否使用了浅色文字排版（如深色卡片常用的 `#e2e8f0`/`#f8fafc`/`white`），
+ * 防止无外层深底 `<rect>` 时浅色文字直接落在暖白主题背景上几乎看不见。
+ */
+internal fun needsDarkBackdropInLightMode(svg: String): Boolean {
+    if (svgHasOpaqueBackdrop(svg)) return false
+    // 剔除局部卡片 <rect> 底色后再检测文字/线条主色，避免深色小胶囊底色的 hex 掩盖浅色文字排版
+    val withoutRects = Regex("""<rect\b[^>]*/?>""", RegexOption.IGNORE_CASE).replace(svg, "").lowercase()
+    val darkColorPat = Regex("""(?:#0[0-9a-f]{2}|#1[0-9a-f]{2}|#2[0-9a-f]{2}|#3[0-9a-f]{2}|#4[0-9a-f]{2}\b|\bblack\b|currentcolor)""")
+    if (darkColorPat.containsMatchIn(withoutRects)) return false
+    val lightColorPat = Regex("""(?:#[c-f][0-9a-f]{2}\b|#[c-f][0-9a-f]{5}\b|\bwhite\b|rgb\(\s*2[0-5]\d)""")
+    return lightColorPat.containsMatchIn(withoutRects)
+}
+
 /** 判定 SVG 是否包含交互声明（`data-cf-send` / `data-cf-prefill` / `window.__cf` / 脚本 / 内联点击）。 */
 internal fun isInteractiveSvg(svg: String): Boolean {
     val low = svg.lowercase()
@@ -438,23 +739,40 @@ internal fun isInteractiveSvg(svg: String): Boolean {
 private class SvgWebHolder {
     var pendingHtml: String = ""
     var loadedHtml: String = ""
+    var pendingFragment: String? = null
+    var loadedFragment: String = ""
+    var shellKey: String = ""
+    var pageFinished: Boolean = false
     var lastBgColor: Int? = null
+    var lastResetKey: Int = 0
 }
 
-private fun loadSvgIfLaidOut(wv: WebView, holder: SvgWebHolder) {
+private fun loadSvgIfLaidOut(wv: WebView, holder: SvgWebHolder, forceReload: Boolean = false) {
     val target = holder.pendingHtml
-    if (target.isEmpty() || holder.loadedHtml == target) return
+    if (target.isEmpty()) return
+    if (!forceReload && holder.loadedHtml == target) return
     if (wv.width > 0 && wv.height > 0) {
+        holder.pageFinished = false
         holder.loadedHtml = target
+        holder.loadedFragment = holder.pendingFragment.orEmpty()
         wv.loadDataWithBaseURL("https://codeforge.local/", target, "text/html", "utf-8", null)
     }
+}
+
+private fun patchSvgFragmentIfReady(wv: WebView, holder: SvgWebHolder) {
+    val frag = holder.pendingFragment ?: return
+    if (!holder.pageFinished || holder.loadedFragment == frag) return
+    holder.loadedFragment = frag
+    wv.evaluateJavascript("window.__cfPatchSvg && window.__cfPatchSvg(${JSONObject.quote(frag)});", null)
+    wv.postInvalidateOnAnimation()
 }
 
 /**
  * 统一的 SVG `WebView` 宿主：
  * 1. 等视图获得非零宽高后再调用 `loadDataWithBaseURL`，避免 `LazyColumn` 首帧 0x0 布局下 `<svg>` 按 0 高度排版；
- * 2. 无论是否交互态一律挂载 `WebViewClient` + `postVisualStateCallback` 与重挂/尺寸变化刷新，防止滚动离屏再滑回后空白；
- * 3. `onRelease` 及时销毁 `WebView`，防止多轮长对话里多张 SVG 泄漏原生渲染表面。
+ * 2. 流式期间走 DOM 差量注入 `__cfPatchSvg` 增量绘制图元，避免全页重载闪烁；
+ * 3. 无论是否交互态一律挂载 `WebViewClient` + `postVisualStateCallback` 与重挂/尺寸变化刷新，防止滚动离屏再滑回后空白；
+ * 4. `onRelease` 及时销毁 `WebView`，防止多轮长对话里多张 SVG 泄漏原生渲染表面。
  */
 @Composable
 private fun SvgWebCanvas(
@@ -463,9 +781,15 @@ private fun SvgWebCanvas(
     modifier: Modifier = Modifier,
     interactive: Boolean = false,
     zoomable: Boolean = false,
+    resetKey: Int = 0,
+    patchFragment: String? = null,
+    shellKey: String = "",
+    onActionDispatched: (() -> Unit)? = null,
 ) {
     val chatActions by rememberUpdatedState(LocalChatUiActions.current)
+    val latestOnAction by rememberUpdatedState(onActionDispatched)
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
+    val jsEnabled = interactive || patchFragment != null
 
     key(interactive, zoomable) {
         AndroidView(
@@ -478,7 +802,7 @@ private fun SvgWebCanvas(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT,
                     )
-                    settings.javaScriptEnabled = interactive
+                    settings.javaScriptEnabled = jsEnabled
                     settings.allowFileAccess = false
                     settings.allowContentAccess = false
                     settings.loadWithOverviewMode = true
@@ -497,8 +821,15 @@ private fun SvgWebCanvas(
                         addJavascriptInterface(
                             com.hxy.codeforge.ui.browser.PageBridge.AndroidBridge { ev ->
                                 when (ev.kind) {
-                                    "send" -> mainHandler.post { chatActions?.onSend?.invoke(ev.payload) }
-                                    "prefill" -> mainHandler.post { chatActions?.onPrefill?.invoke(ev.payload) }
+                                    "send" -> mainHandler.post {
+                                        chatActions?.onSend?.invoke(ev.payload)
+                                        latestOnAction?.invoke()
+                                    }
+                                    "prefill" -> mainHandler.post {
+                                        chatActions?.onPrefill?.invoke(ev.payload)
+                                        chatActions?.onToast?.invoke("已填入下方输入框，点发送即可提交")
+                                        latestOnAction?.invoke()
+                                    }
                                     "toast" -> mainHandler.post { chatActions?.onToast?.invoke(ev.payload) }
                                 }
                             },
@@ -507,9 +838,19 @@ private fun SvgWebCanvas(
                     }
 
                     webViewClient = object : android.webkit.WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: android.webkit.WebResourceRequest?,
+                        ): Boolean = true
+
                         override fun onPageFinished(view: WebView, url: String?) {
                             if (interactive) {
                                 view.evaluateJavascript(com.hxy.codeforge.ui.browser.PageBridge.SCRIPT, null)
+                            }
+                            val h = view.tag as? SvgWebHolder
+                            if (h != null) {
+                                h.pageFinished = true
+                                patchSvgFragmentIfReady(view, h)
                             }
                             view.postVisualStateCallback(
                                 0L,
@@ -555,12 +896,25 @@ private fun SvgWebCanvas(
             },
             update = { wv ->
                 val holder = (wv.tag as? SvgWebHolder) ?: SvgWebHolder().also { wv.tag = it }
+                if (wv.settings.javaScriptEnabled != jsEnabled) {
+                    wv.settings.javaScriptEnabled = jsEnabled
+                }
                 if (holder.lastBgColor != canvasColor) {
                     holder.lastBgColor = canvasColor
                     wv.setBackgroundColor(canvasColor)
                 }
-                holder.pendingHtml = html
-                loadSvgIfLaidOut(wv, holder)
+                val forceReset = holder.lastResetKey != resetKey
+                if (forceReset) holder.lastResetKey = resetKey
+                val shellChanged = holder.shellKey != shellKey
+                holder.shellKey = shellKey
+                holder.pendingFragment = patchFragment
+
+                if (patchFragment != null && holder.loadedHtml.isNotEmpty() && !forceReset && !shellChanged) {
+                    patchSvgFragmentIfReady(wv, holder)
+                } else {
+                    holder.pendingHtml = html
+                    loadSvgIfLaidOut(wv, holder, forceReload = forceReset || shellChanged)
+                }
             },
             onRelease = { wv ->
                 runCatching { wv.stopLoading() }
@@ -571,44 +925,66 @@ private fun SvgWebCanvas(
 }
 
 /**
- * SVG 块：无边框、无顶栏直接融入对话流呈现矢量图形，避免额外框线造成的视觉割裂。
- * 非交互态轻触进入全屏查看器（支持双指缩放、暖白/深色底切换、源码预览与复制）；
- * 交互态（`data-cf-send` 等）将点击保留给图元本身，仅在右上角留一枚轻量全屏角标。
+ * SVG 块：无边框、无顶栏直接融入对话流呈现矢量图形，避免额外框线造成的视觉割裂；
+ * 流式阶段通过 DOM 增量补丁逐图元绘制呈现，闭合后平滑保留交互或全屏查看能力。
  */
 @Composable
 fun MessageSvgBlock(
     svg: String,
     modifier: Modifier = Modifier,
     title: String = "SVG 矢量图",
+    streaming: Boolean = false,
 ) {
     val normalized = remember(svg) { normalizeSvgForRender(svg) }
-    val interactive = remember(normalized) { isInteractiveSvg(normalized) }
+    val interactive = remember(normalized, streaming) { !streaming && isInteractiveSvg(normalized) }
     val aspect = remember(normalized) { (svgAspect(normalized) ?: 1.5f).coerceIn(0.4f, 4f) }
     val isLightTheme = MaterialTheme.colorScheme.onBackground.luminance() < 0.5f
     val needsDarkModeMat = remember(normalized, isLightTheme) {
         !isLightTheme && needsLightBackdropInDarkMode(normalized)
     }
-    var fullscreen by remember(svg) { mutableStateOf(false) }
+    val needsLightModeDarkMat = remember(normalized, isLightTheme) {
+        isLightTheme && needsDarkBackdropInLightMode(normalized)
+    }
+    val useLightCanvas = (isLightTheme || needsDarkModeMat) && !needsLightModeDarkMat
+    var fullscreen by remember { mutableStateOf(false) }
 
-    val html = remember(normalized, isLightTheme, needsDarkModeMat) {
-        buildSvgHtmlDocument(
+    val renderBody = remember(normalized, useLightCanvas, interactive) {
+        prepareSvgRenderBody(
             svg = normalized,
-            lightCanvas = isLightTheme || needsDarkModeMat,
+            lightCanvas = useLightCanvas,
             transparentBg = true,
-            textColorHex = if (isLightTheme || needsDarkModeMat) "#1F1E1C" else "#EAE6DF",
+            allowScripts = interactive,
         )
     }
+    val html = remember(normalized, useLightCanvas, interactive) {
+        buildSvgHtmlDocument(
+            svg = normalized,
+            lightCanvas = useLightCanvas,
+            transparentBg = true,
+            textColorHex = if (useLightCanvas) "#1F1E1C" else "#EAE6DF",
+            injectBridge = interactive,
+            enableIncrementalPatch = true,
+        )
+    }
+    var visible by remember { mutableStateOf(!streaming) }
+    LaunchedEffect(Unit) { visible = true }
+    val enterAlpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = tween(220),
+        label = "svg-enter-alpha",
+    )
 
     val canvasModifier = modifier
         .fillMaxWidth()
         .padding(vertical = 4.dp)
         .aspectRatio(aspect)
+        .alpha(enterAlpha)
         .let { mod ->
-            if (needsDarkModeMat) {
+            when {
                 // 不对包着 WebView 的容器做 clip(RoundedCornerShape)，只垫背景 + 内边距，兼容硬件渲染层
-                mod.background(Color(0xFFF7F5EF), blockCardShape).padding(6.dp)
-            } else {
-                mod
+                needsDarkModeMat -> mod.background(Color(0xFFF7F5EF), blockCardShape).padding(6.dp)
+                needsLightModeDarkMat -> mod.background(Color(0xFF17191E), blockCardShape).padding(6.dp)
+                else -> mod
             }
         }
 
@@ -618,36 +994,40 @@ fun MessageSvgBlock(
             canvasColor = android.graphics.Color.TRANSPARENT,
             interactive = interactive,
             zoomable = false,
+            patchFragment = renderBody,
+            shellKey = "$useLightCanvas-$interactive",
             modifier = Modifier.fillMaxSize(),
         )
-        if (interactive) {
-            Text(
-                text = "全屏",
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(6.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f))
-                    .noRippleClickable { fullscreen = true }
-                    .padding(horizontal = 7.dp, vertical = 3.dp),
-            )
-        } else {
-            // WebView 默认拦截触摸，非交互态用无波纹透明遮罩承接全屏手势，消除点击高亮闪烁
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .noRippleClickable { fullscreen = true },
-            )
+        if (!streaming) {
+            if (interactive) {
+                Text(
+                    text = "全屏",
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f))
+                        .noRippleClickable { fullscreen = true }
+                        .padding(horizontal = 7.dp, vertical = 3.dp),
+                )
+            } else {
+                // WebView 默认拦截触摸，非交互态用无波纹透明遮罩承接全屏手势，消除点击高亮闪烁
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .noRippleClickable { fullscreen = true },
+                )
+            }
         }
     }
 
-    if (fullscreen) {
+    if (fullscreen && !streaming) {
         FullscreenSvgViewer(
             svg = normalized,
             title = title,
-            initialLightCanvas = isLightTheme || needsDarkModeMat,
+            initialLightCanvas = useLightCanvas,
             onClose = { fullscreen = false },
         )
     }
@@ -667,7 +1047,7 @@ private fun SvgActionPill(label: String, onClick: () -> Unit) {
     )
 }
 
-/** 全屏 SVG 查看器：支持双指缩放、底色切换、源码查看与复制。 */
+/** 全屏 SVG 查看器：支持双指缩放、缩放重置、底色切换、图元交互与源码查看复制。 */
 @Composable
 internal fun FullscreenSvgViewer(
     svg: String,
@@ -677,9 +1057,18 @@ internal fun FullscreenSvgViewer(
 ) {
     val ctx = LocalContext.current
     val normalized = remember(svg) { normalizeSvgForRender(svg) }
+    val interactive = remember(normalized) { isInteractiveSvg(normalized) }
     var lightCanvas by remember(initialLightCanvas) { mutableStateOf(initialLightCanvas) }
     var showSource by remember(svg) { mutableStateOf(false) }
-    val html = remember(normalized, lightCanvas) { buildSvgHtmlDocument(normalized, lightCanvas) }
+    var resetSeq by remember(svg) { mutableIntStateOf(0) }
+    val html = remember(normalized, lightCanvas, interactive) {
+        buildSvgHtmlDocument(
+            svg = normalized,
+            lightCanvas = lightCanvas,
+            transparentBg = lightCanvas,
+            injectBridge = interactive,
+        )
+    }
 
     Dialog(
         onDismissRequest = onClose,
@@ -708,6 +1097,9 @@ internal fun FullscreenSvgViewer(
                     modifier = Modifier.weight(1f),
                 )
                 if (!showSource) {
+                    SvgActionPill(label = "重置") {
+                        resetSeq++
+                    }
                     SvgActionPill(label = if (lightCanvas) "暖白底" else "深色底") {
                         lightCanvas = !lightCanvas
                     }
@@ -752,8 +1144,10 @@ internal fun FullscreenSvgViewer(
                     SvgWebCanvas(
                         html = html,
                         canvasColor = if (lightCanvas) 0xFFFAF8F5.toInt() else 0xFF141312.toInt(),
-                        interactive = false,
+                        interactive = interactive,
                         zoomable = true,
+                        resetKey = resetSeq,
+                        onActionDispatched = onClose,
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -762,7 +1156,7 @@ internal fun FullscreenSvgViewer(
     }
 }
 
-// ---------------------------------------------------------------- 图片
+// 图片
 
 @Composable
 fun MessageImageBlock(url: String, alt: String, modifier: Modifier = Modifier) {
@@ -834,7 +1228,7 @@ fun MessageImageBlock(url: String, alt: String, modifier: Modifier = Modifier) {
     }
 }
 
-// ---------------------------------------------------------------- 视频
+// 视频
 
 /**
  * 视频块：VideoView 装进设满约束的 FrameLayout，控制条由 Compose 自绘。
@@ -1021,7 +1415,7 @@ fun MessageVideoBlock(url: String, modifier: Modifier = Modifier) {
     }
 }
 
-// ---------------------------------------------------------------- 音频
+// 音频
 
 @Composable
 fun MessageAudioBlock(url: String, modifier: Modifier = Modifier) {
@@ -1149,7 +1543,7 @@ private fun formatMs(ms: Int): String {
     return "%d:%02d".format(total / 60, total % 60)
 }
 
-// ---------------------------------------------------------------- 失败态
+// 失败态
 
 @Composable
 private fun MediaErrorRow(text: String) {
@@ -1165,7 +1559,7 @@ private fun MediaErrorRow(text: String) {
     )
 }
 
-// ---------------------------------------------------------------- 附件消息（用户侧）
+// 附件消息（用户侧）
 
 /** 图片类附件（按扩展名判断，决定渲染缩略图还是文件片）。 */
 fun String.isImagePath(): Boolean {
@@ -1360,7 +1754,7 @@ internal fun FullscreenImageViewer(path: String, onClose: () -> Unit) {
     }
 }
 
-// ---------------------------------------------------------------- 音视频标签式跳转卡片
+// 音视频标签式跳转卡片
 
 /**
  * 匹配格式：`[ ▶视频/音频 (可选 url) ]`

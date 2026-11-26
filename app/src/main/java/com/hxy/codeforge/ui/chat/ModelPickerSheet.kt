@@ -77,22 +77,22 @@ import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
- * 「选择模型」弹层 —— 四行结构 + 子页水平推入动画（对齐视频参考）：
+ * 「选择模型」弹层 —— 四行结构 + 子页水平推入动画：
  *
- *  1. 供应商：点击 → 子页（过渡对齐视频 2 的「新页右推入、旧页左退出」）；
+ *  1. 供应商：点击 → 子页（「新页右推入、旧页左退出」）；
  *  2. 模型：列表直接嵌在弹层里，**至多露出 3 行**，向下滚动选更多；
  *  3. 思考强度：点击 → 子页放**网页端同款拉条**（暗槽 + 强度渐变填充 +
  *     刻度点 + 发光滑球 + 星尘粒子，拖动线性跟随、松手吸附最近档）；
- *  4. 权限：显示当前档位，点击 → 动画滑到三档选择（只参考动画，布局用自家行样式）。
+ *  4. 权限：显示当前档位，点击 → 动画滑到三档选择（水平切换动画配合列表行样式）。
  *
  * 供应商/思考强度目前是界面态；内核 /api/config 的思考分级规格与
  * /api/providers 供应商库在设置层接入后替换数据源。拉条按 steps 规格实现，
  * 与网页 buildSlider 同构，换规格只改 levels 来源。
  */
 
-// ---------------------------------------------------------------- 数据
+// 数据
 
-/** 思考档位。文案对齐 Claude 客户端；最高档带用量提示徽标。 */
+/** 推理思考强度档位；最高档带用量提示徽标。 */
 enum class ThinkingLevel(val label: String, val badge: String? = null) {
     Low("低"),
     Medium("中等"),
@@ -116,7 +116,7 @@ private enum class PickerPage(val title: String) {
     Permission("权限模式"),
 }
 
-// ---------------------------------------------------------------- 弹层骨架
+// 弹层骨架
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -221,13 +221,7 @@ fun ModelPickerSheet(
                         )
 
                         PickerPage.Provider -> {
-                            // 供应商在几份数据里用的是**不同的键**：
-                            //  - 内核 config 给的是 provider id（如 "anthropic"）；
-                            //  - 模型库给的是 provider_id + provider_name；
-                            //  - 供应商库给的是显示名。
-                            // 早先这里拿「显示名列表」去和内核给的 id 比 —— 永远比不中，
-                            // 于是同一个供应商在主页显示成 id、在列表里显示成名字，
-                            // 看着像两个不同的东西。**统一以 id 为身份**，显示时才翻名字。
+                            // 统一按供应商 id 匹配身份，展示时再映射为显示名（见 P-044 / P-045）
                             val entries = remember(libraryModels, libraryProviders, providerDetails) {
                                 buildProviderEntries(libraryModels, libraryProviders, providerDetails)
                             }
@@ -297,7 +291,7 @@ private fun SheetHeader(page: PickerPage, onClose: () -> Unit, onBack: () -> Uni
     }
 }
 
-// ---------------------------------------------------------------- 主页
+// 主页
 
 /**
  * 模型分组：按供应商归拢。
@@ -314,15 +308,7 @@ internal data class ModelGroup(
     val missingKey: Boolean,
 )
 
-/**
- * 按供应商把模型分组；[filterProviderId] 非空时只留该供应商的模型。
- *
- * ## 为什么必须分组
- *
- * 模型库可能同时挂着好几家的模型（DeepSeek、智谱、Anthropic…），
- * 平铺成一列的话用户根本分不清「这个模型走哪家的通道」——
- * 而选供应商**就该过滤模型**，这是两件事一起做才对。
- */
+/** 按供应商分组过滤模型；[filterProviderId] 非空时仅保留对应供应商下的模型。 */
 internal fun buildModelGroups(
     libraryModels: List<com.hxy.codeforge.model.LibraryModel>,
     providerDetails: List<com.hxy.codeforge.core.KernelApi.ProviderInfo>,
@@ -546,7 +532,7 @@ private fun PickerRow(title: String, value: String, onClick: () -> Unit) {
     }
 }
 
-// ---------------------------------------------------------------- 供应商子页
+// 供应商子页
 
 /**
  * 供应商条目：**id 是身份**，name 只是显示用的外观。
@@ -554,20 +540,11 @@ private fun PickerRow(title: String, value: String, onClick: () -> Unit) {
 internal data class ProviderEntry(val id: String, val name: String)
 
 /**
- * 当前生效的供应商 id。
+ * 从模型库反查当前生效模型所属的供应商 id（不可用协议族字段 `config.provider` 替代，见 P-045）。
+ * 模型库为空或生效模型不存在时返回空串。
  *
- * **只能从模型库条目上取。**
- *
- * 内核 `config.provider` 是**协议族**（`anthropic | openai`，内核 `config/default.yaml`
- * 里的默认值就是 `"anthropic"`），而供应商库里那些是另一套带显示名的记录 ——
- * 两个命名空间，拿前者当供应商显示，就是「界面写着 anthropic、列表里是 DeepSeek 官方」
- * 的根源。详见 AGENTS P-045。
- *
- * 模型库为空（或生效模型已被删）时**没有**当前供应商，返回空串，
- * 界面据此显示「未选择」，而不是把协议族糊上去。
- *
- * @param kernelModelId 内核当前生效的模型 id（`config.model`）—— 真正在用的那条。
- * @param pickedModelId 用户在弹层里选过、还没应用的模型 id（优先）。
+ * @param kernelModelId 内核当前生效的模型 id（`config.model`）。
+ * @param pickedModelId 用户在弹层中暂选的模型 id（优先）。
  */
 internal fun resolveActiveProviderId(
     libraryModels: List<com.hxy.codeforge.model.LibraryModel>,
@@ -656,7 +633,7 @@ private fun ProviderPage(
     }
 }
 
-// ---------------------------------------------------------------- 思考强度子页
+// 思考强度子页
 
 @Composable
 private fun ThinkingPage(selectedIndex: Int, onSelect: (Int) -> Unit) {
@@ -672,17 +649,8 @@ private fun ThinkingPage(selectedIndex: Int, onSelect: (Int) -> Unit) {
 }
 
 /**
- * 网页端思考强度拉条的 Compose 等效实现（源：web/dist/ui.js buildSlider + app.css）。
- *
- * 逐项对应：
- *  - 暗色圆角槽 20dp（.fs-track 的 #26262b→#303036 渐变）；
- *  - 填充渐变 = forge 暖皮：hsl(12 78% 46%) → hsl(45-33r 85% 60%)，随强度变红；
- *  - 刻度点均布整条轨道（含两端），命中档变白放大 1.35 倍（.fs-dot.active）；
- *  - 24dp 白球拇指保持槽内（中心范围 [半径, 宽-半径]，对应网页的 calc 补偿式），
- *    光晕随强度增大，最高档呼吸脉动（.fancy-slider.max）；
- *  - 星尘粒子群：16 光点缓漂 + 5 流星拖尾，透明度随强度提升（--fxo）；
- *  - 拖动线性跟随不吸附，松手吸附最近档；点击轨道/刻度直接跳档；
- *  - 拇指上方档位气泡实时显示当前档名。
+ * 思考强度滑条组件：支持连续拖动定位、松手吸附最近档位与气泡预览，
+ * 轨道包含星尘粒子随强度渐变显隐效果。
  */
 @Composable
 private fun ThinkingSlider(
@@ -927,7 +895,7 @@ private data class DustP(
     val streak: Boolean,
 )
 
-// ---------------------------------------------------------------- 权限子页
+// 权限子页
 
 @Composable
 private fun PermissionPage(
@@ -953,7 +921,7 @@ private fun PermissionPage(
     }
 }
 
-// ---------------------------------------------------------------- 公共件
+// 公共件
 
 @Composable
 private fun CheckRow(

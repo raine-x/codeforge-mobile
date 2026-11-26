@@ -66,7 +66,7 @@ import com.hxy.codeforge.ui.theme.Clay
  *  - [SubagentBar]：子智能体任务卡，运行中转圈、完成打勾。
  */
 
-// ---------------------------------------------------------------- 目标模式
+// 目标模式
 
 /**
  * 目标账本条（goal 帧）。
@@ -145,7 +145,7 @@ fun GoalStrip(goal: com.hxy.codeforge.model.GoalStatus?, modifier: Modifier = Mo
     }
 }
 
-// ---------------------------------------------------------------- 任务清单
+// 任务清单
 
 /**
  * 任务清单弹窗：顶栏「三点」菜单的入口（B 接线，`showTaskList` 为 true 时挂载）。
@@ -322,7 +322,7 @@ private fun TodoRow(todo: TodoItem, singleLine: Boolean = true) {
     }
 }
 
-// ---------------------------------------------------------------- 子智能体
+// 子智能体
 
 @Composable
 fun SubagentBar(tasks: List<SubagentTask>, modifier: Modifier = Modifier) {
@@ -418,7 +418,7 @@ private fun SubagentCard(task: SubagentTask) {
     }
 }
 
-// ---------------------------------------------------------------- 小图形
+// 小图形
 
 /** 待办空圈。 */
 @Composable

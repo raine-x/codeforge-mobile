@@ -7,17 +7,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * 真机反馈的两处修复的回归测试。
- *
- * ① 提示词泄露：内核把上行文本原样存进历史，`history` 帧回放时整段替换消息列表，
- *    注入的能力说明会漏回用户气泡。
- * ② 供应商身份：内核 config 给 provider id，模型库给 id + 显示名，供应商库给显示名。
- *    拿显示名去比 id 永远比不中，于是界面同时出现「anthropic」与「DeepSeek 官方」。
- */
+/** 注入标记剥离与供应商身份去重回归测试。 */
 class PromptInjectTest {
-
-    // ------------------------------------------------------------ 提示词剥离
 
     @Test
     fun plainUserTextIsUntouched() {
@@ -69,7 +60,7 @@ class PromptInjectTest {
         assertTrue(mergedEmptyUser.endsWith("本客户端支持……"))
     }
 
-    // ------------------------------------------------------------ 供应商身份
+    // 供应商身份
 
     @Test
     fun providerIdentityIsIdAndDisplayIsName() {
@@ -121,7 +112,7 @@ class PromptInjectTest {
 
     @Test
     fun sameProviderFromTwoSourcesIsNotListedTwice() {
-        // 供应商库与模型库指向同一家 —— 早先会把「名字一次、id 一次」列成两家
+        // 供应商库与模型库指向同一供应商 id 时不应重复列出
         val entries = buildProviderEntries(
             libraryModels = listOf(
                 LibraryModel(id = "m1", name = "M1", provider = "deepseek", providerName = "DeepSeek 官方"),

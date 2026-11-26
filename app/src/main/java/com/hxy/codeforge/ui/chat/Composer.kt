@@ -130,30 +130,18 @@ import kotlin.math.PI
 import kotlin.math.min
 
 /**
- * 输入区，对齐 Claude 客户端的悬浮输入卡：
+ * 悬浮输入区组件：
  *
- *  - 整体是一张 28dp 圆角卡片浮在底部，而不是被分割线压住的条；
  *  - 底行从左到右：「+」附件、权限盾牌（三档下拉）、模型胶囊、主按钮；
- *  - 主按钮点按/长按双语义，覆盖语音 · 打断 · 转向 · 发送：
- *    空输入空闲 = 语音（点按开始中文听写，再点收口）；有输入 = 陶土橘发送；
- *    运行中且有输入 = 发送（steer 并入当前轮）；运行中且空输入 = 点按开始
- *    语音、**长按 1 秒打断**（按钮外圈进度环实时反馈，满圈触发 + 触觉）。
- *    四个职责同位不互斥，状态切换带缩放渐变。
- *  - 语音走云端识别（见 [CloudVoiceEngine]）：录完整段上传转写，结果填进输入框成可编辑文本。
- *  - 模型胶囊打开「选择模型」底部弹层（模型为界面演示，权限模式是真的）；
- *    「+」打开附件面板，面板顶部另有「Skills 和技能」（上拉框点选即插入 @）与
- *    「当前目录的文件」两个二级入口。
- *  - 输入里的 @ 提及由技能 / 内置插件 / 已加载 MCP 动态补全，并染成主色；
- *    上下文占用改成绕输入卡外圈的一条细线（不再占一行高度）。
- *  - 编辑重发时顶部压一条提示条，说明「发送将丢弃其后的对话与文件改动」。
- *
- * **回车不发送**：手机上回车应该是换行，发送靠右侧按钮。
+ *  - 主按钮覆盖语音 / 打断 / 转向 / 发送：空闲空输入点按语音，有输入点击发送或 steer，运行中空输入长按 1 秒打断；
+ *  - 模型胶囊打开「选择模型」底部弹层；「+」打开附件/技能/工作区面板；
+ *  - 输入内 `@` 提及由技能与插件动态补全，外圈细线指示上下文占用，编辑重发时顶部显示确认条；
+ *  - 回车保留换行语义，发送统一通过右侧主按钮触发。
  */
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun Composer(
     running: Boolean,
-    // 内核已把转向指令排队（steer_queued）：占位符从「教手势」切换为「提醒排队中」
     steerQueued: Boolean = false,
     permissionMode: PermissionMode,
     onPermissionChange: (PermissionMode) -> Unit,
@@ -163,33 +151,20 @@ fun Composer(
     maxLines: Int = 6,
     modelName: String = "",
     onOpenSettings: () -> Unit = {},
-    // 每会话草稿（B4）：keystroke 即存、发送即清；切会话时以 key 换态恢复
     sessionId: String = "",
     draftText: String = "",
     onDraftChange: (String, String) -> Unit = { _, _ -> },
-    // 模型库真数据 + 应用回调（B6-P0）：选库内模型时由内核切通道
     libraryModels: List<com.hxy.codeforge.model.LibraryModel> = emptyList(),
     libraryProviders: List<String> = emptyList(),
-    /**
-     * 供应商完整信息（id + 显示名）。**身份以 id 为准**，显示名只是外观 ——
-     * 内核 config 给的是 protocol（anthropic|openai），不是供应商 id。
-     */
+    /** 供应商详情（id 与显示名分离，身份判定以 id 为准）。 */
     providerDetails: List<KernelApi.ProviderInfo> = emptyList(),
-    /**
-     * 内核当前**生效的模型 id**（config.model）。
-     *
-     * 当前供应商要从模型库按它反查 —— 用显示名或协议族都查不准。
-     */
+    /** 内核当前生效模型 id，用于从模型库反查真实归属供应商。 */
     kernelModelId: String = "",
-    /** 内核当前生效的模型是否还在模型库里（内核 `model_in_library`）。 */
     modelInLibrary: Boolean = true,
     onApplyModel: (String) -> Unit = {},
-    // 内核 /api/config 的 provider 字段 —— **协议族**（anthropic | openai），
-    // 不是供应商 id。留着是为了将来展示「当前用的哪种协议」，
-    // **绝不能拿它当供应商显示或参与匹配**（见 AGENTS P-045）。
+    // /api/config 返回的 provider 为协议族名称，不可作为供应商身份显示（见 P-045）
     activeProvider: String = "",
-    // 附件面板开合由外部持有：这样 AppRoot 能在消息区盖一层「点外部收起」的
-    // 透明遮罩（面板自己在 Composer 里，盖不到自己头顶的区域）。
+    // 由外部持有附件面板开合，使消息区点击遮罩可收起面板
     attachPanelOpen: Boolean = false,
     onAttachPanelChange: (Boolean) -> Unit = {},
     // @ 动态补全与「+ → Skills 和技能」的数据源（技能、内置插件、MCP 插件；
@@ -268,31 +243,17 @@ fun Composer(
     }
     // 模型名：内核 ready 帧的 display_name 优先；用户在弹层里选过则尊重选择。
     var pickedModel by rememberSaveable { mutableStateOf<String?>(null) }
-    // 模型名：用户在弹层里选过的优先；否则用内核生效模型的显示名。
-    //
-    // 但**内核生效模型若不在模型库里**（模型库被清空 / 条目被删 / 从没配过），
-    // 那不是用户选过的模型 —— 内核 `config/default.yaml` 里的默认模型
-    // （claude-sonnet-4-20250514）不该被当成「当前模型」显示。
-    // 内核专门给了 `model_in_library` 这个信号就是为这一种情况。
+    // 内核生效模型不在模型库时（如默认回退模型）不将其展示为已选模型，遵循 modelInLibrary 标志
     val model = pickedModel
         ?: if (modelInLibrary) modelName.ifBlank { "未选择模型" } else "未选择模型"
-    // 供应商不是「界面态」：它的真相是**当前生效模型所属的供应商**。
-    //
-    // **不能用内核 config.provider** —— 那个字段是**协议族**（anthropic | openai，
-    // 内核 config/default.yaml 里的默认值就是 "anthropic"），和供应商库里那些
-    // 带显示名的记录是两个命名空间，拿来当供应商显示就会变成
-    // 「anthropic」与「DeepSeek 官方」并存。详见 AGENTS P-045。
-    //
-    // 弹层里的选择只用于浏览定位，不参与真实能力判定 ——
-    // 早先把本地字符串当真相，勾过库外供应商就会显示「未选择」，而模型其实能对话。
+    // 供应商真相来自当前生效模型在模型库中的归属 id（不可用 config.provider 协议族替代，见 P-045）
     var providerOverride by rememberSaveable { mutableStateOf("") }
-    // 当前模型一旦换成库内模型，供应商应跟着新模型走，而不是残留旧选择
+    // 当前模型切换到库内模型时重置浏览覆盖值
     val effectiveModel = remember(pickedModel, modelName) { pickedModel ?: modelName }
     val activeEntry = remember(libraryModels, effectiveModel) {
         libraryModels.firstOrNull { it.id == effectiveModel || it.name == effectiveModel }
     }
-    // 当前生效的供应商：按**内核的生效模型 id**去模型库找条目 ——
-    // 那才是真正在用的通道。模型库里没有（库空/模型被删）就没有当前供应商。
+    // 仅从模型库按生效模型 id 反查当前真正通道，库外或已删模型无当前供应商
     val activeProviderId = remember(libraryModels, effectiveModel, kernelModelId) {
         resolveActiveProviderId(libraryModels, kernelModelId, pickedModel.orEmpty())
     }
@@ -382,19 +343,15 @@ fun Composer(
         ActivityResultContracts.RequestPermission(),
     ) { granted -> handlePermissionResult(granted) }
 
-    /**
-     * 引擎路由。权限检查必须放在路由**之前**：系统引擎与云端引擎都由
-     * 服务方代开麦克风，没授权时先要权限，别让引擎自己报「麦克风被占用」。
-     */
+    /** 语音录音开关；须先检查麦克风权限再启动采集。 */
     fun toggleVoice() {
         if (listening) {
-            // 云端停录音后还要等上传，单独进「转写中」空档
             cloudEngine.stop()
             transcribing = true
             voiceNotice = "正在转写…"
             return
         }
-        // 上一段还在上传：再开一轮会让请求排队，用户只会觉得「点了没反应」
+        // 上传转写期间禁止重入排队
         if (transcribing) return
         val granted = ContextCompat.checkSelfPermission(
             context, Manifest.permission.RECORD_AUDIO,
@@ -742,9 +699,7 @@ fun Composer(
                         }
                     }
                 }
-                // 占位符走 decorationBox，不要用外层 Box 叠一个 Text ——
-                // 叠放时两者的基线/内边距各自计算，真机上会错开一行
-                // （截图里「与 CodeForge 对话…」同时出现在输入行和按钮行）。
+                // 占位符须放在 decorationBox 内，外层叠 Text 会与 BasicTextField 基线错位
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -916,8 +871,7 @@ fun Composer(
                         AppSettings.setLastModel(m.id)
                         onApplyModel(m.id)
                     }
-                // 选完就收起：弹层是 Dialog 层级，气泡提示会被它整个盖住
-                // （真机实测：切了模型但看不到「已切换到 X」）
+                // 选中后立即关闭弹层（Dialog 层级会遮挡 ToastHost 切换反馈）
                 sheet = null
             },
             libraryModels = libraryModels,
@@ -925,9 +879,8 @@ fun Composer(
             providerDetails = providerDetails,
             kernelModelId = kernelModelId,
             modelInLibrary = modelInLibrary,
-            // 传派生值本身：这里再拼「未选择」会把「未知」伪装成一个供应商
+            // 仅传真实派生值，避免将「未选择」占位串当成真实供应商
             currentProvider = provider,
-            // 高亮定位用 id —— 列表里比的是 id，不是显示名
             currentProviderId = effectiveProviderId,
             onProviderSelect = { providerOverride = it },
             thinkingIndex = thinkingIndex,
@@ -953,21 +906,9 @@ fun Composer(
     }
 }
 
-// ---------------------------------------------------------------- 主按钮
-
 /**
- * 主按钮：点按/长按双语义，覆盖语音 · 打断 · 转向 · 发送。
- *
- * 状态判定顺序即优先级：
- *  - listening：收音中，点击 = 收口 —— 中间结果不断进输入框，按钮不能抢跑去变发送键；
- *  - running 且输入为空：**tap = 开始语音，长按 1 秒 = 打断**（外圈进度环实时反馈，
- *    满圈触发并带长按触觉）—— 运行中最常用的两个动作同位并存；
- *  - 有内容且不在转写：发送。运行中发送 = steer 并入当前轮（占位符「回复 CodeForge…」
- *    即此语义），空闲 = 新问题；图标同为上箭头；
- *  - transcribing：云端转写空档，点击忽略（回来的文字还要接进输入框）；
- *  - 其余（空闲+空）：待听写。
- *
- * 状态切换带缩放渐变。长按进度环画在按钮外缘（Clay 色，-90° 起顺时针）。
+ * 主按钮（按优先级覆盖语音 / 打断 / 转向 steer / 发送）：
+ * `listening` 点击收口，`running` 且空输入点按语音、长按 1s 打断（外圈圆弧进度），有内容时发送或并入当前轮。
  */
 @Composable
 private fun MainButton(
@@ -1171,7 +1112,7 @@ private fun VoiceWaveform(color: Color, active: Boolean = false) {
     }
 }
 
-// ---------------------------------------------------------------- 底行控件
+// 底行控件
 
 @Composable
 private fun CircleIconButton(
@@ -1238,7 +1179,7 @@ private fun ModelPill(
     }
 }
 
-// ---------------------------------------------------------------- 编辑提示条
+// 编辑提示条
 /**
  * 编辑重发提示条。编辑态下内核会截断这条消息之后的轮次并回退文件改动，
  * 这件事不写出来用户不知道 —— 点了发送才发现后面的对话没了。
@@ -1294,7 +1235,7 @@ private fun EditPromptBar(canSend: Boolean, onCancel: () -> Unit, onSend: () -> 
     }
 }
 
-// ---------------------------------------------------------------- @ 提及高亮
+// @ 提及高亮
 
 /**
  * @ 提及染色。
@@ -1391,7 +1332,7 @@ private fun MentionSuggestionRow(candidate: MentionCandidate, onClick: () -> Uni
     }
 }
 
-// ---------------------------------------------------------------- 权限盾牌
+// 权限盾牌
 
 /** 盾牌图标：轮廓常显，自主模式填充实心（一眼看出「不用问」）。 */
 @Composable
@@ -1489,7 +1430,7 @@ private fun PermissionShield(
     }
 }
 
-// ---------------------------------------------------------------- 外观与上下文细线
+// 外观与上下文细线
 
 /** 输入卡配色：容器 / 底行按钮底色 / 不透明等价色 / 描边 / 正文 / 次要文字 / @ 高亮。 */
 private data class ComposerColors(
@@ -1502,15 +1443,7 @@ private data class ComposerColors(
     val mention: Color,
 )
 
-/**
- * 外观设置读的是 `AppSettings` 的字段（D 负责存）。
- *
- * 文字色优先级：手填颜色 > [LocalAppTextColor]（背景图暗时由主题层判出的白字）
- * > 主题 onSurface。背景图亮度不在这里算 —— 主题层已经按「原图平均亮度 ×
- * 亮度百分比」判过一轮，Composer 再算一遍只会在边界上给出不一致的结论。
- */
-
-/** 手填文字色：接受 #RRGGBB / #AARRGGBB（不带 # 也认），解析失败即视为未设置。 */
+/** 解析手填文字颜色值（支持 `#RRGGBB` / `#AARRGGBB`，可省略 `#`）。 */
 private fun parseColorPref(raw: String): Color? {
     val hex = raw.trim().removePrefix("#")
     if (hex.length != 6 && hex.length != 8) return null
@@ -1591,10 +1524,7 @@ private fun rememberComposerColors(): ComposerColors {
     }
 }
 
-/**
- * 上下文占比细线：沿输入卡外圈画一圈，画到 percent 为止（底轨很浅）。
- * 取代原先插在输入卡上方、额外占一行高度的上下文条。
- */
+/** 上下文占用进度线：沿输入卡外圈绘制至 percent 处。 */
 private fun Modifier.contextRing(usage: ContextUsage?, progress: Float): Modifier =
     if (usage == null) {
         this

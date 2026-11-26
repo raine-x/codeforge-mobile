@@ -92,7 +92,7 @@ internal object PhoneSystemCapabilities {
         return enabled.split(':').any { it.equals(flat, ignoreCase = true) }
     }
 
-    // ---------------------------------------------------------------- 应用管理
+    // 应用管理
 
     fun listInstalledApps(
         context: Context,
@@ -248,7 +248,7 @@ internal object PhoneSystemCapabilities {
             ?: candidates.firstOrNull { it.first.contains(q, ignoreCase = true) }
     }
 
-    // ---------------------------------------------------------------- 系统设置
+    // 系统设置
 
     fun handleSystemSetting(
         context: Context,
@@ -573,7 +573,7 @@ internal object PhoneSystemCapabilities {
         )
     }
 
-    // ---------------------------------------------------------------- 文件与媒体
+    // 文件与媒体
 
     suspend fun handleFileMedia(
         context: Context,
@@ -713,7 +713,7 @@ internal object PhoneSystemCapabilities {
         }
     }
 
-    // ---------------------------------------------------------------- 日历、闹钟与计时器
+    // 日历、闹钟与计时器
 
     suspend fun handleCalendarReminder(
         context: Context,
@@ -879,7 +879,7 @@ internal object PhoneSystemCapabilities {
         return fallback
     }
 
-    // ---------------------------------------------------------------- 通讯与分享
+    // 通讯与分享
 
     suspend fun handleCommunication(
         context: Context,
@@ -986,7 +986,7 @@ internal object PhoneSystemCapabilities {
         }
     }
 
-    // ---------------------------------------------------------------- 设备状态
+    // 设备状态
 
     fun deviceStatus(context: Context): JSONObject {
         val batteryIntent = context.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))

@@ -72,9 +72,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
- * 一条消息，对齐 Claude 客户端的消息形态：
+ * 单条对话消息的排版形态：
  *
- *  - 用户消息：右对齐的暖灰圆角气泡（Claude 不给用户气泡上色）；
+ *  - 用户消息：右对齐的暖灰圆角气泡（保持中性低调底色）；
  *  - 助手消息：无气泡通栏排版，衬线正文；「思考过程」默认收起成一行，
  *    思考流式期间自动展开、正文开始后自动收起（用户手动切换过则尊重用户）；
  *  - 完整回复下方是操作行（复制/分享/朗读/赞/踩/重试）；
@@ -101,7 +101,7 @@ fun MessageBubble(
     }
 }
 
-// ---------------------------------------------------------------- 通知行
+// 通知行
 
 /**
  * 流程性通知行（重试/压缩/回滚/转向/提示）。
@@ -272,7 +272,7 @@ private fun CompressNoticeBar(message: ChatMessage, modifier: Modifier = Modifie
     }
 }
 
-// ---------------------------------------------------------------- 用户
+// 用户
 
 @Composable
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
@@ -291,7 +291,7 @@ private fun UserBubble(
     val clipboard = androidx.compose.ui.platform.LocalClipboard.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
 
-    // 长按/点气泡切换操作栏（参考 Grok：操作直接落在气泡下方，不弹菜单）。
+    // 长按/点气泡切换操作栏（操作直接内联落在气泡下方，不弹出遮挡菜单）。
     // 长按仍交给 SelectionContainer 选文字，两者不冲突。
     Row(
         modifier = modifier.fillMaxWidth(),
@@ -384,7 +384,7 @@ private fun UserBubble(
     viewer?.let { FullscreenImageViewer(it) { viewer = null } }
 }
 
-// ---------------------------------------------------------------- 助手
+// 助手
 
 @Composable
 private fun AssistantBlock(
@@ -399,9 +399,7 @@ private fun AssistantBlock(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        // 有 segments 就按「思考 → 执行 → 思考 → 执行 → 正文」的**真实发生顺序**渲染；
-        // 没有就回退旧字段（历史消息 / 老内核事件只有 thinking+tools+text 三块）。
-        // 旧渲染把所有工具卡堆在正文之前 —— 那正是用户反馈的「执行全在前面」。
+        // 有 segments 时按真实思考/执行/正文顺序交错渲染；历史老消息回退传统三块布局
         if (message.segments.isNotEmpty()) {
             SegmentedContent(message, onFetchOutput)
         } else {
@@ -424,14 +422,9 @@ private fun AssistantBlock(
 }
 
 /**
- * 按 [ChatMessage.segments] 的顺序渲染正文流。
- *
- * 连续的只读工具（read_file / list_dir / search_files / web 读取）在这里收成
- * 「已探索 N 项」一块；写类工具与正文、思考一样各占自己的位置 —— 分组只在
- * 相邻只读工具之间发生，绝不跨过一段正文或思考（否则「什么时候看的」就丢了）。
- *
- * 正文段之前的思考/工具前缀（[ProcessGroup]）：正文开始或流结束时整组收成
- * 一行，把屏幕还给回答 —— 用户看到的第一段正文就是画面的主角。
+ * 按 [ChatMessage.segments] 真实发生顺序渲染助手内容：
+ * 相邻只读工具合并为「已探索 N 项」（不跨正文或思考边界）；
+ * 正文前含多项思考/工具前缀时整组收折为 [ProcessGroup]；全为只读工具时直接交由 ExploreGroup 处理。
  */
 @Composable
 private fun ColumnScope.SegmentedContent(
@@ -442,10 +435,9 @@ private fun ColumnScope.SegmentedContent(
     val firstText = segments.indexOfFirst { it is MessageSegment.Text }
     val prefixEnd = if (firstText == -1) segments.size else firstText
     val prefix = segments.take(prefixEnd)
-    // 纯连续只读工具前缀今天已由 ExploreGroup 收成一行，再包一层就是双重折叠
     val prefixAllReadOnly = prefix.isNotEmpty() &&
         prefix.all { it is MessageSegment.Tool && isReadOnlyTool(it.call.name) }
-    // 单思考/单工具保持原样 —— 各自本来就只有一行
+    // 单思考或单工具本身只有一行，无需额外包一层折叠容器
     val wrap = prefix.size >= 2 && !prefixAllReadOnly
 
     if (wrap) {
@@ -661,7 +653,7 @@ private fun BodyText(message: ChatMessage, text: String, caret: Boolean) {
     }
 }
 
-// ---------------------------------------------------------------- 思考过程
+// 思考过程
 
 /**
  * 思考过程折叠行。
@@ -762,7 +754,7 @@ private fun ThinkingBlock(
     }
 }
 
-// ---------------------------------------------------------------- 过程组折叠
+// 过程组折叠
 
 /**
  * 「思考 + 工具」过程前缀的整组折叠行。
@@ -942,10 +934,10 @@ private fun WaitingIndicator() {
     }
 }
 
-// ---------------------------------------------------------------- 操作行
+// 操作行
 
 /**
- * 回复下方的操作行（对齐 Claude：复制/分享/朗读/赞/踩/重试）。
+ * 助手回复下方的快捷操作行（复制/分享/朗读/赞/踩/重试）。
  *
  * 现阶段真正接了行为的是「复制」与「重试」；分享、朗读、赞、踩只做
  * 按压与选中反馈 —— UI 层先占位，等内核接入后再接 TTS 与反馈上报。
@@ -1001,7 +993,6 @@ private fun ActionsRow(message: ChatMessage, onRetry: () -> Unit) {
             copied = true
         }
         ActionIcon(glyph = Glyph.Share, tint = tint, label = "分享") {
-            // 系统分享面板（B4：分享不再是占位）
             val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
                 type = "text/plain"
                 putExtra(android.content.Intent.EXTRA_TEXT, message.text)

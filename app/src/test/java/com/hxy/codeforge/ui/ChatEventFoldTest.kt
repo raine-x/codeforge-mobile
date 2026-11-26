@@ -31,7 +31,7 @@ class ChatEventFoldTest {
     private fun tool(id: String, state: ToolState = ToolState.Running) =
         ToolCall(id = id, name = "bash", input = "ls", state = state)
 
-    // ---------- 流式拼接 ----------
+    // 流式拼接
 
     @Test
     fun `正文增量会并入同一条流式消息且段合并`() {
@@ -75,7 +75,7 @@ class ChatEventFoldTest {
         assertEquals(listOf<MessageSegment>(MessageSegment.Thinking("ab")), m.segments)
     }
 
-    // ---------- 工具卡 ----------
+    // 工具卡
 
     @Test
     fun `新工具卡不会挂到上一轮已结束的助手消息`() {
@@ -127,7 +127,7 @@ class ChatEventFoldTest {
         assertEquals(s.messages, after.messages)
     }
 
-    // ---------- 收尾 ----------
+    // 收尾
 
     @Test
     fun `空闲收尾清流式标记并把运行中工具改为 Interrupted`() {
@@ -174,7 +174,7 @@ class ChatEventFoldTest {
         assertEquals(ToolState.Interrupted, failed.messages.single().tools.single().state)
     }
 
-    // ---------- 会话 ----------
+    // 会话
 
     @Test
     fun `忙碌事件同时置运行态与列表 busy 并清横幅`() {
@@ -241,7 +241,7 @@ class ChatEventFoldTest {
         assertEquals("新标题", s.sessions.single().title)
     }
 
-    // ---------- 后台会话过滤 ----------
+    // 后台会话过滤
 
     @Test
     fun `别的会话的流式输出被判为后台事件`() {

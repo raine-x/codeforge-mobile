@@ -32,13 +32,7 @@ import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
 
 /**
- * 对话流里的内嵌 HTML 块。
- *
- * AI 用 ```html 围栏给出整页文档（题目页、解析展开、可点开的图表），
- * 这里直接把它挂成可交互 WebView —— 按钮能点，答案能展开，不需要跳出对话。
- *
- * 高度按内容实测：页面报多少就多高，但夹在 [MIN_H] 与 [MAX_H] 之间，
- * 免得一个 3000px 长的页面把整条消息流撑爆。
+ * 对话流内的嵌入式 WebView HTML 块，高度按内容自适应并限制在 [MIN_H]..[MAX_H] 之间。
  */
 @Composable
 fun HtmlBlockView(
@@ -58,10 +52,8 @@ fun HtmlBlockView(
     var heightPx by remember(html) { mutableIntStateOf(0) }
     val onHeight by rememberUpdatedState { h: Int -> heightPx = h }
 
-    // 不给外层套灰框：页面自带背景和圆角就是完整视觉，再包一层会变成
-    // 「框里框」（截图里灰底 + 奶油卡 + 圆角三层套娃），和聊天语境不搭。
+    // 不额外包裹卡片边框，避免与页面自带圆角底色叠加多层嵌套
     Column(modifier = modifier.fillMaxWidth()) {
-        // 工具条：标题 + 两个打开方式
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -121,7 +113,10 @@ fun HtmlBlockView(
                             when (ev.kind) {
                                 "size" -> onHeight(ev.payload.toIntOrNull() ?: 0)
                                 "send" -> mainHandler.post { currentActions?.onSend?.invoke(ev.payload) }
-                                "prefill" -> mainHandler.post { currentActions?.onPrefill?.invoke(ev.payload) }
+                                "prefill" -> mainHandler.post {
+                                    currentActions?.onPrefill?.invoke(ev.payload)
+                                    currentActions?.onToast?.invoke("已填入下方输入框，点发送即可提交")
+                                }
                                 "toast" -> mainHandler.post { currentActions?.onToast?.invoke(ev.payload) }
                             }
                         },

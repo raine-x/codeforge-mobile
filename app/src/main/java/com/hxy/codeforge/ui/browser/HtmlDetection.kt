@@ -3,41 +3,9 @@ package com.hxy.codeforge.ui.browser
 import com.hxy.codeforge.render.RenderBlock
 
 /**
- * 「这段文本是不是一整份 HTML 页面」的判定（**原文级**）。
- *
- * ## 为什么要有这一层（与 [looksLikeHtmlDocument] 的区别）
- *
- * 引擎把 markdown 切块时，CommonMark 的 HTML 块（type 6）**在空行处结束**，
- * 之后的内容重新按 markdown 解析 —— 于是缩进 ≥4 空格的 HTML 行变成
- * `code_block`，正文被从中间打断：
- *
- * ```
- * paragraph "<!DOCTYPE html>\n"
- * paragraph "<html>\n"
- * code_block "<div id=\"a\">\n\n    <span>x</span>\n\n</div>\n"   ← 缩进还被吃掉 4 格
- * paragraph "</body>\n"
- * ```
- *
- * 碎片化之后**再也拼不回原文**：缩进丢了、块边界丢了。
- * 所以「先认出来、再决定怎么渲染」必须发生在**喂给引擎之前** ——
- * 这就是本函数与 [looksLikeHtmlDocument] 的分工：
- *
- * - [looksLikeHtmlDocument]：判定「已切碎的块拼起来像不像一份文档」（合并阶段用）
- * - 本函数：判定「原文本身是不是一整份文档」（喂引擎之前用，认出来就直接渲染）
- *
- * ## 判定门槛（沿用 [looksLikeHtmlDocument] 的保守原则）
- *
- * 认错的代价是双向的：把正文里贴的一小段标签当整页渲染会吞掉周围文字；
- * 把整页当正文显示则是一屏尖括号。所以：
- *
- *  - 必须有文档头（`<!DOCTYPE html` 或 `<html>`，可出现在解说之后）；
- *  - 必须是完整文档（有 `</html>` / `</body>` 闭合）；
- *  - 抽出的文档要够长。
- *
- * ## 围栏形态不在这里
- *
- * ```html 围栏由引擎产出 `code_block` + `lang="html"`，渲染层另有通路，
- * 不该走这里 —— 围栏里的内容是**代码**，不是文档。
+ * 原文级完整 HTML 文档识别（在送入渲染引擎之前判定，围栏代码块走 `code_block` 通路不在此列）。
+ * CommonMark 会在空行处切断 HTML 块并把缩进 ≥4 空格的行变成 code_block，
+ * 因此须在解析分块前抽出完整文档（含 docType / html 闭合并满足最小长度）。
  */
 internal fun looksLikeWholeHtmlDocument(raw: String): Boolean {
     val t = raw.trim()
@@ -63,22 +31,55 @@ internal fun looksLikeWholeHtmlDocument(raw: String): Boolean {
  * 避免半截文档提前转成网页。
  */
 internal fun extractHtmlDocument(raw: String): String? {
+    val (start, end) = findBareHtmlDocumentBounds(raw) ?: return null
+    return raw.substring(start, end)
+}
+
+/** 在跳过代码围栏与行内反引号的前提下定位裸 HTML 文档起止区间。 */
+private fun findBareHtmlDocumentBounds(raw: String): Pair<Int, Int>? {
     val lower = raw.lowercase()
-    val doctype = lower.indexOf("<!doctype html")
-    val htmlTag = lower.indexOf("<html")
+    if (!lower.contains("<!doctype html") && !lower.contains("<html")) return null
+    val codeRanges = findFencedAndInlineCodeRanges(raw)
+    fun inCode(pos: Int): Boolean = codeRanges.any { pos in it.first until it.second }
+
+    fun indexOfOutsideCode(needle: String, fromIndex: Int = 0): Int {
+        var pos = fromIndex
+        while (pos < lower.length) {
+            val idx = lower.indexOf(needle, pos)
+            if (idx < 0) return -1
+            if (!inCode(idx)) return idx
+            pos = idx + needle.length
+        }
+        return -1
+    }
+
+    fun lastIndexOfOutsideCode(needle: String, startFrom: Int): Int {
+        var pos = startFrom
+        var last = -1
+        while (pos < lower.length) {
+            val idx = lower.indexOf(needle, pos)
+            if (idx < 0) break
+            if (!inCode(idx)) last = idx
+            pos = idx + needle.length
+        }
+        return last
+    }
+
+    val doctype = indexOfOutsideCode("<!doctype html")
+    val htmlTag = indexOfOutsideCode("<html")
     val start = listOfNotNull(
         doctype.takeIf { it >= 0 },
         htmlTag.takeIf { it >= 0 },
     ).minOrNull() ?: return null
-    val htmlEndIdx = lower.lastIndexOf("</html>")
-    val bodyEndIdx = lower.lastIndexOf("</body>")
+
+    val htmlEndIdx = lastIndexOfOutsideCode("</html>", start)
+    val bodyEndIdx = lastIndexOfOutsideCode("</body>", start)
     val end = when {
         htmlEndIdx >= 0 -> htmlEndIdx + "</html>".length
         bodyEndIdx >= 0 -> bodyEndIdx + "</body>".length
         else -> raw.length
     }
-    if (end <= start) return null
-    return raw.substring(start, end)
+    return if (end > start) start to end else null
 }
 
 /**
@@ -103,21 +104,7 @@ data class HtmlSplit(val before: String, val html: String?, val after: String)
  * 未闭合（流式中）时文档段取到文本末尾，`after` 为空。
  */
 internal fun splitProseAroundHtml(raw: String): HtmlSplit {
-    val lower = raw.lowercase()
-    val doctype = lower.indexOf("<!doctype html")
-    val htmlTag = lower.indexOf("<html")
-    val start = listOfNotNull(
-        doctype.takeIf { it >= 0 },
-        htmlTag.takeIf { it >= 0 },
-    ).minOrNull() ?: return HtmlSplit(raw, null, "")
-    val htmlEndIdx = lower.lastIndexOf("</html>")
-    val bodyEndIdx = lower.lastIndexOf("</body>")
-    val end = when {
-        htmlEndIdx >= 0 -> htmlEndIdx + "</html>".length
-        bodyEndIdx >= 0 -> bodyEndIdx + "</body>".length
-        else -> raw.length
-    }
-    if (end <= start) return HtmlSplit(raw, null, "")
+    val (start, end) = findBareHtmlDocumentBounds(raw) ?: return HtmlSplit(raw, null, "")
     return HtmlSplit(
         before = raw.substring(0, start).trim(),
         html = raw.substring(start, end),
@@ -126,54 +113,22 @@ internal fun splitProseAroundHtml(raw: String): HtmlSplit {
 }
 
 /**
- * 「这段文本是不是一份 HTML 页面」的判定。
- *
- * ## 为什么壳侧要自己认
- *
- * OpenRender 没有 Html 块类型 —— 裸 HTML 会被当普通文本塞进 paragraph
- * （引擎 `markdown.rs` 里 `Event::Html` → `push_text`）。
- * 要支持「AI 直接输出 HTML」这条路，只能壳侧按文本特征认。
- *
- * ## 为什么判定要保守
- *
- * 认错了有两种后果：把正文里贴的一小段标签当整页渲染（吞掉周围文字），
- * 或者把整页当正文显示（一屏尖括号）。所以门槛定得高：
- *
- *  - 整段必须以 `<` 开头 —— 行内 HTML 混在文字里的一律不认；
- *  - 必须是完整文档（doctype，或 `<html>` 且有闭合），或带 style/script 的整块；
- *  - 必须够长，且以 `>` 收尾 —— 短片段多半只是正文里的一行标签。
+ * 块级 HTML 文档保守判定（渲染引擎无原生 Html 块类型，裸 HTML 会落为普通 paragraph）。
+ * 要求整段以 `<` 开头、以 `>` 结尾且包含闭合文档标记或富媒体脚本标签。
  */
 internal fun looksLikeHtmlDocument(raw: String): Boolean {
     val t = raw.trim()
     if (t.length < 40 || !t.startsWith("<") || !t.endsWith(">")) return false
     val lower = t.lowercase()
-    // 完整文档：必须有闭合标记。
-    //
-    // 为什么不能只看 doctype：markdown 的 HTML 块在空行处断开，
-    // 一份文档的前半段常常就是 `<!DOCTYPE html><html><head>…</head>` ——
-    // 它有 doctype 但**还没写完**，当成完整文档就会把后半截（<body>）漏在页面外。
+    // 需含闭合标记，避免半截 docType + <head> 被误判为完整文档而截断后续 <body>
     val closed = lower.contains("</html>") || lower.contains("</body>")
     if (closed && (lower.contains("<!doctype html") || lower.contains("<html"))) return true
-    // 整块富 HTML（不含 svg —— svg 有专门的渲染路径，见 OpenRenderMessage）
+    // 整块富 HTML（不含 svg，svg 走独立渲染分支）
     val rich = lower.contains("<style") || lower.contains("<script") || lower.contains("<canvas")
     return rich && t.length >= 120
 }
 
-/**
- * 把连续的「裸 HTML 段落」合并成一份完整文档。
- *
- * ## 为什么需要合并
- *
- * markdown 的 HTML 块在**空行**处断开。一份带空行的 HTML 文档
- * （`<head>` 与 `<body>` 之间通常有空行）会被切成好几段，
- * 逐段看谁都不像完整文档。合并之后才认得出来。
- *
- * ## 合并规则
- *
- * 连续的、spans 全是纯文本的、以 `<` 开头的 paragraph 归为一组；
- * 组内用空行拼回（markdown 原文那里就是空行断开的）。
- * 合并后若仍不像完整文档，就原样逐块输出 —— 不改变原有行为。
- */
+/** 合并被空行切断的连续裸 HTML paragraph 为完整文档块；未命中整文档特征则原样保留。 */
 internal fun mergeHtmlBlocks(blocks: List<RenderBlock>): List<RenderBlock> {
     if (blocks.isEmpty()) return blocks
     val out = ArrayList<RenderBlock>(blocks.size)
@@ -210,17 +165,13 @@ internal fun mergeHtmlBlocks(blocks: List<RenderBlock>): List<RenderBlock> {
     return out
 }
 
-/** 是不是「纯 HTML 文本」的段落：spans 全是 text，且拼起来以 `<` 开头。 */
-private fun isBareHtmlParagraph(b: RenderBlock): Boolean =
+/** 判断段落 spans 是否全为纯文本且以 `<` 开头。 */
+internal fun isBareHtmlParagraph(b: RenderBlock): Boolean =
     b.spans.isNotEmpty() &&
         b.spans.all { it.type == "text" } &&
         b.spans.joinToString("") { it.text }.trimStart().startsWith("<")
 
-// ---------------------------------------------------------------- 裸 SVG 与围栏 SVG 识别
-
-/**
- * 判定一段文本是否为完整的 SVG 矢量图源码（允许前置 `<?xml ...?>`、`<!DOCTYPE svg ...>` 或 XML 注释）。
- */
+/** 判定文本是否为完整的 SVG 矢量图源码（允许前置 XML 声明、DOCTYPE 或注释）。 */
 internal fun looksLikeSvgMarkup(raw: String): Boolean {
     val cleaned = stripTrailingXmlComments(stripLeadingXmlProlog(raw.trim()))
     if (!cleaned.startsWith("<svg", ignoreCase = true)) return false
@@ -238,6 +189,17 @@ private fun stripTrailingXmlComments(raw: String): String {
         s = s.substring(0, start).trimEnd()
     }
     return s
+}
+
+/**
+ * 判定一段尚未闭合的文本（如 ```xml 或未标语言围栏）是否正在流式输出 SVG 源码，
+ * 以便在流式结束前展示加载占位而不倾倒原始 XML 标签。
+ */
+internal fun looksLikeStreamingSvgStart(raw: String): Boolean {
+    val stripped = stripLeadingXmlProlog(raw.trimStart())
+    if (!stripped.startsWith("<svg", ignoreCase = true)) return false
+    val after = stripped.getOrNull(4)
+    return after == null || after.isWhitespace() || after == '>'
 }
 
 /** 剥除 SVG 前置的 XML 声明、DOCTYPE 与注释。 */
@@ -308,7 +270,7 @@ internal fun splitProseAroundBareSvg(raw: String): List<BareSvgSegment> {
             val idx = lower.indexOf("<svg", searchFrom)
             if (idx < 0) break
             val afterTag = lower.getOrNull(idx + 4)
-            val validOpen = afterTag != null && (afterTag.isWhitespace() || afterTag == '>')
+            val validOpen = afterTag == null || afterTag.isWhitespace() || afterTag == '>'
             if (validOpen && !inCode(idx)) {
                 svgStart = idx
                 break
@@ -324,11 +286,11 @@ internal fun splitProseAroundBareSvg(raw: String): List<BareSvgSegment> {
             break
         }
 
-        // 若 <svg 前紧邻 <?xml ...?>，把 xml 声明一并划进 SVG 段，避免残留在正文里
+        // 若 <svg 前紧邻 <?xml ...?> / <!DOCTYPE ...> / XML 注释，一并划进 SVG 段，避免序言残留在正文里
         var actualStart = svgStart
         val beforeSlice = raw.substring(cursor, svgStart)
         val xmlIdx = beforeSlice.lastIndexOf("<?xml", ignoreCase = true)
-        if (xmlIdx >= 0 && beforeSlice.substring(xmlIdx).trim().endsWith("?>")) {
+        if (xmlIdx >= 0 && stripLeadingXmlProlog(beforeSlice.substring(xmlIdx)).isEmpty()) {
             actualStart = cursor + xmlIdx
         }
 
@@ -397,37 +359,55 @@ private fun findFencedAndInlineCodeRanges(raw: String): List<Pair<Int, Int>> {
 
     while (i < n) {
         val ch = raw[i]
-        if (atLineStart && (raw.startsWith("```", i) || raw.startsWith("~~~", i))) {
-            val marker = raw.substring(i, i + 3)
-            val start = i
-            val lineEnd = raw.indexOf('\n', i + 3)
-            if (lineEnd < 0) {
-                ranges.add(start to n)
-                break
-            }
-            var closePos = lineEnd + 1
-            var foundClose = false
-            while (closePos < n) {
-                var p = closePos
-                while (p < n && (raw[p] == ' ' || raw[p] == '\t')) p++
-                if (raw.startsWith(marker, p)) {
-                    val endLine = raw.indexOf('\n', p + 3)
-                    val end = if (endLine < 0) n else endLine + 1
-                    ranges.add(start to end)
-                    i = end
-                    atLineStart = true
-                    foundClose = true
-                    break
+        if (atLineStart) {
+            var indent = 0
+            while (i + indent < n && raw[i + indent] == ' ' && indent < 3) indent++
+            val p = i + indent
+            val markerChar = raw.getOrNull(p)
+            if (markerChar == '`' || markerChar == '~') {
+                var fenceLen = 0
+                while (p + fenceLen < n && raw[p + fenceLen] == markerChar) fenceLen++
+                if (fenceLen >= 3) {
+                    val lineEnd = raw.indexOf('\n', p + fenceLen)
+                    val info = if (lineEnd < 0) raw.substring(p + fenceLen) else raw.substring(p + fenceLen, lineEnd)
+                    if (!(markerChar == '`' && info.contains('`'))) {
+                        val start = i
+                        if (lineEnd < 0) {
+                            ranges.add(start to n)
+                            break
+                        }
+                        var closePos = lineEnd + 1
+                        var foundClose = false
+                        while (closePos < n) {
+                            var cp = closePos
+                            var cIndent = 0
+                            while (cp < n && raw[cp] == ' ' && cIndent < 3) { cp++; cIndent++ }
+                            var cLen = 0
+                            while (cp + cLen < n && raw[cp + cLen] == markerChar) cLen++
+                            if (cLen >= fenceLen) {
+                                val nextLine = raw.indexOf('\n', cp + cLen)
+                                val tail = if (nextLine < 0) raw.substring(cp + cLen) else raw.substring(cp + cLen, nextLine)
+                                if (tail.isBlank()) {
+                                    val end = if (nextLine < 0) n else nextLine + 1
+                                    ranges.add(start to end)
+                                    i = end
+                                    atLineStart = true
+                                    foundClose = true
+                                    break
+                                }
+                            }
+                            val nextNl = raw.indexOf('\n', closePos)
+                            if (nextNl < 0) break
+                            closePos = nextNl + 1
+                        }
+                        if (!foundClose) {
+                            ranges.add(start to n)
+                            break
+                        }
+                        continue
+                    }
                 }
-                val nextNl = raw.indexOf('\n', closePos)
-                if (nextNl < 0) break
-                closePos = nextNl + 1
             }
-            if (!foundClose) {
-                ranges.add(start to n)
-                break
-            }
-            continue
         }
 
         if (ch == '`') {
@@ -453,4 +433,144 @@ private fun findFencedAndInlineCodeRanges(raw: String): List<Pair<Int, Int>> {
         i++
     }
     return ranges
+}
+
+/**
+ * 将流式传输中的半截 `<svg ...` 裁剪到最后一个完整闭合的子元素边界，
+ * 剥除未完成/危险脚本并按栈倒序自动补齐闭合标签（含 `</svg>`），
+ * 使画布能够在生成过程中按图元增量呈现，而不是等到末尾整块突现。
+ * 若连 `<svg ...>` 起始标签本身都尚未闭合，则返回 `null`。
+ */
+internal fun buildStreamingSvgPreview(raw: String): String? {
+    val s = stripLeadingXmlProlog(raw)
+    if (!s.startsWith("<svg", ignoreCase = true)) return null
+    val afterPrefix = s.getOrNull(4)
+    if (afterPrefix != null && !afterPrefix.isWhitespace() && afterPrefix != '>') return null
+
+    fun findTagEndOutsideQuotes(src: String, startPos: Int): Int {
+        var idx = startPos + 1
+        var quote: Char? = null
+        while (idx < src.length) {
+            val c = src[idx]
+            if (quote != null) {
+                if (c == quote) quote = null
+            } else {
+                when (c) {
+                    '"', '\'' -> quote = c
+                    '>' -> return idx
+                }
+            }
+            idx++
+        }
+        return -1
+    }
+
+    val rootEnd = findTagEndOutsideQuotes(s, 0)
+    if (rootEnd < 0) return null
+    val rootOpenTag = s.substring(0, rootEnd + 1)
+    if (rootOpenTag.dropLast(1).trimEnd().endsWith("/")) {
+        return rootOpenTag
+    }
+
+    val openStack = mutableListOf("svg")
+    val out = StringBuilder(s.length + 32).append(rootOpenTag)
+    var safeLen = out.length
+    var safeStack = openStack.toList()
+    var inStyle = false
+    var i = rootEnd + 1
+
+    while (i < s.length) {
+        val nextLt = s.indexOf('<', i)
+        if (nextLt < 0) {
+            break
+        }
+        if (nextLt > i) {
+            out.append(s, i, nextLt)
+        }
+        when {
+            s.startsWith("<!--", nextLt) -> {
+                val endComment = s.indexOf("-->", nextLt + 4)
+                if (endComment < 0) break
+                val end = endComment + 3
+                out.append(s, nextLt, end)
+                i = end
+                if (!inStyle) {
+                    safeLen = out.length
+                    safeStack = openStack.toList()
+                }
+            }
+            s.startsWith("<![CDATA[", nextLt, ignoreCase = true) -> {
+                val endCdata = s.indexOf("]]>", nextLt + 9)
+                if (endCdata < 0) break
+                val end = endCdata + 3
+                out.append(s, nextLt, end)
+                i = end
+                if (!inStyle) {
+                    safeLen = out.length
+                    safeStack = openStack.toList()
+                }
+            }
+            else -> {
+                val tagEnd = findTagEndOutsideQuotes(s, nextLt)
+                if (tagEnd < 0) break
+                val tagText = s.substring(nextLt, tagEnd + 1)
+                val inner = tagText.substring(1, tagText.length - 1).trim()
+                if (inner.startsWith("?") || inner.startsWith("!")) {
+                    out.append(tagText)
+                    i = tagEnd + 1
+                    if (!inStyle) {
+                        safeLen = out.length
+                        safeStack = openStack.toList()
+                    }
+                    continue
+                }
+                val isClosing = inner.startsWith("/")
+                val selfClosing = !isClosing && inner.endsWith("/")
+                val nameStart = if (isClosing) 1 else 0
+                var nameEnd = nameStart
+                while (nameEnd < inner.length && !inner[nameEnd].isWhitespace() && inner[nameEnd] != '/') {
+                    nameEnd++
+                }
+                val tagName = inner.substring(nameStart, nameEnd)
+                if (tagName.equals("script", ignoreCase = true)) {
+                    if (isClosing || selfClosing) {
+                        i = tagEnd + 1
+                        continue
+                    }
+                    val closeScript = Regex("</script\\s*>", RegexOption.IGNORE_CASE).find(s, tagEnd + 1)
+                        ?: break
+                    i = closeScript.range.last + 1
+                    continue
+                }
+
+                out.append(tagText)
+                i = tagEnd + 1
+                if (isClosing) {
+                    val matchAt = openStack.indexOfLast { it.equals(tagName, ignoreCase = true) }
+                    if (matchAt >= 0) {
+                        while (openStack.size > matchAt) openStack.removeAt(openStack.lastIndex)
+                    }
+                    if (tagName.equals("style", ignoreCase = true)) {
+                        inStyle = openStack.any { it.equals("style", ignoreCase = true) }
+                    }
+                } else if (!selfClosing && tagName.isNotEmpty()) {
+                    openStack.add(tagName)
+                    if (tagName.equals("style", ignoreCase = true)) inStyle = true
+                }
+
+                if (!inStyle) {
+                    safeLen = out.length
+                    safeStack = openStack.toList()
+                }
+                if (openStack.isEmpty()) break
+            }
+        }
+    }
+
+    val result = StringBuilder(safeLen + safeStack.size * 10)
+    result.append(out, 0, safeLen)
+    for (idx in safeStack.lastIndex downTo 0) {
+        result.append("</").append(safeStack[idx]).append('>')
+    }
+    return result.toString()
 }

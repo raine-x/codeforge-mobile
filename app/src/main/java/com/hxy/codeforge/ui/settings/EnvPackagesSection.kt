@@ -75,7 +75,7 @@ fun EnvPackagesSection() {
         modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
     )
 
-    // 按内容自然宽度流式换行：避免固定四等分网格把较长包名（如「逆向工具 (...)」）
+    // 按内容自然宽度流式换行：避免固定四等分网格把名称较长的工具包
     // 挤进 1/4 窄列里折成多行错乱排版，同时让短包名保持单行紧凑排列。
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
@@ -105,11 +105,8 @@ fun EnvPackagesSection() {
                                 log = (log + line + "\n").takeLast(1600)
                             }
                             busyPkg = null
-                            // ⚠️ 不能只信退出码：apk 在 proot 下装完所有包后会报
-                            // "failed to write database: Permission denied"（数据库写不进去），
-                            // 退出码非 0，但**文件已经解压到位、命令可用**
-                            // （真机实测 python3 能跑）。所以失败时再 probe 一次，
-                            // 以「命令是否真的能跑」为最终判据。
+                            // apk 在 proot 下即使报 "failed to write database" 非零退出，命令往往已可用，
+                            // 故失败时以 probe 为最终判据（见 P-021）
                             val usable = code == 0 || EnvKit.isPackageInstalled(context, pkg)
                             installed.value = installed.value + (pkg.label to usable)
                             log = (

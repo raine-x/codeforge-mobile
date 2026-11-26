@@ -26,19 +26,8 @@ import com.hxy.codeforge.ui.Banner
 import kotlinx.coroutines.delay
 
 /**
- * 底部气泡提示。
- *
- * ## 为什么自绘而不用系统 Toast
- *
- * 系统 `Toast` 在 Android 16 上贴屏幕最底边，会被手势条切掉一半；
- * `setGravity(BOTTOM, 0, offset)` 抬高的请求也被忽略（真机两种都试过，
- * 截图里那条白边就是被切掉一半的 toast）。
- * 自绘能精确落在输入卡上方、样式与主题一致，也不会拦截触摸。
- *
- * 层级上它是根 Box 的最后一个子节点，能盖住普通内容；ModalBottomSheet 属于
- * Dialog 层级盖不住 —— 但涉及弹层的操作（选模型、选权限）都已经在选中后
- * 自动收起弹层，不会撞上。
- *
+ * 自绘底部气泡提示。
+ * 系统 Toast 在高版本手势条下易被裁切且忽略 BOTTOM 偏移，自绘组件可精确定位在输入卡上方并保持主题一致。
  * 停留时长：状态类 2 秒，错误类 3.2 秒。
  */
 @Composable

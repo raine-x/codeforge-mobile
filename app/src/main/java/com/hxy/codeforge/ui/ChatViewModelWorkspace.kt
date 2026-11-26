@@ -57,21 +57,7 @@ fun ChatViewModel.removeElement(index: Int) {
     }
 }
 
-/**
- * 发送时追加给内核的说明。
- *
- * ## 为什么要有
- *
- * 内核协议里没有「系统提示词」这个字段（config 只有模型、温度、步数这些），
- * 所以唯一能让模型知道「这 App 支持哪些呈现格式」的办法，就是把说明
- * 混进上行文本。**混进的是上行文本，不是气泡文本** —— 用户看到的仍然是
- * 自己写的那句话。
- *
- * ## 为什么要带「元素」的布局信息
- *
- * 用户在内置浏览器里点了某个按钮，AI 并不知道那个按钮是什么。
- * 把标签、文本、矩形、选择器一并送过去，AI 才能接着讨论「这个按钮」。
- */
+/** 构造上行文本，附加用户挑选的页面元素布局、客户端能力说明与手机操控门控提示（不影响 UI 显示的用户气泡）。 */
 internal fun ChatViewModel.buildWireText(userText: String, elements: List<PickedElement>): String {
     val sb = StringBuilder()
     sb.append(userText)
@@ -92,11 +78,8 @@ internal fun ChatViewModel.buildWireText(userText: String, elements: List<Picked
     }
     return sb.toString()
 }
-// ---------- 文件树（GET /api/tree，depth=1 懒加载）----------
-
 /**
- * 读取一层目录。[path] 空 = 工作区根，否则传内核返回的绝对路径（或相对路径）。
- * 读取失败写 [ChatUiState.treeError]，与「空目录」严格区分。
+ * 懒加载一层目录结构（[path] 为空时读取工作区根目录）。
  */
 fun ChatViewModel.loadTree(path: String = "") {
     val a = api ?: run {
@@ -120,8 +103,6 @@ fun ChatViewModel.loadTree(path: String = "") {
         }
     }
 }
-
-// ---------- @plan 操作面板 ----------
 
 fun ChatViewModel.dismissActionPanel() = _state.update { it.copy(actionPanel = null) }
 
@@ -240,14 +221,7 @@ fun ChatViewModel.clearEdit() {
 }
 
 /**
- * 外部内容到达（系统分享 ACTION_SEND/SEND_MULTIPLE、选中文本 PROCESS_TEXT）：
- * 预填进输入卡。**不建会话不自动发送** —— 冷启动时 transport 未就绪，
- * createSession 会直接失败；会话交给发送时的 awaitSession 自动闸门，
- * 草稿预填在任何时点都成立。
- *
- * 文本走 editText 回填通路（editBack 留空 = 不进编辑态，发送是普通发送）；
- * 附件按 EnvKit.stageUriToOutbox 同款口径复制进暂存区，再走 editAttachments。
- * 全部失败且有文本时仍回填文本 —— 文本是主、附件是辅。
+ * 接收系统分享或文本选中动作，将正文与附件暂存回填至输入卡（不主动新建会话或发送）。
  */
 fun ChatViewModel.onExternalContent(text: CharSequence?, uris: List<Uri>) {
     val body = text?.toString()?.trim()?.takeIf { it.isNotEmpty() }

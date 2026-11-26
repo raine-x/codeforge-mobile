@@ -145,7 +145,7 @@ fun FileTransferSection(
             modifier = Modifier.padding(vertical = 12.dp),
         )
 
-        // ---------------- 浏览与导出单文件/任意目录（复用统一文件管理器） ----------------
+        // 浏览与导出单文件/任意目录（复用统一文件管理器）
         TransferTitle("浏览与导出文件（统一文件管理器）")
         Text(
             text = "按真实目录层级浏览全部文件（支持搜索、预览、单文件导出与目录打包导出），不受文件数量限制。",
@@ -172,7 +172,7 @@ fun FileTransferSection(
             modifier = Modifier.padding(vertical = 12.dp),
         )
 
-        // ---------------- 导入到默认工作区 ----------------
+        // 导入到默认工作区
         TransferTitle("导入文件到默认工作区")
         Text(
             text = "从系统选择器挑一个文件，复制进默认工作区（未选项目时内核会话的落点），" +
@@ -192,7 +192,7 @@ fun FileTransferSection(
             modifier = Modifier.padding(vertical = 12.dp),
         )
 
-        // ---------------- 导入到当前工作区 ----------------
+        // 导入到当前工作区
         TransferTitle("导入文件到当前工作区")
         Text(
             text = if (state.currentWorkspace.isBlank()) {
@@ -218,7 +218,7 @@ fun FileTransferSection(
             modifier = Modifier.padding(vertical = 12.dp),
         )
 
-        // ---------------- 整目录一键打包导出 ----------------
+        // 整目录一键打包导出
         TransferTitle("一键打包导出工作区")
         Text(
             text = "把默认工作区或当前项目整体打包成 zip 复制到 Download/CodeForge/。",

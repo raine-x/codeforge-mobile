@@ -18,18 +18,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 内核 WS 下行帧 → [CoreEvent] 的纯解析（只依赖 org.json，可纯 JVM 单测）。
- *
- * 一种帧一个解析器，登记在 [parsers]；[parse] 只做「查表、调用」。
- * 帧名与键名以内核 `pkg/agent/agent.go` 与 `pkg/server/ws_handler.go` 为准，
- * 同名帧载荷键不统一的差异（P-008）收在各自解析器里。未登记的帧返回 null，
- * 内核以后新增事件不会让旧壳崩掉。
- *
- * 新增事件：在 [CoreEvent] 加子类、在 `ChatViewModel.onEvent` 加分支、在本文件登记一个解析器。
+ * 内核 WebSocket 下行帧到 [CoreEvent] 的纯解析器；未登记帧返回 null，保持向前兼容。
+ * 注意：同名或相近帧的载荷键名不统一（如 `sessions` 用 `items`，`ready` 用 `sessions`，P-008）。
  */
 internal object CoreFrames {
 
-    /** 单帧解析上下文：[o] 原始 JSON，[sid] 已回落到当前会话的会话 id，[nextHistoryId] 历史消息 id 发号器。 */
     class Ctx(val o: JSONObject, val sid: String, val nextHistoryId: () -> String)
 
     private val parsers: Map<String, (Ctx) -> CoreEvent?> = buildMap {
@@ -37,7 +30,6 @@ internal object CoreFrames {
             for (t in types) put(t, fn)
         }
 
-        // 首帧 payload：sessions 是数组键；config.display_name 是当前模型名
         reg("ready") { c ->
             CoreEvent.Ready(
                 sessions = parseSessions(c.o.optJSONArray("sessions") ?: JSONArray()),
@@ -48,10 +40,8 @@ internal object CoreFrames {
             )
         }
 
-        // title 必须带上：新建会话时内核回的 title 是空的，重命名/切换时是真标题
         reg("session") { c -> CoreEvent.SessionClaimed(c.sid, c.o.optString("title")) }
 
-        // 注意：sessions 帧的数组键是 items，不是 sessions —— 与 ready 帧不同
         reg("sessions") { c ->
             val arr = c.o.optJSONArray("items") ?: c.o.optJSONArray("sessions") ?: JSONArray()
             CoreEvent.Sessions(parseSessions(arr))
@@ -68,7 +58,6 @@ internal object CoreFrames {
         reg("busy") { c -> CoreEvent.Busy(c.sid) }
         reg("idle", "done") { c -> CoreEvent.Idle(c.sid) }
 
-        // 后台任务状态变化：帧里只有 id/状态，输出由 /api/tasks 拉取，避免大日志挤占 WS
         reg("task") { c ->
             CoreEvent.TaskChanged(
                 id = c.o.optString("id"),
@@ -78,8 +67,6 @@ internal object CoreFrames {
         }
 
         reg("text") { c -> CoreEvent.Delta(c.sid, c.o.optString("text")) }
-
-        // 思考流是字面量 "reasoning"，不在 agent.go 常量表里
         reg("reasoning") { c -> CoreEvent.Thinking(c.sid, c.o.optString("text")) }
 
         reg("tool_pending", "tool_call") { c ->
@@ -133,7 +120,6 @@ internal object CoreFrames {
 
         reg("hitl_resolved") { c -> CoreEvent.ApprovalResolved(c.o.optString("approval_id")) }
 
-        // 目标模式账本：goal / round / max_rounds / verdict / findings
         reg("goal") { c ->
             CoreEvent.Goal(
                 GoalStatus(
@@ -157,7 +143,6 @@ internal object CoreFrames {
         }
 
         reg("compress") { c ->
-            // 面板字段既可能嵌在 compress 对象里，也可能平铺在帧顶层（P-008）
             val p = c.o.optJSONObject("compress") ?: c.o
             val before = p.optLong("before", 0)
             val after = p.optLong("after", 0)
@@ -194,7 +179,6 @@ internal object CoreFrames {
             CoreEvent.NoticeEvent(c.sid, NoticeKind.Info, c.o.optString("text"))
         }
 
-        // edit：历史被截断重发，视图交给随后的 history 快照重建，这里只作废流式态
         reg("edit") { c -> CoreEvent.StreamReset(c.sid) }
 
         reg("todo") { c ->
@@ -229,7 +213,6 @@ internal object CoreFrames {
                     percent = c.o.optDouble("percent", 0.0).toFloat(),
                     model = c.o.optString("model"),
                     overBudget = c.o.optBoolean("over_budget", false),
-                    // window = 模型库的 ctx_in（0 = 未声明；内核按默认预算 120000 压缩）
                     window = c.o.optLong("window", 0),
                     compressed = c.o.optBoolean("compressed", false),
                 ),
@@ -250,8 +233,7 @@ internal object CoreFrames {
             )
         }
 
-        // checkpoints：steps 按「文件改动步」聚合，editables 给出可编辑锚点 back，
-        // resume_back>=0 表示有未跑完的轮次可续。注意 sessionId 取帧里的原值，不回落当前会话。
+        // checkpoints 帧必须保留帧内原始 session_id，不回 fallback
         reg("checkpoints") { c ->
             val stepsArr = c.o.optJSONArray("steps")
             val steps = (0 until (stepsArr?.length() ?: 0)).mapNotNull { i ->
@@ -280,13 +262,8 @@ internal object CoreFrames {
         reg("warn") { c -> CoreEvent.Warning(c.o.optString("error", "请求过于频繁，稍后重试")) }
     }
 
-    /** 已登记的帧名（测试用：新增解析器必须补用例）。 */
     val knownTypes: Set<String> get() = parsers.keys
 
-    /**
-     * 解析一帧。[currentSession] 是传输层当前会话（帧没带 session_id 时回落到它）。
-     * 未知帧名返回 null。
-     */
     fun parse(o: JSONObject, currentSession: String, nextHistoryId: () -> String): CoreEvent? {
         val sid = o.optString("session_id").ifEmpty { currentSession }
         val parser = parsers[o.optString("type")] ?: return null
@@ -299,12 +276,9 @@ internal object CoreFrames {
             add(
                 SessionItem(
                     id = o.optString("id"),
-                    // optString 的默认值只在「键不存在」时生效，title 是空串时仍会返回 ""；
-                    // 占位名统一在这里归一，列表里不会出现空白行。
                     title = displayTitle(o.optString("title")),
                     updatedAt = o.optLong("updated_at", 0L),
                     busy = o.optBoolean("busy", false),
-                    // 字段名以 agent.SessionMeta 为准：workspace / workspace_name / archived_at
                     workspace = o.optString("workspace"),
                     workspaceName = o.optString("workspace_name"),
                     archived = o.optLong("archived_at", 0L) > 0L,
@@ -313,27 +287,18 @@ internal object CoreFrames {
         }
     }
 
-    /**
-     * 会话标题的展示归一：内核新建会话的默认标题是「新会话」，界面统一显示「新建会话」；
-     * 只处理占位名，不碰用户/内核起的真标题。
-     */
     internal fun displayTitle(raw: String): String = when (raw.trim()) {
         "", "新会话", "新建会话", "未命名" -> "新建会话"
         else -> raw
     }
 
-    /**
-     * 历史消息是 `llm.Message` 结构：`{role, content: [{type, ...}], origin?}`。
-     * 块类型三种都要认：text（正文）、tool_use（挂到当前助手消息的工具卡，历史态无 Running）、
-     * tool_result（按 tool_use_id 回填对应卡片结果）。块顺序在 content 数组里天然保序。
-     */
     internal fun parseHistory(arr: JSONArray, nextId: () -> String): List<ChatMessage> = buildList {
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
             val role = when (o.optString("role")) {
                 "assistant" -> MsgRole.Assistant
                 "user" -> MsgRole.User
-                else -> continue // system/tool 角色不直接成泡
+                else -> continue
             }
             val blocks = o.optJSONArray("content") ?: continue
 
@@ -348,7 +313,6 @@ internal object CoreFrames {
                     }
 
                     "tool_use" -> {
-                        // 工具卡挂在最后一条助手消息上；没有就补一条空助手消息承载
                         var idx = indexOfLast { it.role == MsgRole.Assistant }
                         if (idx < 0) {
                             add(ChatMessage(id = nextId(), role = MsgRole.Assistant, text = "", time = 0L))
@@ -369,7 +333,6 @@ internal object CoreFrames {
                         val useId = b.optString("tool_use_id")
                         val content = b.opt("content")?.toString().orEmpty()
                         val isErr = b.optBoolean("is_error", false)
-                        // 从后往前找同一轮里 id 匹配的工具卡（跨消息也认）
                         for (k in indices.reversed()) {
                             val at = this[k].tools.indexOfFirst { it.id == useId }
                             if (at >= 0) {

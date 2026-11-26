@@ -80,17 +80,12 @@ fun ChatViewModel.createSession() {
 }
 
 /**
- * 新建会话。
- *
- * 统一走 [requestNewSession]：它会先登记闸门再发 new_session，
- * 用户紧接着发送的消息会等这条会话落定（问题 2/6 的根因都在这里）。
- * 「项目下 ＋」不走这里 —— 跨项目要先切工作区再建会话，见 [newSessionInProject]。
+ * 新建会话。统一先登记闸门再发送 new_session，确保排队消息等待会话落定。
+ * 指定项目新建需先切工作区，见 [newSessionInProject]。
  */
 private fun ChatViewModel.createSessionInternal() {
     val st = _state.value
-    // 当前已经是「空会话」就不再新建 —— 否则连点几下会攒出一串空会话
-    // （真机上就是这样堆出 5 条同名「新对话」）。空会话没有任何内容，
-    // 复用它对用户来说和「新建」没有区别。
+    // 复用当前空会话，避免连点生成多条空白「新对话」
     if (st.currentSessionId.isNotBlank() && st.messages.isEmpty() && !st.running) {
         _state.update {
             it.copy(banner = Banner("当前已经是新会话", isError = false))
@@ -107,11 +102,7 @@ private fun ChatViewModel.createSessionInternal() {
 }
 
 /**
- * 在指定项目下新建会话：先切工作区（挂起等 REST 完成），再 new_session。
- *
- * 旧实现是 `switchProject(workspace)` + 立刻 `createSession()` —— 后者是
- * 异步 REST，new_session 帧先到内核时工作区还是上一个项目，会话就归属错了
- * （用户报告的「项目下新建会话，发消息又自动新开对话」）。
+ * 在指定项目下新建会话：先挂起完成工作区切换，再发 new_session，确保会话归属正确。
  */
 fun ChatViewModel.newSessionInProject(workspace: String) {
     val a = api ?: run { bannerNoKernel(); return }
@@ -156,7 +147,7 @@ fun ChatViewModel.newSessionInProject(workspace: String) {
     }
 }
 
-// ---------- 项目（工作区）----------
+// 项目（工作区）
 
 /** 目录路径规范化（符号链接如 /sdcard ↔ /storage/emulated/0 对齐后比较）。 */
 internal fun canonicalPathOrRaw(path: String): String {
@@ -304,14 +295,8 @@ fun ChatViewModel.openDirectoryAsProject(dir: java.io.File) {
 }
 
 /**
- * 切到另一个项目：POST /api/workspace，然后载入该项目最近会话（没有就新建）。
- *
- * [workspace] 传空串 = 「不选择文件夹」：落到应用私有的 inbox 空间。
- * 不能直接把空串发给内核 —— 那是「清空工作区」语义，之后新建的会话
- * 会带上空 workspace，附件与文件工具都没有有效根。
- *
- * **不动其他项目/会话的运行状态**：只切当前视图与全局工作区，sessions 里的
- * busy 标记原样保留（项目行的转圈靠它维持）。
+ * 切换当前项目（[workspace] 空串自动映射到应用私有 inbox，不可直接传空清空内核工作区）。
+ * 保留既有会话列表的 busy 运行态，仅切换视图与活跃工作区。
  */
 fun ChatViewModel.switchProject(workspace: String) {
     val a = api ?: run { bannerNoKernel(); return }
@@ -516,14 +501,7 @@ fun ChatViewModel.branchSession() {
         enqueueSend(ChatViewModel.PendingSend(text, emptyList(), text))
     }
 }
-// ---------------- 内核服务操作（设置页 / 会话管理调用） ----------------
-
-/**
- * 会话列表变化后的统一收尾：重算 [ChatUiState.projects] 与当前项目。
- *
- * 所有改 sessions 的地方都走这里 —— 侧栏的项目分组、项目行的转圈、
- * 当前项目名全是 sessions 的派生物，散着写必然有一处漏同步。
- */
+/** 会话列表变化后的统一收尾：同步派生项目分组及当前工作区状态。 */
 internal fun ChatUiState.applySessions(sessions: List<SessionItem>): ChatUiState {
     val cur = sessions.firstOrNull { it.id == currentSessionId }
     return copy(
@@ -596,8 +574,6 @@ internal fun ChatViewModel.refreshWorkspaces() {
         }
     }
 }
-// ---------------- 会话管理 ----------------
-
 fun ChatViewModel.renameSession(id: String, title: String) {
     val a = api ?: run { bannerNoKernel(); return }
     viewModelScope.launch {
@@ -688,8 +664,7 @@ fun ChatViewModel.deleteSession(id: String) {
                 _state.update { st ->
                     val isCurrent = st.currentSessionId == id
                     st.copy(
-                        // 本地立即摘掉：内核在删除/归档后**不推** sessions 帧，
-                        // 只清消息区会让列表里继续挂着已删的会话（真机实测「删不掉」）。
+                        // 本地立即移除（删除/归档后内核不主动推送 sessions，见 P-022）
                         messages = if (isCurrent) emptyList() else st.messages,
                         title = if (isCurrent) "CodeForge" else st.title,
                         currentSessionId = if (isCurrent) "" else st.currentSessionId,

@@ -9,19 +9,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
-/**
- * @ 提及候选列表必须能滚动 —— 这条测试守住「别把列表改回不可滚」。
- *
- * ## 为什么需要守护
- *
- * 用户反馈：「@补全弹出的窗口怎么不支持滑动？」根因有两层：
- *  1. 候选被 `.take(4)` 硬截断 —— 只出 4 条，永远「装得下」，也就没有可滑的内容；
- *  2. 列表用普通 `Column` + `forEach` —— 一旦放开条数上限，没有高度上限也没有滚动，
- *     会把整张输入卡顶出屏幕。
- *
- * 现在两条都改了：候选不再截断（留 50 条兜底），列表改 `LazyColumn` + `heightIn` 上限。
- * 这类「手感回归」很容易在重构中被顺手改回去，所以用源码断言把它钉住。
- */
+/** `@` 提及候选列表可滚动且不硬截断的源码守护测试。 */
 class MentionListScrollTest {
     @Test
     fun completionPlacesCursorAfterSpaceAndPreservesFollowingText() {

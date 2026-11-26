@@ -61,8 +61,8 @@ fun ChatViewModel.applyModel(id: String) {
         when (val r = a.applyModel(id)) {
             is KernelApi.ApiResult.Ok -> {
                 _state.update { it.copy(modelName = id) }
-                // 供应商行必须与「当前生效模型」同一口径（问题 8）：
-                // apply 成功后重拉 config，让 kernelConfig.provider 也跟上。
+                // apply 成功后重拉 config，使 provider 与当前生效模型保持同源
+                refreshKernelSummaries()
                 refreshKernelSummaries()
                 // 换模型会换上下文窗口（ctx_in）与压缩预算：不拉一次 context 帧，
                 // 输入卡外圈的占比还按旧窗口画（1M 模型仍显示接近压缩线）
@@ -87,9 +87,7 @@ internal fun ChatViewModel.refreshKernelSummaries() {
         when (val r = a.getConfig()) {
             is KernelApi.ApiResult.Ok -> _state.update { st ->
                 val cfg = r.value
-                // 内核把上次工作区持久化在 state.yaml：冷启动时界面还没有
-                // 选中会话，currentWorkspace 是空串 —— 用它对齐「当前项目」，
-                // 附件预览根与项目名才不会落到 inbox（问题 8 的同一口径问题）。
+                // 冷启动时从内核 state.yaml 恢复上次工作区，避免界面工作区落回 inbox
                 st.copy(
                     kernelConfig = cfg,
                     currentWorkspace = st.currentWorkspace.ifBlank { cfg.workDir },
@@ -119,7 +117,7 @@ internal fun ChatViewModel.refreshKernelSummaries() {
                 if (r.value.steps.isNotEmpty()) _state.update { it.copy(thinkingSteps = r.value.steps) }
             is KernelApi.ApiResult.Err -> Unit
         }
-        // B5-3：权限初始态以内核为准（本地默认 Ask 可能与真实策略不一致）
+        // 权限初始态以内核实际策略为准
         when (val r = a.getPerm()) {
             is KernelApi.ApiResult.Ok -> {
                 runCatching { PermissionMode.valueOf(r.value.replaceFirstChar { it.uppercase() } ) }
@@ -174,7 +172,7 @@ fun ChatViewModel.updateSubagentPolicy(policy: SubagentPolicy) {
 // 内置插件 @ 补全的回落映射：现役内核的触发词匹配（pluginTriggered）只认
 // 原生触发词，不认插件 id 形态——壳侧 @ 面板插 @vulnerability_research 时
 // 内核毫无反应，「选了等于没选」。内核触发词数据化版本会下发 triggers 字段，
-// 到时候优先走 API；映射只兜旧内核。逆向分析不用映射：它的原生触发词
+// 到时候优先走 API；映射只兜旧内核。@reverse_analysis 插件不用映射：它的原生触发词
 // @reverse_analysis 与 id 本来就一致。
 private val builtinMentionFallback = mapOf(
     "vulnerability_research" to "vuln_hunt",
@@ -268,7 +266,7 @@ fun ChatViewModel.loadKernelExtras() {
     }
 }
 
-// ---------------------------------------------------------------- 后台脚本任务
+// 后台脚本任务
 
 /**
  * 拉一次后台任务列表。
@@ -409,8 +407,7 @@ fun ChatViewModel.saveModel(id: String, displayName: String, provider: String) {
     val a = api ?: run { bannerNoKernel(); return }
     val spec = ModelPresets.resolveOrDefault(id)
     viewModelScope.launch {
-        // 走 /api/models/save 而不是 save_batch：批量接口只认 id/name/provider，
-        // 而且实测加进去后主对话框的模型列表不刷新（等于没加）。
+        // 使用 /api/models/save 以写入完整规格并触发列表同步（save_batch 不刷新主列表）
         when (val r = a.saveModelFull(
             id = id,
             name = displayName.ifBlank { id },
@@ -451,16 +448,9 @@ fun ChatViewModel.deleteModel(id: String) {
 }
 
 /**
- * 保存一条模型的**完整规格**（/api/models/save）。
- *
- * 密钥三件套 [keySource] / [keyName] / [keyValue] 现在会真正下发：
- * - `keySource = "plain"` 配 [keyValue] 明文；编辑时留空 = 不动库里的旧密钥；
- * - `keySource = "env"` 配 [keyName] 环境变量名；
- * - 三者全空时 `inherit_key` 取 [inheritKey]（true = 清掉条目上的覆盖，改用供应商的）。
- * 给了任一密钥字段时内核必须收到 `inherit_key=false`，否则会清掉手输密钥；
- * 这一步在 [KernelApi.saveModelFull] 内按字段自动判定，调用方不必再算。
- *
- * [vision]/[video] 传 null = 未声明，与「明确不支持」是两回事。
+ * 保存模型完整规格（`/api/models/save`）。
+ * 密钥三件套与 `inherit_key` 由 [KernelApi.saveModelFull] 按输入字段自动协调；
+ * [vision]/[video] 传 null 表示未声明（区别于明确不支持）。
  */
 fun ChatViewModel.saveModelFull(
     id: String,
@@ -719,8 +709,7 @@ internal fun ChatViewModel.seedDeepSeekIfEmpty(providers: List<KernelApi.Provide
             protocol = "openai",
             keySource = "plain",
             keyName = "",
-            // 密钥留空：由用户在「供应商」子页里填。模型继承供应商的 key，
-            // 没填之前 apply 会失败 —— 这一点在 apply 失败提示里会说明。
+            // 密钥留空等待用户在供应商页填写
             keyValue = "",
             keyTouched = false,
         )) {
@@ -733,8 +722,7 @@ internal fun ChatViewModel.seedDeepSeekIfEmpty(providers: List<KernelApi.Provide
                 return@launch
             }
         }
-        // 一并预置模型条目，带完整规格：1M 输入 / 384K 输出 / 支持图片、不支持视频。
-        // 只建供应商不建模型的话，用户填完 KEY 还得自己去探测、勾选，多两步。
+        // 同步预置模型规格，避免用户填完密钥后还需手动探测添加
         when (val mr = a.saveModelFull(
             id = "deepseek-flash",
             name = "DeepSeek Flash",
@@ -745,7 +733,6 @@ internal fun ChatViewModel.seedDeepSeekIfEmpty(providers: List<KernelApi.Provide
             video = false,
         )) {
             is KernelApi.ApiResult.Ok -> Unit
-            // 之前不接返回值：模型没进库、apply 也跟着失败，界面上毫无线索
             is KernelApi.ApiResult.Err -> _state.update {
                 it.copy(banner = Banner("预置模型失败：${mr.message}", isError = true))
             }
@@ -754,19 +741,14 @@ internal fun ChatViewModel.seedDeepSeekIfEmpty(providers: List<KernelApi.Provide
             is KernelApi.ApiResult.Ok -> _state.update { it.copy(providerDetails = r.value) }
             is KernelApi.ApiResult.Err -> Unit
         }
-        // 只写进模型库不 apply，内核还在用 local.yaml 里的旧模型 ——
-        // 真机：UI 显示 deepseek-flash，内核实际请求 claude-sonnet-4，上游直接拒收。
+        // 写入后需显式 apply，否则内核仍停留在 local.yaml 的旧模型
         when (val ar = a.applyModel("deepseek-flash")) {
             is KernelApi.ApiResult.Ok -> {
                 _state.update { it.copy(modelName = "deepseek-flash") }
-                // 同上：预置完也要让供应商/模型/配置三者口径一致（问题 8）
                 refreshKernelSummaries()
             }
             is KernelApi.ApiResult.Err -> {
-                // 预置的密钥是**留空**的（等用户去供应商页填）→ apply 必然失败。
-                // 这不是故障，是「等 Key」。但必须说出来 ——
-                // 静默吞掉的话，界面上只表现为「供应商未选择」，
-                // 用户完全看不出卡在哪一步（真机截图复现）。
+                // 预置密钥留空导致 apply 失败时，显式提示用户前往填写 API Key
                 _state.update {
                     it.copy(
                         banner = Banner(

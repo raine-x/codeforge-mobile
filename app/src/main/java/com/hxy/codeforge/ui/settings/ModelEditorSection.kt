@@ -128,7 +128,7 @@ fun ModelEditorSection(
             modifier = Modifier.padding(bottom = 6.dp),
         )
 
-        // ---------------- 归属供应商 ----------------
+        // 归属供应商
         EditorLabel("归属供应商")
         if (providers.isEmpty()) {
             Text(
@@ -173,7 +173,7 @@ fun ModelEditorSection(
             modifier = Modifier.padding(vertical = 12.dp),
         )
 
-        // ---------------- 显示名 / 模型 id ----------------
+        // 显示名 / 模型 id
         OutlinedTextField(
             value = modelId,
             onValueChange = { raw ->
@@ -208,7 +208,7 @@ fun ModelEditorSection(
             modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
         )
 
-        // ---------------- 继承地址 / 密钥 ----------------
+        // 继承地址 / 密钥
         Row(
             modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -249,7 +249,7 @@ fun ModelEditorSection(
             }
         }
 
-        // ---------------- 密钥 ----------------
+        // 密钥
         // 继承供应商时这三项一律不提交（内核按 inherit_key 走供应商那份）；
         // 关掉继承才把本条模型自己的密钥写进去。
         EditorLabel("密钥来源")
@@ -317,7 +317,7 @@ fun ModelEditorSection(
             modifier = Modifier.padding(vertical = 12.dp),
         )
 
-        // ---------------- 上下文 ----------------
+        // 上下文
         EditorLabel("上下文（tokens）")
         EditorLabel("输入上限", small = true)
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -365,7 +365,7 @@ fun ModelEditorSection(
             modifier = Modifier.padding(vertical = 12.dp),
         )
 
-        // ---------------- 图片 / 视频三态 ----------------
+        // 图片 / 视频三态
         EditorLabel("图片能力")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(-1 to "未声明", 1 to "支持", 0 to "不支持").forEach { (v, label) ->
@@ -391,7 +391,7 @@ fun ModelEditorSection(
             modifier = Modifier.padding(top = 4.dp),
         )
 
-        // ---------------- RPM ----------------
+        // RPM
         EditorLabel("每分钟请求上限（可选）")
         OutlinedTextField(
             value = rpm,
@@ -402,7 +402,7 @@ fun ModelEditorSection(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // ---------------- 结果区 ----------------
+        // 结果区
         if (formError != null || saveError != null) {
             Text(
                 text = (saveError ?: formError).orEmpty(),
@@ -433,7 +433,7 @@ fun ModelEditorSection(
             )
         }
 
-        // ---------------- 动作 ----------------
+        // 动作
         Row(
             modifier = Modifier.padding(top = 12.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -677,7 +677,7 @@ fun ModelDiscoverPanel(
     }
 }
 
-// ---------------------------------------------------------------- 子件
+// 子件
 
 private val CTX_IN_PRESETS = listOf(
     128_000 to "128K",

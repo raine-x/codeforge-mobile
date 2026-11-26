@@ -1,6 +1,13 @@
 package com.hxy.codeforge.ui.chat
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -31,11 +38,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
@@ -43,8 +55,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -82,8 +96,10 @@ import com.hxy.codeforge.ui.browser.BrowserTarget
 import com.hxy.codeforge.ui.browser.HtmlBlockView
 import com.hxy.codeforge.ui.browser.HtmlLoadingBlock
 import com.hxy.codeforge.ui.browser.LocalBrowserController
+import com.hxy.codeforge.ui.browser.buildStreamingSvgPreview
 import com.hxy.codeforge.ui.browser.hasBareSvgOutsideFences
 import com.hxy.codeforge.ui.browser.looksLikeHtmlDocumentLoose
+import com.hxy.codeforge.ui.browser.looksLikeStreamingSvgStart
 import com.hxy.codeforge.ui.browser.looksLikeSvgMarkup
 import com.hxy.codeforge.ui.browser.mergeHtmlBlocks
 import com.hxy.codeforge.ui.browser.looksLikeWholeHtmlDocument
@@ -109,13 +125,65 @@ import com.hxy.codeforge.ui.theme.SerifBody
  *
  * 原生库不可用（ABI 不符/加载失败）时整条消息退回纯文本，不吞内容。
  */
+/**
+ * 在流式期间按渲染帧节奏连续吐字，消除网络突发分片造成的“一卡一顿”；
+ * 一旦流结束或文本发生非前缀替换（编辑/重生成），立即对齐目标全文，零延迟收口。
+ */
+@Composable
+private fun rememberSmoothedStreamingSource(source: String, streaming: Boolean): String {
+    if (!streaming) return source
+
+    val latestSource by rememberUpdatedState(source)
+    val latestStreaming by rememberUpdatedState(streaming)
+    var displayedLen by remember { mutableIntStateOf(source.length) }
+    var lastAnchor by remember { mutableStateOf(source) }
+
+    if (source != lastAnchor) {
+        if (!source.startsWith(lastAnchor)) {
+            displayedLen = source.length
+        }
+        lastAnchor = source
+    }
+
+    LaunchedEffect(streaming) {
+        while (latestStreaming) {
+            withFrameNanos {
+                val target = latestSource
+                val targetLen = target.length
+                if (displayedLen > targetLen) {
+                    displayedLen = targetLen
+                } else if (displayedLen < targetLen) {
+                    val backlog = targetLen - displayedLen
+                    // 少量积压每帧匀出 1~3 字维持丝滑连续，大量积压按比例追赶不掉队
+                    val step = when {
+                        backlog <= 4 -> 1
+                        backlog <= 14 -> 2
+                        backlog <= 40 -> (backlog + 5) / 6
+                        else -> (backlog + 3) / 4
+                    }
+                    var nextLen = (displayedLen + step).coerceAtMost(targetLen)
+                    if (nextLen < targetLen && nextLen > 0 && target[nextLen - 1].isHighSurrogate()) {
+                        nextLen++
+                    }
+                    displayedLen = nextLen
+                }
+            }
+        }
+        displayedLen = latestSource.length
+    }
+
+    return source.substring(0, displayedLen.coerceIn(0, source.length))
+}
+
 @Composable
 fun OpenRenderContent(
     source: String,
     streaming: Boolean,
     modifier: Modifier = Modifier,
     bodyStyle: TextStyle = SerifBody,
+    smoothStreaming: Boolean = true,
 ) {
+    val activeSource = if (smoothStreaming) rememberSmoothedStreamingSource(source, streaming) else source
     val density = LocalDensity.current.density
     // cacheDir 给公式渲染落地 Unicode 回退字体用（Android 无系统字体）
     val cacheDir = LocalContext.current.cacheDir.absolutePath
@@ -124,21 +192,31 @@ fun OpenRenderContent(
 
     // 整页 HTML 文档：**不经过 markdown 引擎**，直接挂成可交互页面。
     //
-    // 为什么必须绕开引擎：CommonMark 的 HTML 块在空行处结束，之后的内容
+    // 为什么必须先于引擎识别切分：CommonMark 的 HTML 块在空行处结束，之后的内容
     // 重新按 markdown 解析 —— 缩进 ≥4 空格的 HTML 行就变成 code_block，
     // 正文被从中间打断，缩进也被吃掉 4 格。碎片化之后拼不回原文。
     //
     // 判定必须在**喂引擎之前**做（见 looksLikeWholeHtmlDocument 的说明）。
     // 模型常输出「解说 + 文档 + 解说」：切出内层文档挂 WebView，解说走正文。
-    if (!streaming && looksLikeWholeHtmlDocument(source)) {
-        val split = splitProseAroundHtml(source)
+    if (!streaming && looksLikeWholeHtmlDocument(activeSource)) {
+        val split = splitProseAroundHtml(activeSource)
         Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (split.before.isNotBlank()) {
-                OpenRenderContent(source = split.before, streaming = false, bodyStyle = bodyStyle)
+                OpenRenderContent(
+                    source = split.before,
+                    streaming = false,
+                    bodyStyle = bodyStyle,
+                    smoothStreaming = false,
+                )
             }
-            HtmlBlockView(html = split.html ?: source, title = "网页")
+            HtmlBlockView(html = split.html ?: activeSource, title = "网页")
             if (split.after.isNotBlank()) {
-                OpenRenderContent(source = split.after, streaming = false, bodyStyle = bodyStyle)
+                OpenRenderContent(
+                    source = split.after,
+                    streaming = false,
+                    bodyStyle = bodyStyle,
+                    smoothStreaming = false,
+                )
             }
         }
         return
@@ -146,15 +224,25 @@ fun OpenRenderContent(
 
     // 流式未闭合：认出在生成网页就先顶一个「正在生成」大框，源码不展示。
     // 高度固定，竖屏上不随增量跳动；写完后整块替换为 HtmlBlockView。
-    if (streaming && looksLikeHtmlDocumentLoose(source)) {
-        val split = splitProseAroundHtml(source)
+    if (streaming && looksLikeHtmlDocumentLoose(activeSource)) {
+        val split = splitProseAroundHtml(activeSource)
         Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
             if (split.before.isNotBlank()) {
-                OpenRenderContent(source = split.before, streaming = true, bodyStyle = bodyStyle)
+                OpenRenderContent(
+                    source = split.before,
+                    streaming = true,
+                    bodyStyle = bodyStyle,
+                    smoothStreaming = false,
+                )
             }
             HtmlLoadingBlock(title = "网页")
             if (split.after.isNotBlank()) {
-                OpenRenderContent(source = split.after, streaming = true, bodyStyle = bodyStyle)
+                OpenRenderContent(
+                    source = split.after,
+                    streaming = true,
+                    bodyStyle = bodyStyle,
+                    smoothStreaming = false,
+                )
             }
         }
         return
@@ -162,24 +250,35 @@ fun OpenRenderContent(
 
     // 裸 <svg>...</svg>（含解说 + 裸 SVG + 解说，或带空行/4 格缩进的多行 SVG）：
     // 在喂给 markdown 引擎前切出，避免空行后缩进变 code_block 或混排段落被剥去标签。
-    if (hasBareSvgOutsideFences(source)) {
-        val segments = remember(source) { splitProseAroundBareSvg(source) }
+    if (hasBareSvgOutsideFences(activeSource)) {
+        val segments = remember(activeSource) { splitProseAroundBareSvg(activeSource) }
         if (segments.any { it.isSvg }) {
             Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 segments.forEachIndexed { idx, seg ->
                     val isLast = idx == segments.lastIndex
                     if (seg.isSvg) {
-                        if (seg.closed) {
-                            MessageSvgBlock(svg = seg.text)
-                        } else {
-                            StreamingTailBlock(text = seg.text)
+                        key("bare-svg-$idx") {
+                            val resolvedSvg = if (seg.closed) {
+                                seg.text
+                            } else {
+                                remember(seg.text) { buildStreamingSvgPreview(seg.text) }
+                            }
+                            if (resolvedSvg != null) {
+                                MessageSvgBlock(svg = resolvedSvg, streaming = !seg.closed)
+                            } else {
+                                // 仅在 <svg ...> 起始标签本身未闭合的瞬时展示加载占位
+                                SvgLoadingBlock()
+                            }
                         }
                     } else if (seg.text.isNotBlank()) {
-                        OpenRenderContent(
-                            source = seg.text,
-                            streaming = streaming && isLast,
-                            bodyStyle = bodyStyle,
-                        )
+                        key("bare-prose-$idx") {
+                            OpenRenderContent(
+                                source = seg.text,
+                                streaming = streaming && isLast,
+                                bodyStyle = bodyStyle,
+                                smoothStreaming = false,
+                            )
+                        }
                     }
                 }
             }
@@ -189,7 +288,7 @@ fun OpenRenderContent(
 
     if (!OpenRenderNative.available) {
         Text(
-            text = source,
+            text = activeSource,
             style = bodyStyle.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.onSurface,
             modifier = modifier,
@@ -197,10 +296,10 @@ fun OpenRenderContent(
         return
     }
 
-    val blocks = remember(source, streaming, doc) { doc.sync(source, streaming) }
+    val blocks = remember(activeSource, streaming, doc) { doc.sync(activeSource, streaming) }
     if (doc.failed) {
         Text(
-            text = source,
+            text = activeSource,
             style = bodyStyle.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.onSurface,
             modifier = modifier,
@@ -216,19 +315,21 @@ fun OpenRenderContent(
 
     Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
         renderBlocks.forEachIndexed { index, block ->
-            RenderBlockView(
-                block = block,
-                bodyStyle = bodyStyle,
-                streaming = streaming,
-                caret = streaming && index == renderBlocks.lastIndex &&
-                    (block.hasInlineText() || block.type == "latex_block"),
-                soleBlock = renderBlocks.size == 1,
-            )
+            key(block.id) {
+                RenderBlockView(
+                    block = block,
+                    bodyStyle = bodyStyle,
+                    streaming = streaming,
+                    caret = streaming && index == renderBlocks.lastIndex &&
+                        (block.hasInlineText() || block.type == "latex_block"),
+                    soleBlock = renderBlocks.size == 1,
+                )
+            }
         }
     }
 }
 
-// ---------------------------------------------------------------- 块渲染
+// 块渲染
 
 @Composable
 private fun RenderBlockView(
@@ -238,13 +339,25 @@ private fun RenderBlockView(
     caret: Boolean,
     soleBlock: Boolean,
 ) {
+    // 仅针对流式期新出现的内容块做轻微淡入，滚动浏览历史消息不触发多余动画
+    val animateBlockAppear = remember { streaming && block.type in setOf("paragraph", "heading", "list_item") }
+    var shown by remember { mutableStateOf(!animateBlockAppear) }
+    if (animateBlockAppear) {
+        LaunchedEffect(Unit) { shown = true }
+    }
+    val blockAlpha by animateFloatAsState(
+        targetValue = if (shown) 1f else 0.35f,
+        animationSpec = tween(120, easing = FastOutSlowInEasing),
+        label = "stream-block-alpha",
+    )
+
     val inner: @Composable () -> Unit = {
         when (block.type) {
             "paragraph" -> ParagraphBlock(block, bodyStyle, caret)
             "heading" -> HeadingBlock(block, bodyStyle, caret)
             "code_block" -> CodeFenceBlock(block, streaming, soleBlock)
             "list_item" -> ListItemBlock(block, bodyStyle, caret)
-            "table" -> TableBlock(block.table, bodyStyle)
+            "table" -> TableBlock(block.table, bodyStyle, streaming = streaming)
             "rule" -> HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             "footnote_def" -> FootnoteDefBlock(block, bodyStyle)
             "latex_block" -> MathBlock(block.math, block.text, degrade = caret)
@@ -260,10 +373,13 @@ private fun RenderBlockView(
         }
     }
 
-    when {
-        block.alert.isNotEmpty() -> AlertFrame(block) { inner() }
-        block.quote > 0 -> QuoteFrame(block.quote) { inner() }
-        else -> inner()
+    val containerModifier = if (animateBlockAppear) Modifier.alpha(blockAlpha) else Modifier
+    Box(modifier = containerModifier) {
+        when {
+            block.alert.isNotEmpty() -> AlertFrame(block) { inner() }
+            block.quote > 0 -> QuoteFrame(block.quote) { inner() }
+            else -> inner()
+        }
     }
 }
 
@@ -298,11 +414,20 @@ private fun ParagraphBlock(
                     MediaJumpCard(type = jump.first, url = jump.second)
                     return
                 }
-                if (single.text.trimStart().startsWith("<svg", ignoreCase = true) || looksLikeSvgMarkup(single.text)) {
-                    if (single.text.contains("</svg>", ignoreCase = true) || looksLikeSvgMarkup(single.text)) {
-                        MessageSvgBlock(single.text)
+                val resolvedSingleSvg = when {
+                    looksLikeSvgMarkup(single.text) -> single.text
+                    looksLikeStreamingSvgStart(single.text) ->
+                        remember(single.text) { buildStreamingSvgPreview(single.text) }
+                    else -> null
+                }
+                if (resolvedSingleSvg != null || looksLikeStreamingSvgStart(single.text)) {
+                    if (resolvedSingleSvg != null) {
+                        MessageSvgBlock(
+                            svg = resolvedSingleSvg,
+                            streaming = !looksLikeSvgMarkup(single.text),
+                        )
                     } else {
-                        StreamingTailBlock(single.text)
+                        SvgLoadingBlock()
                     }
                     return
                 }
@@ -311,8 +436,18 @@ private fun ParagraphBlock(
     }
 
     val fullText = block.spans.joinToString("") { it.text }
-    if (looksLikeSvgMarkup(fullText)) {
-        MessageSvgBlock(fullText)
+    val resolvedFullSvg = when {
+        looksLikeSvgMarkup(fullText) -> fullText
+        caret && looksLikeStreamingSvgStart(fullText) ->
+            remember(fullText) { buildStreamingSvgPreview(fullText) }
+        else -> null
+    }
+    if (resolvedFullSvg != null) {
+        MessageSvgBlock(svg = resolvedFullSvg, streaming = !looksLikeSvgMarkup(fullText))
+        return
+    }
+    if (caret && looksLikeStreamingSvgStart(fullText)) {
+        SvgLoadingBlock()
         return
     }
     val fullJump = parseMediaJumpTag(fullText)
@@ -401,11 +536,21 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
         "html", "htm" -> {
             // AI 出的整页文档（题目页、解析展开、可点开的图表）：
             // 直接挂成可交互 WebView，按钮能点、答案能展开，不用来回切 App。
-            // 若 ```html 围栏里装的其实是纯 <svg>...</svg>，优先走矢量图卡片渲染。
-            if (openTail) {
-                HtmlLoadingBlock(title = "网页")
-            } else if (looksLikeSvgMarkup(block.text)) {
-                MessageSvgBlock(block.text)
+            // 若 ```html 围栏里装的其实是纯 <svg>...</svg>，优先走矢量图增量绘制。
+            val svgCandidate = when {
+                openTail && !block.text.contains("<html", ignoreCase = true) && looksLikeStreamingSvgStart(block.text) ->
+                    remember(block.text) { buildStreamingSvgPreview(block.text) }
+                !openTail && looksLikeSvgMarkup(block.text) -> block.text
+                else -> null
+            }
+            if (svgCandidate != null) {
+                MessageSvgBlock(svg = svgCandidate, streaming = openTail)
+            } else if (openTail) {
+                if (!block.text.contains("<html", ignoreCase = true) && looksLikeStreamingSvgStart(block.text)) {
+                    SvgLoadingBlock()
+                } else {
+                    HtmlLoadingBlock(title = "网页")
+                }
             } else if (block.text.isNotBlank()) {
                 HtmlBlockView(html = block.text, title = "网页")
             } else {
@@ -414,16 +559,21 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
         }
 
         "svg" -> {
-            if (openTail) {
-                StreamingTailBlock(block.text)
-            } else if (block.text.contains("<svg", ignoreCase = true)) {
-                MessageSvgBlock(block.text)
+            val liveSvg = when {
+                openTail -> remember(block.text) { buildStreamingSvgPreview(block.text) }
+                block.text.contains("<svg", ignoreCase = true) -> block.text
+                else -> null
+            }
+            if (liveSvg != null) {
+                MessageSvgBlock(svg = liveSvg, streaming = openTail)
+            } else if (openTail) {
+                SvgLoadingBlock()
             } else {
                 val url = firstNonBlankLine(block.text)
                 if (url != null && isSvgPathOrDataUri(url)) {
                     MessageImageBlock(url, "")
                 } else {
-                    MessageSvgBlock(block.text)
+                    FencedCode(lang, block.text)
                 }
             }
         }
@@ -476,8 +626,19 @@ private fun CodeFenceBlock(block: RenderBlock, streaming: Boolean, soleBlock: Bo
         }
 
         else -> {
-            if (lang in setOf("xml", "") && looksLikeSvgMarkup(block.text)) {
-                if (openTail) StreamingTailBlock(block.text) else MessageSvgBlock(block.text)
+            val isSvgFence = lang in setOf("xml", "") &&
+                (looksLikeSvgMarkup(block.text) || (openTail && looksLikeStreamingSvgStart(block.text)))
+            if (isSvgFence) {
+                val liveSvg = if (openTail) {
+                    remember(block.text) { buildStreamingSvgPreview(block.text) }
+                } else {
+                    block.text
+                }
+                if (liveSvg != null) {
+                    MessageSvgBlock(svg = liveSvg, streaming = openTail)
+                } else {
+                    SvgLoadingBlock()
+                }
             } else {
                 FencedCode(lang, block.text)
             }
@@ -564,32 +725,143 @@ private fun TaskCheck(checked: Boolean) {
     }
 }
 
+private val TableSettleEasing = CubicBezierEasing(0.18f, 0.9f, 0.2f, 1f)
+
 @Composable
-private fun TableBlock(table: RenderTable?, bodyStyle: TextStyle) {
+private fun TableRowEntrance(streaming: Boolean, content: @Composable () -> Unit) {
+    val animateRow = remember { streaming }
+    var visible by remember { mutableStateOf(!animateRow) }
+    if (animateRow) {
+        LaunchedEffect(Unit) { visible = true }
+    }
+    val rowAlpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0.15f,
+        animationSpec = tween(160, easing = FastOutSlowInEasing),
+        label = "table-row-alpha",
+    )
+    Box(modifier = if (animateRow) Modifier.alpha(rowAlpha) else Modifier) {
+        content()
+    }
+}
+
+@Composable
+private fun TableBlock(table: RenderTable?, bodyStyle: TextStyle, streaming: Boolean = false) {
     if (table == null || (table.header.isEmpty() && table.rows.isEmpty())) return
     val cols = maxOf(table.header.size, table.rows.maxOfOrNull { it.size } ?: 0)
     if (cols == 0) return
     val density = LocalDensity.current.density
-    val gridColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-    val shape = RoundedCornerShape(10.dp)
+    val borderColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.72f)
+    val rowDividerColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.52f)
+    val colDividerColor = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.36f)
+    val headerBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.54f)
+    val evenRowBg = MaterialTheme.colorScheme.surface.copy(alpha = 0.32f)
+    val oddRowBg = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f)
+    val shape = RoundedCornerShape(12.dp)
 
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        val widths = columnWidths(table, cols, maxWidth, density)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(shape)
-                .border(1.dp, gridColor, shape),
-        ) {
-            if (table.header.isNotEmpty()) {
-                TableRow(table.header, table.align, widths, bodyStyle, gridColor, header = true)
+    // 流式首次呈现时从 1.045x 柔和收缩落位至标准 1.0x 尺寸（顶中锚点防止上挤前文），历史消息直接静止呈现
+    val animateEntrance = remember { streaming }
+    var settled by remember { mutableStateOf(!animateEntrance) }
+    if (animateEntrance) {
+        LaunchedEffect(Unit) { settled = true }
+    }
+    val settleScale by animateFloatAsState(
+        targetValue = if (settled) 1f else 1.045f,
+        animationSpec = tween(320, easing = TableSettleEasing),
+        label = "table-settle-scale",
+    )
+    val settleAlpha by animateFloatAsState(
+        targetValue = if (settled) 1f else 0f,
+        animationSpec = tween(220, easing = FastOutSlowInEasing),
+        label = "table-settle-alpha",
+    )
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (animateEntrance) {
+                    Modifier.graphicsLayer {
+                        scaleX = settleScale
+                        scaleY = settleScale
+                        alpha = settleAlpha
+                        transformOrigin = TransformOrigin(0.5f, 0f)
+                    }
+                } else {
+                    Modifier
+                },
+            ),
+    ) {
+        val layout = computeTableLayout(table, cols, maxWidth.value, density)
+        val widths = key(cols) {
+            layout.widthsDp.mapIndexed { idx, targetW ->
+                val animatedW by animateFloatAsState(
+                    targetValue = targetW,
+                    animationSpec = spring(
+                        dampingRatio = 0.88f,
+                        stiffness = Spring.StiffnessMediumLow,
+                    ),
+                    label = "table-col-$idx",
+                )
+                (if (streaming) animatedW else targetW).dp
             }
-            table.rows.forEachIndexed { index, row ->
-                if (index > 0 || table.header.isNotEmpty()) {
-                    HorizontalDivider(color = gridColor)
+        }
+        val tableContent: @Composable (Modifier) -> Unit = { colMod ->
+            Column(
+                modifier = colMod
+                    .clip(shape)
+                    .border(0.8.dp, borderColor, shape)
+                    .animateContentSize(
+                        animationSpec = spring(
+                            dampingRatio = 0.9f,
+                            stiffness = Spring.StiffnessMediumLow,
+                        ),
+                    ),
+            ) {
+                if (table.header.isNotEmpty()) {
+                    TableRow(
+                        cells = table.header,
+                        align = table.align,
+                        widths = widths,
+                        scrollable = layout.horizontalScroll,
+                        bodyStyle = bodyStyle,
+                        colDividerColor = colDividerColor,
+                        rowBackground = headerBg,
+                        header = true,
+                    )
                 }
-                TableRow(row, table.align, widths, bodyStyle, gridColor, header = false)
+                table.rows.forEachIndexed { index, row ->
+                    key("row-$index") {
+                        TableRowEntrance(streaming = streaming) {
+                            Column {
+                                if (index > 0 || table.header.isNotEmpty()) {
+                                    HorizontalDivider(
+                                        thickness = if (index == 0 && table.header.isNotEmpty()) 0.8.dp else 0.6.dp,
+                                        color = if (index == 0 && table.header.isNotEmpty()) borderColor else rowDividerColor,
+                                    )
+                                }
+                                TableRow(
+                                    cells = row,
+                                    align = table.align,
+                                    widths = widths,
+                                    scrollable = layout.horizontalScroll,
+                                    bodyStyle = bodyStyle,
+                                    colDividerColor = colDividerColor,
+                                    rowBackground = if (index % 2 == 1) oddRowBg else evenRowBg,
+                                    header = false,
+                                )
+                            }
+                        }
+                    }
+                }
             }
+        }
+        if (layout.horizontalScroll) {
+            val totalWidth = widths.sumOf { it.value.toDouble() }.dp
+            Box(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+                tableContent(Modifier.width(totalWidth))
+            }
+        } else {
+            tableContent(Modifier.fillMaxWidth())
         }
     }
 }
@@ -597,26 +869,31 @@ private fun TableBlock(table: RenderTable?, bodyStyle: TextStyle) {
 /** 表格单元格字号；列宽换算要用同一个值，否则算出来的比例和实际排版对不上。 */
 private val tableCellFontSize = 13.sp
 
-/** 每格左右各 5dp 内边距。 */
-private const val TABLE_CELL_PADDING = 5f
+/** 每格左右各 8dp 内边距。 */
+private const val TABLE_CELL_PADDING = 8f
+
+/** 多列表进入横向滚动前，正文列尽量保留的最小可读内容宽（dp）。 */
+private const val TABLE_MIN_READABLE_COL_DP = 76f
+
+/** 横向滚动表格的单列内容宽上限（dp），使长介绍列既舒展又不会无限拉宽单行。 */
+private const val TABLE_MAX_SCROLL_COL_DP = 220f
+
+internal data class TableLayoutSpec(
+    val widthsDp: List<Float>,
+    val horizontalScroll: Boolean,
+)
 
 /**
- * 按**实际渲染宽度**分配列宽。
- *
- * 早先按「字符个数」加权，且公式一律算 6 个字 —— 公式越宽越吃亏：
- * `1+nx^{2n}` 出图 60dp 却只折算成 6 个字，而一串 16 个中文能折算成 16，
- * 列宽比例整个失真，表头会被挤到换行（「分母」和公式被拆成两行）。
- *
- * 现在按 dp 算：公式与图片用出图像素宽除以屏幕密度，中文按一个字宽、
- * 西文按半个字宽。分列宽时先给每列留**保底**（公式图折不烂，只能占这么宽），
- * 余量再按「期望宽 - 保底宽」分配；全都不够时按保底比例挤。
+ * 计算表格列宽：
+ * - 2–3 列或内容紧凑表格按 `sqrt(desired)` 加权分配铺满屏宽，避免短列占空过宽、长描述列被压扁；
+ * - 4 列以上且整体内容显著超出屏宽（或有列被压到可读阈值下）时自动启用横向滚动与舒适列宽。
  */
-private fun columnWidths(
+internal fun computeTableLayout(
     table: RenderTable,
     cols: Int,
-    available: Dp,
+    availableDp: Float,
     density: Float,
-): List<Dp> {
+): TableLayoutSpec {
     val desired = FloatArray(cols)
     val floor = FloatArray(cols)
     for (c in 0 until cols) {
@@ -632,51 +909,104 @@ private fun columnWidths(
         }
     }
 
-    // 每格扣除左右内边距后，剩下的才是文字可用宽。
-    val avail = (available.value - TABLE_CELL_PADDING * 2 * cols).coerceAtLeast(1f)
+    val avail = (availableDp - TABLE_CELL_PADDING * 2 * cols).coerceAtLeast(1f)
+    val fitShares = fitColumnContentWidths(desired, floor, cols, avail)
+
+    val crushed = cols >= 4 && (
+        desired.sum() > avail * 1.45f ||
+            (0 until cols).any { c ->
+                desired[c] > TABLE_MIN_READABLE_COL_DP && fitShares[c] < TABLE_MIN_READABLE_COL_DP
+            }
+        )
+    if (!crushed) {
+        return TableLayoutSpec(
+            widthsDp = fitShares.map { it + TABLE_CELL_PADDING * 2 },
+            horizontalScroll = false,
+        )
+    }
+
+    val scrollShares = FloatArray(cols) { c ->
+        val minTarget = minOf(desired[c], TABLE_MIN_READABLE_COL_DP)
+        maxOf(floor[c], desired[c].coerceAtMost(TABLE_MAX_SCROLL_COL_DP), minTarget)
+            .coerceAtLeast(18f)
+    }
+    val sumScroll = scrollShares.sum()
+    val finalShares = if (sumScroll < avail) {
+        val k = avail / sumScroll.coerceAtLeast(1f)
+        FloatArray(cols) { c -> scrollShares[c] * k }
+    } else {
+        scrollShares
+    }
+    return TableLayoutSpec(
+        widthsDp = finalShares.map { it + TABLE_CELL_PADDING * 2 },
+        horizontalScroll = true,
+    )
+}
+
+/**
+ * 按实际渲染宽度在固定可视宽内分配表格列宽：
+ * 先满足公式/图片不可拆行的保底宽度，再按 `sqrt(desired)` 加权水淹分配，
+ * 避免短列白白吃掉单行冗余宽度而把长描述列压成竖条。
+ */
+private fun fitColumnContentWidths(
+    desired: FloatArray,
+    floor: FloatArray,
+    cols: Int,
+    avail: Float,
+): FloatArray {
     val sumDesired = desired.sum()
     val sumFloor = floor.sum()
-
     val shares = FloatArray(cols)
     when {
         sumDesired <= avail -> {
-            // 内容装得下：按比例放大把整行填满，避免右侧留白
             val k = avail / sumDesired.coerceAtLeast(1f)
             for (c in 0 until cols) shares[c] = desired[c] * k
         }
 
         sumFloor > avail -> {
-            // 连保底都放不下：按保底比例挤，宁可折行也不让公式图溢出
             for (c in 0 until cols) {
                 shares[c] = if (sumFloor > 0f) avail * floor[c] / sumFloor else avail / cols
             }
         }
 
         else -> {
-            // 灌水分配：每列先拿到保底（公式图折不烂），够用的列拿满自己的
-            // 期望宽就停手，剩下的空间只在仍缺空间的列之间均分。
-            // 关键在于「按期望宽分」而不是「按期望宽减保底分」——
-            // 后者会把本该给宽公式列的余量摊给长文本列，表头照样被挤到换行。
             var remaining = avail
-            var active = (0 until cols).toMutableList()
-            while (active.isNotEmpty() && remaining > 0f) {
-                val share = remaining / active.size
-                val full = active.filter { desired[it] <= share }
-                if (full.isEmpty()) {
-                    for (c in active) shares[c] = share
-                    remaining = 0f
-                    active.clear()
-                } else {
-                    for (c in full) {
+            for (c in 0 until cols) {
+                shares[c] = floor[c]
+                remaining -= floor[c]
+            }
+            val active = (0 until cols).filterTo(mutableListOf()) { desired[it] > shares[it] }
+            while (active.isNotEmpty() && remaining > 0.5f) {
+                val weightSum = active.sumOf {
+                    kotlin.math.sqrt(desired[it].coerceAtLeast(1f).toDouble())
+                }.toFloat().coerceAtLeast(1f)
+                var cappedAny = false
+                val iter = active.iterator()
+                while (iter.hasNext()) {
+                    val c = iter.next()
+                    val w = kotlin.math.sqrt(desired[c].coerceAtLeast(1f).toDouble()).toFloat()
+                    val add = remaining * (w / weightSum)
+                    if (shares[c] + add >= desired[c]) {
+                        remaining -= (desired[c] - shares[c])
                         shares[c] = desired[c]
-                        remaining -= desired[c]
+                        iter.remove()
+                        cappedAny = true
                     }
-                    active.removeAll(full.toSet())
+                }
+                if (!cappedAny) {
+                    val finalWeightSum = active.sumOf {
+                        kotlin.math.sqrt(desired[it].coerceAtLeast(1f).toDouble())
+                    }.toFloat().coerceAtLeast(1f)
+                    for (c in active) {
+                        val w = kotlin.math.sqrt(desired[c].coerceAtLeast(1f).toDouble()).toFloat()
+                        shares[c] += remaining * (w / finalWeightSum)
+                    }
+                    remaining = 0f
                 }
             }
         }
     }
-    return shares.map { (it + TABLE_CELL_PADDING * 2).dp }
+    return shares
 }
 
 /** 单元格内容的自然宽度（dp）：公式/图片用出图像素宽，其余按字宽估算。 */
@@ -727,26 +1057,38 @@ private fun TableRow(
     cells: List<List<RenderSpan>>,
     align: List<String>,
     widths: List<Dp>,
+    scrollable: Boolean,
     bodyStyle: TextStyle,
-    gridColor: Color,
+    colDividerColor: Color,
+    rowBackground: Color,
     header: Boolean,
 ) {
-    Row(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IntrinsicSize.Min)
+            .background(rowBackground),
+    ) {
         widths.forEachIndexed { c, width ->
             val cell = cells.getOrNull(c).orEmpty()
             val separator = if (c == 0) Modifier else Modifier.drawWithContent {
                 drawContent()
-                val stroke = 1.dp.toPx()
+                val stroke = 0.6.dp.toPx()
                 val x = if (layoutDirection == LayoutDirection.Ltr) stroke / 2 else size.width - stroke / 2
-                drawLine(gridColor, Offset(x, 0f), Offset(x, size.height), stroke)
+                drawLine(colDividerColor, Offset(x, 0f), Offset(x, size.height), stroke)
             }
-            Box(modifier = Modifier.weight(width.value).fillMaxHeight().then(separator)) {
+            val cellWidthMod = if (scrollable) Modifier.width(width) else Modifier.weight(width.value)
+            Box(
+                modifier = cellWidthMod.fillMaxHeight().then(separator),
+                contentAlignment = Alignment.CenterStart,
+            ) {
                 InlineSpans(
                     spans = cell,
                     style = bodyStyle.copy(
-                        fontSize = tableCellFontSize,
-                        lineHeight = 19.sp,
-                        fontWeight = if (header) FontWeight.Medium else FontWeight.Normal,
+                        fontSize = if (header) 12.5.sp else tableCellFontSize,
+                        lineHeight = if (header) 18.sp else 19.5.sp,
+                        fontFamily = if (header) FontFamily.SansSerif else bodyStyle.fontFamily,
+                        fontWeight = if (header) FontWeight.SemiBold else FontWeight.Normal,
                     ),
                     caret = false,
                     textAlign = when (align.getOrNull(c)) {
@@ -756,7 +1098,10 @@ private fun TableRow(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = TABLE_CELL_PADDING.dp, vertical = 3.dp),
+                        .padding(
+                            horizontal = TABLE_CELL_PADDING.dp,
+                            vertical = if (header) 8.dp else 7.dp,
+                        ),
                 )
             }
         }
@@ -895,7 +1240,7 @@ private fun AlertFrame(block: RenderBlock, content: @Composable () -> Unit) {
     }
 }
 
-// ---------------------------------------------------------------- 行内 span
+// 行内 span
 
 private const val INLINE_HIGHLIGHT = "inline-highlight"
 private const val CODE_HIGHLIGHT = "code"
@@ -1112,13 +1457,16 @@ private fun AnnotatedString.Builder.appendRichText(
     while (i < raw.length) {
         val c = raw[i]
 
-        // 裸 URL 自动成链：旧渲染器行为，OpenRender 本身不做 autolink
+        // 裸 URL 自动成链（剥离末尾中文或英文句末标点，避免吞入标点符号）
         if (raw.startsWith("http://", i) || raw.startsWith("https://", i)) {
             flush(buffer)
             var end = i
             while (end < raw.length && !raw[end].isWhitespace() &&
                 raw[end] != ')' && raw[end] != '）'
             ) end++
+            while (end > i && raw[end - 1] in ",.;:!?，。；：！？、】」》\"'`") {
+                end--
+            }
             val urlText = raw.substring(i, end)
             val start = length
             withStyle(styleNow()) {
@@ -1226,7 +1574,7 @@ private fun InlineMedia(src: String, alt: String) {
     }
 }
 
-// ---------------------------------------------------------------- 公式
+// 公式
 
 @Composable
 private fun MathBlock(math: RenderMathImage?, tex: String, degrade: Boolean) {
@@ -1315,7 +1663,7 @@ private fun RenderMathImage.inlineHeightSp(density: Float): androidx.compose.ui.
     return (px / density.coerceAtLeast(0.1f)).sp
 }
 
-// ---------------------------------------------------------------- 小工具
+// 小工具
 
 private fun RenderBlock.hasInlineText(): Boolean =
     type == "paragraph" || type == "heading" || type == "list_item" || type == "footnote_def"

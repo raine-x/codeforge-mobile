@@ -1,17 +1,8 @@
 package com.hxy.codeforge.ui.chat
 
 /**
- * 工具卡片的标题文案。
- *
- * 规则逐条对照 `web/dist/ui.js:1298` 的 `toolLabel()`：
- * 中文短语 + 目标（文件名 / 命令），**任何情况下都不把工具 ID 显示给用户** ——
- * `read_file` 是系统内部标识，界面上应该写「读取了文件 server.go」。
- *
- * ## 为什么不引 org.json
- *
- * 参数是模型生成的简单 JSON，这里只需要取几个字符串字段。用 [JSONObject]
- * 会让这段纯逻辑在 JVM 单测里抛 "not mocked"（android.jar 是 stub），
- * 而它恰恰是最该被单测覆盖的部分。所以用最小正则提取。
+ * 生成工具卡片展示文案（中文动作短语 + 目标摘要，不直接向用户暴露原始工具 ID）。
+ * 采用最小正则解析参数 JSON，保持纯 JVM 可测而不依赖 `org.json` stub。
  */
 fun toolLabel(name: String?, input: String?): String {
     val raw = name.orEmpty()
@@ -243,11 +234,7 @@ private fun jsonString(json: String, key: String): String? {
 }
 
 /**
- * JSON 字符串反转义。
- *
- * 必须**单遍扫描**，不能链式 replace：`"C:\\new"` 里的 `\\n` 是先出现 `\\`（一个反斜杠）
- * 再出现 `n`，链式 replace 会先把 `\n` 当换行吃掉，把路径变成 `C:` + 换行 + `ew`。
- * 实测就是靠这条单测抓到的。
+ * JSON 字符串反转义：必须单遍扫描，不能链式 replace，避免 `"C:\\new"` 中的 `\\n` 被拆成反斜杠加换行。
  */
 private fun unescape(s: String): String {
     val sb = StringBuilder(s.length)

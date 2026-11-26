@@ -107,6 +107,7 @@ fun SettingsSheet(
     onOpenFileManager: ((String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
+    var exiting by remember { mutableStateOf(false) }
 
     // null = 主列表；其余为子页 key
     var page by rememberSaveable(initialPage) { mutableStateOf<String?>(initialPage) }
@@ -245,11 +246,25 @@ fun SettingsSheet(
                             .padding(bottom = 28.dp),
                     ) {
                         when (currentPage) {
-                            null -> SettingsHome(onOpen = {
-                                modelSub = null
-                                modelReturnSub = null
-                                page = it
-                            })
+                            null -> SettingsHome(
+                                exiting = exiting,
+                                onOpen = {
+                                    modelSub = null
+                                    modelReturnSub = null
+                                    page = it
+                                },
+                                onExitApp = {
+                                    if (!exiting) {
+                                        exiting = true
+                                        vm.shutdownAndExit {
+                                            context.findActivity()?.finishAndRemoveTask()
+                                                ?: context.findActivity()?.finishAffinity()
+                                            android.os.Process.killProcess(android.os.Process.myPid())
+                                            kotlin.system.exitProcess(0)
+                                        }
+                                    }
+                                },
+                            )
                             "appearance" -> AppearanceSection()
                             "memory" -> MemorySection(vm)
                             "skills" -> SkillsSection(vm)
@@ -313,7 +328,11 @@ private val PAGE_TITLES = mapOf(
  * 这里只放入口，内容在各自子页。
  */
 @Composable
-private fun SettingsHome(onOpen: (String) -> Unit) {
+private fun SettingsHome(
+    exiting: Boolean,
+    onOpen: (String) -> Unit,
+    onExitApp: () -> Unit,
+) {
     val items = listOf(
         Triple("model", "模型服务", "模型库、供应商、添加与探测"),
         Triple("appearance", "外观与交互", "输入框样式、背景图、模糊/亮度、文字颜色、旋转"),
@@ -361,10 +380,45 @@ private fun SettingsHome(onOpen: (String) -> Unit) {
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
+
+        // 最后一行：主动终止内核与服务并杀死当前进程退出程序
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(12.dp))
+                .noRippleClickable { if (!exiting) onExitApp() }
+                .padding(horizontal = 4.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = if (exiting) "正在退出 CodeForge…" else "退出 CodeForge",
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.Medium),
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    text = "停止内核与服务并结束当前进程",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error.copy(alpha = 0.78f),
+                    modifier = Modifier.padding(top = 2.dp),
+                )
+            }
+            Text(
+                text = "›",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.error.copy(alpha = 0.78f),
+            )
+        }
     }
 }
 
-// ---------------------------------------------------------------- 外观
+private tailrec fun Context.findActivity(): android.app.Activity? = when (this) {
+    is android.app.Activity -> this
+    is android.content.ContextWrapper -> baseContext.findActivity()
+    else -> null
+}
+
+// 外观
 
 /**
  * 外观与交互。
@@ -380,7 +434,7 @@ private fun AppearanceSection() {
     val scope = rememberCoroutineScope()
     var copyError by remember { mutableStateOf<String?>(null) }
 
-    // ---------------- 输入框外观 ----------------
+    // 输入框外观
     SectionTitle("输入框外观")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(
@@ -406,7 +460,7 @@ private fun AppearanceSection() {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 背景图 ----------------
+    // 背景图
     SectionTitle("背景图")
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
@@ -459,7 +513,7 @@ private fun AppearanceSection() {
         )
     }
 
-    // ---------------- 模糊 / 亮度 ----------------
+    // 模糊 / 亮度
     var blur by remember { mutableFloatStateOf(AppSettings.backgroundBlur.intValue.toFloat()) }
     Text(
         text = "背景模糊：${blur.roundToInt()} dp",
@@ -492,7 +546,7 @@ private fun AppearanceSection() {
         steps = AppSettings.BACKGROUND_BRIGHTNESS_MAX - AppSettings.BACKGROUND_BRIGHTNESS_MIN - 1,
     )
 
-    // ---------------- 文字颜色 ----------------
+    // 文字颜色
     SectionTitle("文字颜色")
     val colorOverride = AppSettings.textColorOverride.value
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -527,7 +581,7 @@ private fun AppearanceSection() {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 系统状态栏 ----------------
+    // 系统状态栏
     // 默认关闭（= 隐藏状态栏）：聊天页要的是整屏，状态栏那条会把顶栏往下压。
     // 真正的 show/hide 在 MainActivity 的 WindowInsetsController 里做，
     // 这里只落持久化值；隐藏后 safeDrawing 顶 inset 自动变 0，布局不用跟着改。
@@ -566,7 +620,7 @@ private fun AppearanceSection() {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 横屏旋转 ----------------
+    // 横屏旋转
     SectionTitle("横屏旋转")
     val rotateEnabled = AppSettings.rotateWithDevice.value
     Row(
@@ -623,7 +677,7 @@ private suspend fun copyBackgroundImage(context: Context, uri: Uri): String? =
         }.getOrNull()
     }
 
-// ---------------------------------------------------------------- 归档
+// 归档
 
 /**
  * 已归档会话管理页。
@@ -723,7 +777,7 @@ private fun ArchiveSection(vm: ChatViewModel) {
     }
 }
 
-// ---------------------------------------------------------------- 运行环境
+// 运行环境
 
 @Composable
 private fun EnvSection(context: Context) {
@@ -777,7 +831,7 @@ private fun EnvSection(context: Context) {
     EnvPackagesSection()
 }
 
-// ---------------------------------------------------------------- 语音
+// 语音
 
 @Composable
 private fun VoiceSection(context: Context) {
@@ -795,7 +849,7 @@ private fun VoiceSection(context: Context) {
         modifier = Modifier.padding(vertical = 14.dp),
     )
 
-    // ---------------- 云端识别（硅基流动） ----------------
+    // 云端识别（硅基流动）
     // 语音识别单独一套云 API 配置：不与聊天模型供应商混用 —— 两套 Key、两套计费，
     // 共用一份配置会让「换个聊天模型」顺手把语音链路改坏，故两边互不污染。
     SectionTitle("云端识别（硅基流动）")
@@ -925,19 +979,13 @@ private fun VoiceSection(context: Context) {
     Spacer(Modifier.height(4.dp))
 }
 
-// ---------------------------------------------------------------- 诊断
-
 @Composable
 private fun DiagnosticsSection() {
     SectionTitle("诊断")
     DiagnosticsRow()
 }
 
-/**
- * 最小诊断区：崩溃现场（crash-*.txt）与环境流水线日志（env.log）。
- * 真机排障的第一手资料就在这几个文件里 —— 崩溃落盘是 2026-10-25 加的，
- * 这里给一个不依赖 adb 的查看/复制出口。
- */
+/** 诊断面板：查看、复制与导出崩溃现场及运行日志。 */
 @Composable
 private fun DiagnosticsRow() {
     val context = LocalContext.current
@@ -1021,7 +1069,7 @@ private fun DiagnosticsRow() {
      * 把日志写成文件、挂到系统分享面板。
      *
      * 与「导出」的区别：导出是落到 Download 让用户自己找，发送是直接拉系统分享
-     * （微信 / 邮件 / 网盘都在里面）。日志先写 cache/logs/，经 FileProvider 授权读取，
+     * （即时通讯 / 邮件 / 网盘等系统分享目标）。日志先写 cache/logs/，经 FileProvider 授权读取，
      * 分享结束后系统回收 cache，不占用户空间。
      */
     fun shareLogs() {
@@ -1162,7 +1210,7 @@ private fun DiagnosticsRow() {
     }
 }
 
-// ---------------------------------------------------------------- 通用子件
+// 通用子件
 
 /** 子页里的小节标题（本文件内若干区块共用；私有不外泄，避免与其他并行文件同名冲突）。 */
 @Composable

@@ -54,9 +54,7 @@ import com.hxy.codeforge.ui.common.GlyphIcon
 import com.hxy.codeforge.ui.common.noRippleClickable
 import com.hxy.codeforge.ui.theme.Clay
 
-/**
- * 纯文本技能（B 类）的能力边界固定说明（§1.3 硬性要求）。
- */
+/** 纯文本技能能力边界固定说明。 */
 internal const val SKILL_BOUNDARY_NOTICE =
     "能力边界：纯文本技能只向模型注入知识、流程与检查清单，本身不能直接执行代码。" +
         "若技能正文引用了随包脚本（如 references/xxx.py），模型仍需通过 run_command 工具（受容器环境与审批策略约束）运行。"
@@ -596,11 +594,8 @@ fun ManualMcpDetailSheet(
 }
 
 /**
- * 导入 `.cfplugin` 包后的安装前预览与确认弹层：
- * - 展示版本对比（新装 / 升级 / 重装 / 降级需勾选确认）；
- * - 展示权限声明与风险提示；
- * - 支持在安装前直接填写所需密钥；
- * - 对阶段 2 类型（`wasm` / `http`）显示「需内核支持」置灰并说明原因。
+ * 导入 `.cfplugin` 包后的安装前预览与确认弹层：展示版本对比、权限声明与密钥配置；
+ * 对需额外内核支持的类型（`wasm` / `http`）置灰并说明原因。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -736,7 +731,6 @@ fun PendingPluginInstallSheet(
                     }
                 }
 
-                // 阶段 2 类型置灰说明
                 if (pending.requiresKernelSupport) {
                     Box(
                         modifier = Modifier

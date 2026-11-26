@@ -4,12 +4,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Base64
 
-/**
- * OpenRender 的 IR 数据模型（`crates/openrender-core/src/ir.rs` 的 Kotlin 映射）。
- *
- * 引擎输出的是语言无关的渲染指令，不输出像素：排版、媒体、手势全部由宿主决定。
- * 这里只保留壳需要的字段；字段名与 `json.rs` 的线格式一一对应。
- */
+/** OpenRender 引擎 IR 数据模型。 */
 internal data class RenderMathImage(
     val mime: String,
     val width: Int,
@@ -172,7 +167,7 @@ private fun parseSpans(a: JSONArray?): List<RenderSpan> {
 
 private fun parseSpan(o: JSONObject): RenderSpan {
     val type = o.optString("type", "text")
-    // json.rs 的 write_span 按类型换键：latex_inline 用 tex，image/audio 用 alt
+    // LaTeX 行内公式使用 tex 字段，图片与音频使用 alt 字段
     val text = when (type) {
         "latex_inline" -> o.optString("tex")
         "image", "audio" -> o.optString("alt").ifEmpty { o.optString("text") }
@@ -213,24 +208,17 @@ private fun JSONArray?.toStringList(): List<String> {
 }
 
 /**
- * 一份流式 Markdown 文档的宿主状态。
- *
- * 输入是「到目前为止的完整文本」（内核 Delta 事件把增量折进了消息文本），
- * 这里自己做前缀 diff：只有新增部分喂给引擎；文本被整体替换（重试/编辑重发）
- * 时 reset 后重喂。这样每次解析成本 = 新增文本 + 固定尾部窗口，而不是全文。
+ * 增量 Markdown 文档宿主状态：通过前缀 diff 仅将新增文本喂入原生引擎，
+ * 在文本被整体替换（重发/编辑）时自动 reset 重算。
  */
 internal class OpenRenderDocument(
     private val density: Float,
     private val fontSize: Float = 15f,
-    /**
-     * 应用 cacheDir —— 公式渲染需要落地 Unicode 回退字体，Android 上没有
-     * 可发现的系统字体（见 [OpenRenderNative.useRatex]）。
-     */
+    /** 用于落地公式渲染所需的 Unicode 回退字体。 */
     private val cacheDir: String = "",
 ) : AutoCloseable {
 
-    // 库能 load 不代表符号能解析（包名/R8/ABI 任一错都会在首次调用时抛
-    // UnsatisfiedLinkError）——构造与首调都包在 runCatching 里，失败退纯文本。
+    // 库成功加载不保证 ABI 符号一定可解析，构造与调用统一兜底
     private val engine = if (OpenRenderNative.available) {
         runCatching { OpenRenderNative() }.getOrNull()
     } else {
@@ -255,10 +243,8 @@ internal class OpenRenderDocument(
     }
 
     fun sync(source: String, streaming: Boolean): List<RenderBlock> {
-        // GLM/Qwen 系用 \( \) / \[ \] 写公式；pulldown-cmark 的 math 扩展只认 $ / $$，
-        // 先做定界符归一（跳过代码围栏与已有 $ 公式，保住 \\[2pt] 这类间距命令）。
         val safeEngine = engine ?: return emptyList()
-        val target = normalizeMathDelimiters(source)
+        val target = normalizeMathDelimiters(normalizeMarkdownForRender(source))
         if (target.isEmpty()) {
             if (fed.isNotEmpty() || finished) {
                 runCatching { safeEngine.reset() }
@@ -316,16 +302,8 @@ internal class OpenRenderDocument(
 }
 
 /**
- * 把 `\(…\)` / `\[…\]` 归一成 `$…$` / `$$…$$`。
- *
- * pulldown-cmark 的 math 扩展只认 `$` / `$$`，但 GLM/Qwen 系模型常用反斜杠定界符。
- * 归一必须跳过两类区域：
- *  - 代码围栏内：反斜杠是代码内容，改了就是错的；
- *  - 已有 `$$…$$` 内：`\\[2pt]` 是 LaTeX 行距命令，不能被当成块级定界符。
- *
- * 这是逐字符映射，天然前缀稳定，所以下游的前缀 diff 仍然成立；当前实现每次
- * 归一都扫全文，但这一步远轻于一次完整 Markdown 解析，且只有含反斜杠定界符的
- * 消息才会触发。
+ * 将 `\(…\)` / `\[…\]` 归一化为 `$…$` / `$$…$$` 以兼容 LaTeX 解析器，
+ * 跳过代码围栏及已有 `$$…$$` 块内（避免误改 `\\[2pt]` 等行距命令）。
  */
 internal fun normalizeMathDelimiters(src: String): String {
     if (!src.contains("\\(") && !src.contains("\\)") &&
@@ -382,7 +360,8 @@ internal fun normalizeMathDelimiters(src: String): String {
             } else {
                 0
             }
-            if (runLen >= 3) {
+            // CommonMark 规则：反引号围栏信息串中不能包含反引号，否则属于单行内嵌代码跨度
+            if (runLen >= 3 && !(first == '`' && trimmed.drop(runLen).contains('`'))) {
                 inFence = true
                 fenceChar = first!!
                 fenceLen = runLen
@@ -394,5 +373,116 @@ internal fun normalizeMathDelimiters(src: String): String {
         if (index < lines.lastIndex) out.append('\n')
     }
     return out.toString()
+}
+
+private val INLINE_FENCE_TAG_REGEX = Regex("""^(?i)(svg|html|htm|xml)(?=<)|^(?i)(ui|widget|json)(?=\{)""")
+private val TABLE_SEP_CELL_REGEX = Regex("""^:?-+:?$""")
+
+private fun countTableSepColumns(line: String): Int? {
+    val t = line.trim()
+    if (!t.contains('|') || !t.contains('-')) return null
+    val stripped = t.removePrefix("|").removeSuffix("|")
+    if (stripped.isEmpty()) return null
+    val cells = stripped.split('|')
+    var hasDash = false
+    for (cell in cells) {
+        val c = cell.trim()
+        if (!TABLE_SEP_CELL_REGEX.matches(c)) return null
+        if (c.contains("--") || c == "-") hasDash = true
+    }
+    return if (hasDash) cells.size else null
+}
+
+private fun isTableLikeLine(line: String): Boolean {
+    val t = line.trim()
+    return t.startsWith("|") && t.count { it == '|' } >= 2
+}
+
+/**
+ * 预处理 LLM 输出的常见 Markdown 格式粘连问题（仅在代码围栏外生效）：
+ * 1. 围栏语言与首行正文缺少换行（如 ```` ```svg<svg ...> ````、```` ```html<!DOCTYPE html> ````、```` ```ui{...} ````）；
+ * 2. 标题或正文与表格表头粘连在同一行（如 `二线：值得考虑| # | 选题 | ...` 紧跟 `|---|...|`），或表格前缺少空行。
+ */
+internal fun normalizeMarkdownForRender(src: String): String {
+    if (src.isEmpty()) return src
+    val lines = src.split('\n')
+    val out = ArrayList<String>(lines.size + 4)
+
+    var inFence = false
+    var fenceChar = '`'
+    var fenceLen = 0
+    var i = 0
+
+    while (i < lines.size) {
+        val line = lines[i]
+        val trimmed = line.trimStart()
+        val indentLen = line.length - trimmed.length
+
+        if (inFence) {
+            val runLen = if (indentLen <= 3) trimmed.takeWhile { it == fenceChar }.length else 0
+            if (runLen >= fenceLen && trimmed.drop(runLen).isBlank()) {
+                inFence = false
+            }
+            out.add(line)
+            i++
+            continue
+        }
+
+        // 检查代码围栏起始行（允许 0..3 个前导空格）
+        val first = trimmed.firstOrNull()
+        val runLen = if (indentLen <= 3 && (first == '`' || first == '~')) {
+            trimmed.takeWhile { it == first }.length
+        } else {
+            0
+        }
+        if (runLen >= 3) {
+            val rest = trimmed.drop(runLen)
+            if (!(first == '`' && rest.contains('`'))) {
+                val m = INLINE_FENCE_TAG_REGEX.find(rest)
+                inFence = true
+                fenceChar = first!!
+                fenceLen = runLen
+                if (m != null) {
+                    val indent = line.substring(0, indentLen)
+                    val marker = trimmed.substring(0, runLen)
+                    val lang = m.value
+                    val body = rest.substring(m.range.last + 1)
+                    out.add("$indent$marker$lang")
+                    out.add(body)
+                } else {
+                    out.add(line)
+                }
+                i++
+                continue
+            }
+        }
+
+        // 检查 GFM 表格粘连（line[i] 为表头候选，line[i+1] 为分隔行 |---|---|）
+        val sepCols = if (i + 1 < lines.size) countTableSepColumns(lines[i + 1]) else null
+        if (sepCols != null && line.isNotBlank()) {
+            val pipeIdx = line.indexOf('|')
+            if (pipeIdx > 0 && trimmed.firstOrNull() != '|' && trimmed.firstOrNull() != '>') {
+                val prefix = line.substring(0, pipeIdx).trimEnd()
+                val headerPart = line.substring(pipeIdx)
+                val headerCols = headerPart.trim().removePrefix("|").removeSuffix("|").split('|').size
+                if (prefix.isNotEmpty() && headerCols == sepCols) {
+                    out.add(prefix)
+                    out.add("")
+                    out.add(headerPart)
+                    i++
+                    continue
+                }
+            }
+            if (pipeIdx >= 0 && out.isNotEmpty() && out.last().isNotBlank() &&
+                !isTableLikeLine(out.last()) && !out.last().trimStart().startsWith(">")
+            ) {
+                out.add("")
+            }
+        }
+
+        out.add(line)
+        i++
+    }
+    return out.joinToString("\n")
 }
 

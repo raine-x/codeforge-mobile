@@ -1,12 +1,6 @@
 package com.hxy.codeforge.ui.browser
 
-/**
- * 内置浏览器的数据模型。
- *
- * 这些类型只在壳侧流转：WebView 里的 JS 把元素信息回传，经 [PickedElement]
- * 落到输入框，再由发送链路带给内核。内核协议没有专门承载「页面元素」的字段，
- * 所以走的是「用户可见文本 + 追加的结构化描述」这条路（见 ChatViewModel.send）。
- */
+/** 内置浏览器元素挑选数据模型：由 WebView JS 回传，经输入框附加文本发送给内核。 */
 
 /** 元素在页面坐标系里的矩形（CSS px，相对视口左上角）。 */
 data class ElementRect(

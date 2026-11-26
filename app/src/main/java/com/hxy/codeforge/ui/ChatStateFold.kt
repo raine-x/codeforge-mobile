@@ -10,13 +10,8 @@ import com.hxy.codeforge.model.ToolCall
 import com.hxy.codeforge.model.ToolState
 
 /*
- * 事件折叠的纯函数部分（`ChatUiState` 进、`ChatUiState` 出）。
- *
- * 为什么单拆出来：`ChatViewModel.onEvent` 里夹着通知、传输层、`PhoneTaskController` 等
- * 依赖 Android/单例的副作用，没法在纯 JVM 里直接跑。把「状态怎么变」抽成无副作用函数，
- * 就能用单测钉住这块最容易回归的逻辑（流式拼接、工具卡归属、会话切换清理）。
- * 副作用（通知、`planPending`、`transport` 调用）仍留在 ViewModel 里，不许搬进来。
- * 约束：本文件不许 import Android、`transport`、单例对象。
+ * 事件折叠的纯函数（`ChatUiState` 进、`ChatUiState` 出），供 JVM 单测直接覆盖。
+ * 约束：禁止引入 Android / 传输层 / 全局单例，通知等副作用留在 ViewModel。
  */
 
 /** 正文增量并入末段（末段是正文就接着写，否则新起一段）。 */

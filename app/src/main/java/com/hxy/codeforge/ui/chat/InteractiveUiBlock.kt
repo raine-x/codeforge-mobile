@@ -47,7 +47,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.roundToInt
 
-// ---------------------------------------------------------------- 数据模型与纯解析
+// 数据模型与纯解析
 
 data class InteractiveUiSpec(
     val title: String = "",
@@ -484,7 +484,7 @@ private fun jsonStrings(arr: JSONArray?): List<String> {
     }
 }
 
-// ---------------------------------------------------------------- Compose 渲染
+// Compose 渲染
 
 private val cardShape = RoundedCornerShape(14.dp)
 private val innerShape = RoundedCornerShape(10.dp)

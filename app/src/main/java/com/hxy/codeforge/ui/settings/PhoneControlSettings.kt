@@ -148,7 +148,7 @@ internal fun PhoneControlSettings(vm: ChatViewModel) {
         perms = PhoneSystemCapabilities.permissionSnapshot(context)
     }
 
-    // ---------------- 1. 总开关与权限 ----------------
+    // 1. 总开关与权限
     PhoneSectionTitle("总开关与权限")
     Text(
         text = "开启后，聊天中发送 @phone 即可由 Agent 自主组合调用手机操控与搜索、文件等现有工具。",
@@ -310,7 +310,7 @@ internal fun PhoneControlSettings(vm: ChatViewModel) {
 
     SectionDivider()
 
-    // ---------------- 2. 执行状态 ----------------
+    // 2. 执行状态
     PhoneSectionTitle("执行状态")
     CardSurface {
         Row(
@@ -381,7 +381,7 @@ internal fun PhoneControlSettings(vm: ChatViewModel) {
 
     SectionDivider()
 
-    // ---------------- 3. 能力开关 ----------------
+    // 3. 能力开关
     PhoneSectionTitle("能力开关")
     Row(
         modifier = Modifier
@@ -446,7 +446,7 @@ internal fun PhoneControlSettings(vm: ChatViewModel) {
 
     SectionDivider()
 
-    // ---------------- 4. 应用黑名单 ----------------
+    // 4. 应用黑名单
     PhoneSectionTitle("应用黑名单")
     Text(
         text = "每次屏幕观察与界面操作前都会检查当前应用；一旦进入黑名单应用，立即停止执行。",
@@ -507,7 +507,7 @@ internal fun PhoneControlSettings(vm: ChatViewModel) {
 
     SectionDivider()
 
-    // ---------------- 5. 确认设置 ----------------
+    // 5. 确认设置
     PhoneSectionTitle("确认设置")
     Text(
         text = "勾选后，模型执行对应高风险操作前会弹窗并推送通知请求你的明确确认。",
@@ -547,7 +547,7 @@ internal fun PhoneControlSettings(vm: ChatViewModel) {
 
     SectionDivider()
 
-    // ---------------- 5.5 应用技能库 ----------------
+    // 5.5 应用技能库
     PhoneSectionTitle("应用技能库（按 App 预置经验）")
     CardSurface {
         Row(
@@ -624,7 +624,7 @@ internal fun PhoneControlSettings(vm: ChatViewModel) {
 
     SectionDivider()
 
-    // ---------------- 6. 操作动画 ----------------
+    // 6. 操作动画
     PhoneSectionTitle("操作动画与执行回执")
     CardSurface {
         Row(
@@ -763,7 +763,7 @@ internal fun PhoneControlSettings(vm: ChatViewModel) {
 
     SectionDivider()
 
-    // ---------------- 7. 记录与产物 ----------------
+    // 7. 记录与产物
     PhoneSectionTitle("记录与产物")
     Row(
         modifier = Modifier

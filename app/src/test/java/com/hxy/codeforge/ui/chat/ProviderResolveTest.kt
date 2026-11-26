@@ -7,19 +7,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * 当前供应商反查的回归测试。
- *
- * ## 为什么这条这么要紧
- *
- * 内核 `config/default.yaml` 里 `llm.provider: "anthropic"` —— 那是**协议族**
- * （anthropic | openai），不是供应商 id。壳侧早先把它当供应商显示，
- * 于是模型选择栏里出现「anthropic」，点进供应商页却是「DeepSeek 官方」，
- * 同一屏里像有两个不同的东西。
- *
- * 现在当前供应商**只从模型库条目上取**；模型库是空的就没有当前供应商，
- * 界面显示「未选择」，而不是把协议族糊上去。
- */
+/** 当前生效供应商 id 反查测试（按生效模型从模型库检索，不使用 `config.provider` 协议族，见 P-045）。 */
 class ProviderResolveTest {
 
     private val deepseekModel = LibraryModel(
@@ -93,7 +81,7 @@ class ProviderResolveTest {
         assertEquals("DeepSeek 官方", entries[0].name)
     }
 
-    // ------------------------------------------------------------ 模型分组
+    // 模型分组
 
     @Test
     fun modelsAreGroupedByProvider() {

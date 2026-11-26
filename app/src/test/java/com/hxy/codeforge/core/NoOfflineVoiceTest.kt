@@ -6,31 +6,14 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 内置离线语音（Vosk）已移除 —— 这条测试守住「别把它悄悄加回来」。
- *
- * ## 为什么需要守护
- *
- * Vosk 的代价很容易被低估：
- *  - `assets/voice-model-zh.zip`：**41.9 MB**（中文小模型）
- *  - `libvosk.so`：**10.0 MB**（AAR 带来的原生库）
- *  - 合计约 **52 MB**，占原 APK（65.5 MB）的八成。
- *
- * 用户明确要求砍掉它。砍掉之后如果有人「顺手优化语音」又把 Vosk 拉回来，
- * APK 会无声地胖回 60 MB+ —— 这条断言让回归在**构建期**就暴露，
- * 而不是等用户抱怨「安装包怎么这么大」。
- *
- * 断言方式：扫 `app/src/main` 下的源码与资产 —— 这是**唯一**的真相源，
- * 产物里的痕迹是它的推论。
+ * 校验源码与资产中不存在离线语音识别（Vosk / `libvosk.so` / `voice-model-zh.zip`）残留，避免增大安装包体积。
  */
 class NoOfflineVoiceTest {
 
-    /** 源码根目录（Gradle 单测的工作目录是模块目录）。 */
     private val mainDir: File = File("src/main")
 
     @Test
     fun `源码里不再有 Vosk 引用`() {
-        // 只查**代码里的引用**，不查注释里的字样 —— VoiceInput.kt 的类注释
-        // 解释了「为什么不用 Vosk」，那是正面文档，提到它是应该的。
         val offenders = findFiles(matching = { it.name.endsWith(".kt") })
             .filter { file ->
                 val text = file.readText()

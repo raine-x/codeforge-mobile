@@ -18,32 +18,13 @@ import java.util.UUID
 import java.util.zip.ZipInputStream
 
 /**
- * 动态插件安装器（`.cfplugin` 包解析、安全校验、版本比对、原子落盘与卸载）。
- *
- * ## 目录结构（锚定 `filesDir/plugins/`）
- *
- * - `filesDir/plugins/incoming/<uuid>.cfplugin`：SAF 选入后的临时暂存包（预览取消或安装完成后即删）；
- * - `filesDir/plugins/<id>/install.json`：已装插件元信息（manifest + enabled + configuredSecrets + sha256）；
- * - `filesDir/plugins/<id>/<version>/`：解压后的母本（含 `skills/<slug>/`、`payload/`、`README.md`）。
- *
- * ## 安全与不变量
- *
- * 1. **防 zip 炸弹与路径穿越**：包体积 ≤ 8 MiB、解压总字节 ≤ 32 MiB、条目数 ≤ 512；
- *    逐条目拒绝 `..`、反斜杠与绝对路径。
- * 2. **防 P-052 坏技能静默失效**：包内每个 `skills/<slug>/SKILL.md` 在安装期强制检查扁平单行
- *    frontmatter，`name` 必须等于 `<slug>`，`description` 禁止 `|` / `>` 多行块标量或缩进续行。
- * 3. **原子落盘与失败回滚**：先解压到临时目录，校验全部通过后再写入正式目录；
- *    若后续向内核注册 MCP 失败，调用方回滚恢复旧版本或清理目录，绝不留半装状态。
+ * `.cfplugin` 动态插件包安装器（解析、安全校验、版本比对、原子落盘与卸载）。
+ * 存储锚定在 `filesDir/plugins/`，安装期校验 zip 体积/条目/路径穿越与扁平 frontmatter（见 P-052）。
  */
 object PluginInstaller {
 
-    /** 单个 `.cfplugin` 压缩包上限：8 MiB。 */
     const val MAX_ARCHIVE_BYTES: Long = 8L * 1024L * 1024L
-
-    /** 解压后总字节数上限：32 MiB。 */
     const val MAX_UNPACKED_BYTES: Long = 32L * 1024L * 1024L
-
-    /** zip 内最大条目数上限：512。 */
     const val MAX_ENTRIES: Int = 512
 
     private const val PLUGINS_DIR = "plugins"
@@ -172,7 +153,6 @@ object PluginInstaller {
             return InstallResult.Err("skills[] 存在重复条目")
         }
 
-        // 按类型校验必填项（§2.0 / §2.2）
         when (type) {
             "skill" -> {
                 if (skills.isEmpty()) {
@@ -189,9 +169,7 @@ object PluginInstaller {
                     return InstallResult.Err("$type 插件必须提供合法的 http(s):// endpoint")
                 }
             }
-            "wasm" -> {
-                // 阶段 1 解析识别，安装入口置灰
-            }
+            "wasm" -> Unit
         }
 
         val envObj = obj.optJSONObject("env")
@@ -544,7 +522,7 @@ object PluginInstaller {
      * 把通过校验的 [PendingPluginInstall] 原子解压落盘到 `filesDir/plugins/<id>/<version>/` 并写 `install.json`。
      *
      * - 降级（[InstallVersionRelation.DOWNGRADE]）默认拒绝，除非 [allowDowngrade] 为 true；
-     * - 阶段 2 类型（`wasm` / `http`）直接拒绝落盘；
+     * - 暂不支持落盘的类型（`wasm` / `http`）直接拒绝；
      * - 升级或重装时保留旧版已填写的密钥（与新传入的 [secrets] 合并，新非空值优先）与启用态。
      */
     fun commitStagedInstall(

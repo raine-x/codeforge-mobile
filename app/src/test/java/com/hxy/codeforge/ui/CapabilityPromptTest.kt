@@ -7,26 +7,10 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/**
- * 渲染能力提示词的守护测试。
- *
- * ## 为什么要有这个测试
- *
- * 早先这段注入只讲「内嵌可交互网页」，还给了一份适用范围清单（试题、图表、演示、看板……）。
- * 能力面被写窄之后，模型把本该走原生通道的内容也包成网页 —— 典型是「找到一个视频链接」
- * 时写一整页 HTML，而不是用宿主的原生播放器或音视频跳转卡片。
- *
- * 提示词是纯文本，没有编译期约束：**宿主新增一种呈现通道时，若提示词没跟上，
- * 模型就永远不知道它能用**。所以这里把「通道清单」钉死。
- */
+/** 渲染能力提示词回归测试：校验注入标记一致、通道清单完整及去偏向路由规则。 */
 class CapabilityPromptTest {
 
-    // ------------------------------------------------------------ 标记一致性
-
-    /**
-     * 正文首行必须是定位标记 —— 回放时靠它把注入段从用户气泡里切掉（P-042）。
-     * 正文改了首行而标记没改，整段提示词会漏回用户气泡。
-     */
+    /** 正文须以 [INJECT_CAPABILITY_MARKER] 开头，回放历史才能剥离注入段（见 P-042）。 */
     @Test
     fun promptStartsWithCapabilityMarker() {
         assertTrue(
@@ -42,7 +26,7 @@ class CapabilityPromptTest {
         assertTrue("注入段必须能被剥离", stripInjectedText(wire) == "找段视频")
     }
 
-    // ------------------------------------------------------------ 通道契约
+    // 通道契约
 
     /**
      * 宿主支持的每种呈现通道都必须在提示词里出现。
@@ -79,12 +63,7 @@ class CapabilityPromptTest {
         )
     }
 
-    // ------------------------------------------------------------ 去偏向
-
-    /**
-     * 早先的「适用范围」清单是偏向的根源：它把试题、图表、看板一律划给网页。
-     * 这类清单必须不再出现 —— 改成按内容路由的「怎么选」段。
-     */
+    /** 验证偏向性适用范围清单已移除，改为按内容路由。 */
     @Test
     fun scopeListIsGone() {
         for (gone in listOf(
@@ -110,12 +89,7 @@ class CapabilityPromptTest {
         )
     }
 
-    /**
-     * 网页的专属约束必须挂在「仅写网页时适用」之下。
-     *
-     * 早先这些约束是全局的，隐含「要富展示就写 HTML」；条件化之后网页才只是
-     * 「需要动手交互」时的一个选项。
-     */
+    /** 验证网页专属约束条件化挂载，避免误导普通内容优先使用 HTML。 */
     @Test
     fun htmlConstraintsAreConditional() {
         assertTrue(
@@ -123,10 +97,12 @@ class CapabilityPromptTest {
             CLIENT_CAPABILITY_PROMPT.contains("仅写网页时适用"),
         )
         assertTrue(
-            "SVG 约束必须条件化且包含 viewBox 与防重叠要求",
+            "SVG 约束必须条件化且包含 viewBox、透明底融入主题与移动端字号要求",
             CLIENT_CAPABILITY_PROMPT.contains("仅写 SVG 时适用") &&
                 CLIENT_CAPABILITY_PROMPT.contains("viewBox") &&
-                CLIENT_CAPABILITY_PROMPT.contains("重叠"),
+                CLIENT_CAPABILITY_PROMPT.contains("重叠") &&
+                CLIENT_CAPABILITY_PROMPT.contains("透明") &&
+                CLIENT_CAPABILITY_PROMPT.contains("≥14px"),
         )
         assertTrue(
             "必须包含工具调用与执行协同规范",
@@ -149,17 +125,7 @@ class CapabilityPromptTest {
         )
     }
 
-    // ------------------------------------------------------------ 提示词 ↔ 实现
-
-    /**
-     * 提示词里给出的音视频跳转示例，必须能被客户端**真实的解析函数**认出来。
-     *
-     * 这条是本文件最有价值的一条：提示词与实现是两处独立的文本，
-     * 写错字面量（多一个括号、写成 Markdown 链接形态）不会有任何编译期报错，
-     * 只会让模型输出的标签渲染不出来。
-     * 实测踩过：提示词写「[ ▶视频 地址 ]」，模型理解成 Markdown 链接，
-     * 输出成 `[ ▶视频 描述 ](url)` —— 标签没渲染成卡片，只剩一个普通链接。
-     */
+    /** 验证提示词中的音视频跳转示例与 [parseMediaJumpTag] 语法一致。 */
     @Test
     fun mediaJumpExampleInPromptParsesWithRealParser() {
         val example = "[ ▶视频 地址 ]"

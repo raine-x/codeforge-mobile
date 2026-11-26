@@ -65,102 +65,55 @@ object AppSettings {
 
     val rotationSensitivity = mutableStateOf(RotationSensitivity.Standard)
 
-    /**
-     * 内置测试模型开关。
-     * 开 = 聊天直连云端测试模型，不经过本机内核；关 = 内核优先，
-     * 内核 Failed 或迟迟未就绪时自动兜底到测试模型（见 ChatViewModel）。
-     *
-     * 双载体：Compose State 供界面读写，StateFlow 供 ChatViewModel 订阅
-     * （VM 不允许引 Compose，见 AGENTS 2.3-3）—— 两者只在 init/Setter 同步。
-     */
-    /** 思考强度档（模型弹层）：跨启动持久，选过就不再回默认。 */
+    /** 思考强度档：跨启动持久。 */
     val thinkingLevel = mutableIntStateOf(2)
-    /**
-     * 用户上次选中的模型 id（模型库里的 id）。
-     *
-     * 内核只认 state.yaml / 模型库，壳侧光记一个字符串不会让它切通道；
-     * 这个值用来在启动时补一次 `/api/models/apply`，否则重启后内核会退回
-     * state.yaml 里的历史选择（真机表现：界面显示新模型、请求打向旧模型）。
-     */
+
+    /** 上次选中的模型 id，用于启动后补发 `/api/models/apply` 对齐内核通道（避免退回历史选择）。 */
     val lastModel = mutableStateOf("")
 
-    /** 最近一次权限档（内核未就绪时 UI 的兜底显示）。 */
+    /** 最近一次权限档（内核未就绪时兜底显示）。 */
     val lastPermission = mutableStateOf("Ask")
 
-    /** 深色模式手动切换：0 跟随系统 / 1 浅色 / 2 深色（B4 设置页）。 */
+    /** 深色模式：0 跟随系统 / 1 浅色 / 2 深色。 */
     val darkMode = mutableStateOf(0)
 
-    /**
-     * 是否已经做过「首次供应商预置」。
-     *
-     * 必须持久化：只用进程内标记的话，用户删掉预置供应商后重启 App 会被再次写回，
-     * 表现就是「后端删了、前端又出现」。一旦为 true，任何空列表都不再自动补。
-     */
+    /** 是否已执行过首次供应商预置，防止用户删除后重启又自动补回。 */
     val providerSeeded = mutableStateOf(false)
 
-    /**
-     * 输入框外观：default（跟随主题）/ black / white / clear（透明）。
-     *
-     * 只存「用户意图」，真正绘制在 Composer / AppRoot；壳侧不调内核
-     * `/api/appearance` —— 那是网页端 CSS 变量的入口，原生主题不需要。
-     */
+    /** 输入框外观（default / black / white / clear），仅作用于原生绘制层。 */
     val inputBoxStyle = mutableStateOf("default")
 
-    /** 自定义背景图：应用私有目录内的绝对路径（空 = 无背景）。 */
+    /** 自定义背景图在应用私有目录下的绝对路径（空串表示无背景）。 */
     val backgroundImagePath = mutableStateOf("")
 
-    /** 背景模糊半径（dp）与亮度（%）。 */
     val backgroundBlur = mutableIntStateOf(0)
     val backgroundBrightness = mutableIntStateOf(100)
 
-    /** 文字颜色覆盖（`#RRGGBB`；空串 = 跟随背景亮度自动黑/白）。 */
+    /** 文字颜色覆盖值（`#RRGGBB`；空串表示跟随背景亮度自动黑白）。 */
     val textColorOverride = mutableStateOf("")
 
-    /**
-     * 是否显示系统状态栏。默认 false = 隐藏 —— 聊天页要的是整屏沉浸，
-     * 状态栏那一条会把顶栏往下压；隐藏后 safeDrawing 顶 inset 自动变 0。
-     */
+    /** 是否显示系统状态栏（默认 false 隐藏，隐藏时顶部安全区 inset 自动归零）。 */
     val showStatusBar = mutableStateOf(false)
 
-    /**
-     * 云端语音识别（硅基流动，OpenAI 兼容 `/audio/transcriptions`）。
-     *
-     * **独立于聊天模型供应商**：聊天和转写是两套计费、两把 Key，共用一份配置会让
-     * 「换个聊天模型」顺手把语音链路改坏。这里单独存一套，两边互不污染。
-     *
-     * 语音只走云端（已启用且填了 Key）；系统 SpeechRecognizer 已移除（P-060）。
-     */
+    /** 云端语音识别配置（OpenAI 兼容 `/audio/transcriptions`，与聊天模型供应商隔离存储，见 P-060）。 */
     val sttCloudEnabled = mutableStateOf(false)
     val sttCloudApiKey = mutableStateOf("")
     val sttCloudBaseUrl = mutableStateOf(STT_CLOUD_DEFAULT_BASE_URL)
     val sttCloudModel = mutableStateOf(STT_CLOUD_DEFAULT_MODEL)
 
-    /** 是否剥离 SenseVoice 插进正文的情感/事件标记（🎼😡 等）：默认开。 */
+    /** 是否剥离转写正文中的情感/事件标记。 */
     val sttCloudClean = mutableStateOf(true)
 
-    /**
-     * 上次打开的会话 id（冷启动恢复用）。
-     *
-     * 只在内存里的 currentSessionId 随进程走：后台被系统回收后重启，
-     * 界面会退回空白新对话 —— 用户回来看到的不是「刚才的会话」。
-     * 落盘后冷启动自动 loadSession 回去。
-     */
+    /** 上次打开的会话 id，供冷启动恢复。 */
     val lastSessionId = mutableStateOf("")
 
-    /**
-     * 任务完成通知总开关（壳侧发送）。
-     *
-     * 默认开；关掉后后台完成只回灌会话列表，不发系统通知。
-     */
+    /** 任务完成系统通知开关。 */
     val notifyEnabled = mutableStateOf(true)
 
     fun init(context: Context) {
         if (prefs != null) return
-        // B5-5：敏感项（API Key 等）加密存储 —— Keystore 支撑的官方方案。
-        // EncryptedSharedPreferences 的 API 在 1.1.0-alpha07 被标 deprecated，
-        // 但官方尚无成熟替代（迁移指引进 DataStore+Tink 自实现），压警告继续用。
-        // 首启把明文 prefs 的内容整体迁入加密库并删旧文件；失败（Keystore 损坏等
-        // 罕见场景）回退明文，宁可弱存储也不能让设置全丢。
+        // 使用基于 Keystore 的 EncryptedSharedPreferences 加密敏感配置；
+        // 首启将旧明文配置整体迁入后删除旧文件，Keystore 异常时回退明文避免丢配置。
         @Suppress("DEPRECATION") val p = runCatching {
             val enc = androidx.security.crypto.EncryptedSharedPreferences.create(
                 context,

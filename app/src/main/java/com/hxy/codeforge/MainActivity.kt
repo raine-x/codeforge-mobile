@@ -26,41 +26,23 @@ import com.hxy.codeforge.ui.switchSession
 import com.hxy.codeforge.ui.theme.CodeForgeTheme
 
 /**
- * 唯一的 Activity。
- *
- * 界面全部由 Compose 渲染 —— 没有 WebView，也没有第二套布局文件。
- * 横竖屏切换由 `android:configChanges="orientation|screenSize|screenLayout"` 拦下，
- * Activity 不重建；即使重建（分屏拖拽、字体缩放），状态也在 [ChatViewModel] 里。
- *
- * 职责只有三件：建窗口、申请通知权限、把内核宿主服务拉起来。
- * 另外承接通知的两类跳转意图（B4）：
- *  - [ACTION_NEW_CHAT]：通知栏「新建对话」快捷操作 → 直接触发 vm.createSession()；
- *  - 内核系统通知点击 → 普通打开应用（会话跳转由内核通知携带的 extra 决定，B5-2 链路）。
- *
- * `enableEdgeToEdge()` 是 targetSdk 35+ 的硬要求（Android 15 起系统强制全面屏），
- * 具体避让交给 AppRoot 里的 `WindowInsets.safeDrawing`。
+ * 主入口 Activity：负责窗口初始化、通知权限、拉起 [CoreService]，
+ * 以及处理通知快捷操作、会话跳转与系统分享/选词意图。
  */
 class MainActivity : ComponentActivity() {
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            // 首次授予通知权限后立即按当前真实状态补发一次前台通知（拒了也不阻塞，内核照常跑）
             if (granted) startForegroundService(Intent(this, CoreService::class.java))
         }
 
-    /** 通知快捷操作要用 vm：提到字段（viewModels 委托在 onCreate 前可用）。 */
     private val vm: ChatViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
-        // 恢复系统原生横竖屏旋转（手机与平板共用）：
-        // 开启「横持时旋转界面」走 SCREEN_ORIENTATION_UNSPECIFIED，让主窗、输入法与三点菜单/弹层同步随系统旋转；
-        // 关闭则锁定 SCREEN_ORIENTATION_PORTRAIT。
         requestedOrientation = resolveRequestedOrientation(AppSettings.rotateWithDevice.value)
 
-        // Android 13+ 通知要运行时申请，否则内核状态常驻通知不可见
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
@@ -68,22 +50,16 @@ class MainActivity : ComponentActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        // 内核宿主服务：前台服务必须在前台时启动（目标 31+ 的限制），
-        // 放 onStart 每次进前台都拉一次 —— 服务内部幂等，重复 start 无副作用
+        // CoreService 内部幂等，每次进入前台都确保服务已拉起
         startForegroundService(Intent(this, CoreService::class.java))
-
         handleIntent(intent)
 
         setContent {
             CodeForgeTheme {
-                // 系统状态栏显隐跟随设置（默认隐藏）。必须在这里读 Compose State，
-                // 读到 .value 才会随设置页的开关变化重跑。
-                // 隐藏后 safeDrawing 的顶 inset 自动变 0，AppRoot 不需要任何改动。
                 val showStatusBar = AppSettings.showStatusBar.value
                 LaunchedEffect(showStatusBar) {
                     applyStatusBarVisibility(window, showStatusBar)
                 }
-                // 监听「横持时旋转界面」开关，实时同步窗口原生方向控制
                 val rotateWithDevice = AppSettings.rotateWithDevice.value
                 LaunchedEffect(rotateWithDevice) {
                     val target = resolveRequestedOrientation(rotateWithDevice)
@@ -98,7 +74,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        // 弹层/系统界面关闭把焦点还给主窗口时，按用户偏好补齐状态栏隐藏态，避免临时显示后回不去
+        // 弹层关闭恢复主窗焦点时重新同步状态栏隐藏态
         if (hasFocus && !AppSettings.showStatusBar.value) {
             applyStatusBarVisibility(window, showStatusBar = false)
         }
@@ -109,7 +85,6 @@ class MainActivity : ComponentActivity() {
         startForegroundService(Intent(this, CoreService::class.java))
     }
 
-    /** singleTop 复用实例时新意图也走这里（通知栏快捷操作在后台点下时）。 */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
@@ -117,9 +92,7 @@ class MainActivity : ComponentActivity() {
 
     private fun handleIntent(intent: Intent?) {
         if (intent?.action == ACTION_NEW_CHAT) vm.createSession()
-        // 完成通知点按：带回那个会话（存在才跳，空 = 只打开应用）
         intent?.getStringExtra(EXTRA_SESSION_ID)?.takeIf { it.isNotBlank() }?.let { vm.switchSession(it) }
-        // 入站分享 / 选中文本：预填输入卡（不建会话不自动发送，见 ChatViewModel.onExternalContent）
         when (intent?.action) {
             Intent.ACTION_SEND -> vm.onExternalContent(
                 intent.getCharSequenceExtra(Intent.EXTRA_TEXT),
@@ -143,19 +116,11 @@ class MainActivity : ComponentActivity() {
     }
 
     companion object {
-        /** 通知栏「新建对话」快捷动作（CoreService 的 notification 挂着这个 PendingIntent）。 */
         const val ACTION_NEW_CHAT = "com.hxy.codeforge.MAIN_NEW_CHAT"
-
-        /** 完成通知点按携带的会话 id（CoreService.postDoneNotification 写入）。 */
         const val EXTRA_SESSION_ID = "com.hxy.codeforge.SESSION_ID"
     }
 }
 
-/**
- * 窗口请求方向判定（手机与平板统一走原生系统旋转）：
- * - 开启「横持时旋转界面」：`SCREEN_ORIENTATION_UNSPECIFIED`，交由系统随设备方向同步旋转主窗、输入法与弹层；
- * - 关闭「横持时旋转界面」：`SCREEN_ORIENTATION_PORTRAIT`，锁定竖屏。
- */
 internal fun resolveRequestedOrientation(rotateWithDevice: Boolean): Int =
     if (rotateWithDevice) {
         ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED

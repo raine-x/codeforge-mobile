@@ -203,24 +203,8 @@ internal fun attachmentLimitBanner(detail: String): Banner = Banner(
 )
 
 /**
- * 把用户消息里的注入内容切掉，只留用户自己写的那部分。
- *
- * ## 为什么需要
- *
- * 上行文本 = 用户的话 + 元素布局信息 + 能力说明。内核把上行文本**原样存进历史**，
- * 下一轮 `history` 帧回放会用内核那份整段替换消息列表 —— 注入内容于是漏回气泡。
- * 用户气泡里看到的是一整屏提示词，第二次打开会话还会再看到一次。
- *
- * ## 为什么按标记切而不是重算
- *
- * 上行文本是「用户文本 + 固定后缀」的结构，切掉后缀即精确还原用户原话，
- * 不依赖任何「用户有没有手打这段标记」的猜测。
- *
- * 注入段的正文与两个定位标记见 `CapabilityPrompt.kt`。
- */
-/**
- * 见 [stripInjectedText]：回放时把注入内容从用户气泡里切掉。
- * internal 而非 private —— 单测要能直接验证这条规则。
+ * 按注入标记从历史消息中剥离客户端注入段（能力说明与元素布局），仅保留用户原文。
+ * 暴露为 internal 以便单测直接覆盖。
  */
 internal fun stripInjectedText(text: String): String {
     val i1 = text.indexOf(INJECT_CAPABILITY_MARKER)
@@ -230,11 +214,7 @@ internal fun stripInjectedText(text: String): String {
     return text.substring(0, idx).trimEnd()
 }
 
-/**
- * 把自动落盘的大文件说明插到客户端注入标记（[INJECT_ELEMENT_MARKER] / [INJECT_CAPABILITY_MARKER]）
- * 之前。这样两件事同时成立：① AI 收到明确的工作区相对路径与工具读取提示；② 会话回放跑
- * [stripInjectedText] 时只裁掉系统标记，不会把大文件引用一起裁没。
- */
+/** 将大文件提示插入注入标记之前，确保上行能传递相对路径且回放剥离标记时不误删文件引用。 */
 internal fun appendNoteBeforeInjectedMarkers(wireText: String, note: String): String {
     if (note.isBlank()) return wireText
     val i1 = wireText.indexOf(INJECT_CAPABILITY_MARKER)
@@ -249,17 +229,8 @@ internal fun appendNoteBeforeInjectedMarkers(wireText: String, note: String): St
 
 
 /**
- * 聊天页的状态持有者。
- *
- * 所有对内核的调用都经 [transport]，UI 不直接碰网络。
- * 事件流在这里被折叠成 [ChatUiState]，Compose 只负责把状态画出来。
- *
- * ## 与内核的绑定时机
- *
- * transport 不在构造期创建：内核由 [CoreService] 拉起，端口要等
- * `PORT=` 握手才知道。这里订阅 [CoreService.state]，Ready 时创建
- * [HttpCoreTransport] 并开始收事件；Failed 时挂横幅说明原因。
- *
+ * 聊天页状态持有者：所有内核交互经由 [transport]，事件流折叠为 [ChatUiState]。
+ * transport 在 [CoreService] 完成端口握手并进入 Ready 后创建绑定。
  */
 class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidViewModel(app) {
 
@@ -478,15 +449,8 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     /**
-     * 会话工作区：**未绑定工作区**的会话统一用应用私有的 inbox 空间。
-     *
-     * 为什么不再「每个会话一个空格子」：内核在会话**创建那一刻**就把当时的
-     * 工作区写进 sessions.workspace，壳侧事后没法改这条记录；而按会话 id 建
-     * 目录必须先有 id —— 死循环。统一 inbox 后，「会话归属 / 附件落点 /
-     * 加载时的工作区切换」三者同源。
-     *
-     * 已归属项目的会话必须指回项目目录，否则「项目」只是侧栏上的一个分组壳，
-     * 文件工具实际还落在私有空间里。内核重启后 Ready 分支会重指。
+     * 绑定会话工作区：未归属项目的会话统一使用应用私有 inbox 空间，
+     * 已归属项目的会话指向项目目录，保证归属、附件与文件工具同源。
      */
     private fun applySessionSpace(sessionId: String) {
         viewModelScope.launch { applySessionSpaceNow(sessionId) }
@@ -501,10 +465,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             ?: EnvKit.inboxSpace(getApplication()).absolutePath
     }
 
-    /**
-     * [applySessionSpace] 的挂起版：发送附件前必须**等它完成**再上行，
-     * 否则 `/api/upload_file` 会写进旧工作区，附件路径与新工作区对不上（问题 1）。
-     */
+    /** 等待会话工作区切换完成再继续（发送附件前必须等待，防止落进旧工作区）。 */
     private suspend fun applySessionSpaceNow(sessionId: String): Boolean {
         if (sessionId.isEmpty() || boundKind != BoundKind.Kernel) return false
         val a = api ?: return false
@@ -520,13 +481,8 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     /**
-     * 把内置纯知识技能铺进目标工作区。
-     *
-     * 为什么必须在 `setWorkspace` **之前**铺：内核的技能发现路径是
-     * `<workdir>/.codeforge/skills/`，`workdir` 由工作区切换决定。先切后铺的话，
-     * 这一刻内核已经指向新工作区，而技能还没到 —— 列表与注入都会少一段。
-     *
-     * 铺放失败不阻断：技能是增强项，铺不上不该让工作区切换失败。
+     * 将内置、插件与手机操控技能同步至目标工作区的 `.codeforge/skills/`。
+     * 须在 `setWorkspace` 之前调用，确保内核切换后立即可见；失败不阻塞切换。
      */
     internal suspend fun installBuiltinSkills(workspace: String) {
         if (workspace.isBlank()) return
@@ -538,13 +494,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         refreshInstalledPlugins(workspace)
     }
 
-    /**
-     * 按内核**当前**工作区铺内置技能（内核就绪 / 工作区切换后调用）。
-     *
-     * 为什么查内核而不是自己算：内核启动时从 state.yaml 恢复上次的工作区，
-     * 壳侧此刻可能一个 `setWorkspace` 都没发过 —— 两者对不上，铺错地方就白铺。
-     * `GET /api/workspace` 的 root 是内核自己的答案，铺到那儿必然对得上。
-     */
+    /** 以内核 `GET /api/workspace` 返回根路径为基准同步技能（如冷启动恢复上次工作区时）。 */
     private suspend fun syncBuiltinSkillsToKernelWorkspace() {
         val a = api ?: return
         val root = when (val r = a.currentWorkspace()) {
@@ -560,8 +510,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         transport = t
         // 登记进进程级 holder：通知栏审批快操作经它发决定（不依赖本 ViewModel 是否存活）
         LiveTransport.current = t
-        // 重连/换绑后传输层的 currentSession 是空的：把界面正在看的会话同步过去，
-        // 否则第一条消息会带空 id，内核按「新会话」处理（问题 2 的典型触发路径）。
+        // 重连或换绑后同步当前会话 id，防止上行携带空 id 误建新会话
         _state.value.currentSessionId.takeIf { it.isNotBlank() }?.let { t.setCurrentSession(it) }
         eventsJob?.cancel()
         eventsJob = viewModelScope.launch { t.events.collect(::onEvent) }
@@ -683,7 +632,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
     }
 
     private fun onEvent(event: CoreEvent) {
-        // —— B5-1 后台会话过滤：多会话并行时，别的会话的输出不许污染当前界面 ——
+        // 后台会话事件仅更新列表状态，不污染当前前台消息区
         if (isBackgroundSessionEvent(event)) {
             handleBackgroundEvent(event)
             return
@@ -717,7 +666,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             is CoreEvent.Link -> {
                 if (event.connected) {
                     _state.update { it.copy(connected = true, banner = null) }
-                    // 链路刚通：REST 之前若没初始化成功，这里补一次
+                    // 链路刚接通且 REST 尚未初始化时补初始化
                     if (_state.value.kernelConfig == null && boundPort > 0) {
                         initKernelApi(boundPort)
                     }
@@ -771,9 +720,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
                     _state.value.currentSessionId != event.sessionId
                 val keepEditRunning = awaitingEditRerun && !sessionChanged
                 awaitingEditRerun = false
-                // 空历史帧防抖：新会话首条消息后内核会推空 history（claim 流程），
-                // 直接替换会把乐观消息清掉 → 问候页闪回 → AnimatedContent 快速
-                // A→B→A 抖动崩溃（真机 crash-1792934642977）+ 首帧闪白
+                // 空历史防抖：claim 过程推回的空 history 不应覆盖已发送的乐观消息，防止界面切回问候页抖动
                 val wouldWipe = event.messages.isEmpty() &&
                     _state.value.currentSessionId == event.sessionId &&
                     _state.value.messages.isNotEmpty()
@@ -1016,18 +963,6 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         _state.update { it.foldToolEnd(event) }
     }
 
-    // ---------- 用户动作 ----------
-
-    /**
-     * 发送消息。
-     *
-     * 先乐观插入一条用户气泡再交给内核 —— 网络/内核有延迟，等回包才显示
-     * 会让人以为没点上。若内核返回 error，这条气泡保留（用户的问题确实
-     * 问出去了），只额外挂横幅说明为什么没成。
-     *
-     * 运行中发送走 [steer]：不新开一轮，指令并入当前上下文（对应内核 steer 帧）。
-     * 内核还没就绪时不收这条消息 —— 乐观气泡会凭空消失，比等两秒更糟。
-     */
     /** 把交互卡片或网页/SVG 回传的文本填入输入卡，供用户确认或编辑后再发送。 */
     fun prefillInput(text: String) {
         val trimmed = text.trim()
@@ -1126,13 +1061,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         }
     }
 
-    /**
-     * 投递一条消息：等会话落定 → 等工作区切换完成 → 上传附件 → 上行。
-     *
-     * 气泡先于上传显示（纯附件大视频上传可能要几秒，界面不能空着）；
-     * 上传成功后把气泡里的本地暂存路径换成内核返回的工作区相对路径，
-     * 这样历史重放、附件预览与内核读附件三者同源（问题 1）。
-     */
+    /** 投递消息：等待会话落定、切好工作区并上传附件后上行；上传完成将气泡本地路径替换为工作区相对路径。 */
     private suspend fun deliver(req: PendingSend) {
         val t = transport ?: return
         val initialStage = when {
@@ -1159,11 +1088,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
             _state.update { it.copy(pendingStage = "") }
             return
         }
-        // 首条消息不再在客户端截断前 24 字充当标题：内核会在收到首轮提问时并发
-        // 静默请求 AI 生成小标题并通过 sessions 帧推回（用户已手动命名时不会覆盖）。
-
-        // 附件从工作区根解析，必须等工作区切好再上传；纯文本也走这一步，
-        // 保证内核本轮的文件根与界面显示的会话归属一致。
+        // 附件路径相对工作区解析，须先完成工作区切换再上传，保证内核与 UI 归属一致
         val workspaceDir = java.io.File(resolveSessionWorkspacePath(sid))
         applySessionSpaceNow(sid)
         if (PhoneControlPrefs.config.value.masterEnabled) {
@@ -1303,7 +1228,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
      * - 小于 20MiB 的文件走 `/api/upload_file`，返回相对路径并随 WS `attachments[]` 上行。
      * - 达到或超过 [EnvKit.KERNEL_UPLOAD_LIMIT_BYTES]（或 `/api/upload_file` 返回 413/超限）时，
      *   自动直写入工作区 `imports/`，气泡保留该相对路径以便预览，同时从 WS `attachments[]`
-     *   剥离并改为在上行文本说明路径 —— 绕开 prebuilt 内核 20MiB 上传与 Base64 视频上限，
+     *   剥离并改为在上行文本说明路径 —— 避开内核 20MiB 单次上传与 Base64 编码体积上限，
      *   仅当直接写工作区也失败时才弹出「前往设置」横幅兜底。
      */
     private suspend fun uploadAttachments(
@@ -1439,18 +1364,10 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         transport?.pullTodos()
     }
 
-    // ---------- 每会话草稿（B4 输入区）：内存态，进程死掉即失（聊天草稿不值得落盘） ----------
-
+    /** 每会话草稿缓存（仅保留进程内内存态）。 */
     internal val drafts = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-    /**
-     * 把界面选中的模型同步给内核。
-     *
-     * 内核不读 AppSettings，只认 local.yaml / 模型库 —— 壳侧改 `modelName`
-     * 只是改了个字符串，不发 `/api/models/apply` 的话内核照旧用旧模型。
-     * 真机表现：胶囊显示 deepseek-flash，请求却打向 claude-sonnet-4，上游拒收后
-     * 客户端只报「数据格式不对（解析失败）」，完全看不出是模型没切。
-     */
+    /** 将本地记录的选中模型同步至内核（内核仅认模型库配置，不读 AppSettings）。 */
     private var modelSynced = false
 
     internal fun syncModelToKernel() {
@@ -1464,13 +1381,7 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
         applyModel(entry.id)
     }
 
-    /**
-     * 一次性状态提示。
-     *
-     * 走 [Banner] 通道，界面上由 ToastHost 渲染成浮动气泡（几秒自动消失）。
-     * 保存、切换、归档这类「说完就过去」的反馈都应该走这里 —— 静默成功会让
-     * 用户怀疑操作没生效。
-     */
+    /** 通过 [Banner] / ToastHost 发送短时浮动提示。 */
     internal fun toast(text: String, isError: Boolean = false) {
         _state.update { it.copy(banner = Banner(text, isError)) }
     }
@@ -1484,15 +1395,31 @@ class ChatViewModel(app: android.app.Application) : androidx.lifecycle.AndroidVi
 
     fun dismissBanner() = _state.update { it.copy(banner = null) }
 
-    /**
-     * 手动重连：踢一次内核重启。
-     *
-     * 传输层的自愈循环只能处理「链路断了」——它处理不了「内核进程本身卡死」
-     * 或「前台服务根本没起来」。那两种情况必须重启进程，所以留这个手动入口。
-     */
+    /** 手动重启内核进程（处理传输层自愈无法恢复的进程卡死或未拉起）。 */
     fun retryKernel() {
         CoreService.restart(getApplication())
         _state.update { it.copy(banner = Banner("正在重新启动内核…", isError = false)) }
+    }
+
+    /** 主动停掉全部后台任务、内置 MCP、传输连接与内核子进程后回调销毁进程。 */
+    fun shutdownAndExit(onReadyToKill: () -> Unit) {
+        viewModelScope.launch {
+            runCatching { transport?.cancel() }
+            LiveTransport.current = null
+            runCatching { transport?.disconnect() }
+            runCatching {
+                com.hxy.codeforge.phone.PhoneTaskController.stop(
+                    reason = "退出 CodeForge",
+                    stopAgentTurn = false,
+                )
+                com.hxy.codeforge.phone.PhoneTaskController.cancelTaskNotification()
+                com.hxy.codeforge.phone.PhoneToolDispatcher.stopServer()
+            }
+            withContext(Dispatchers.IO) {
+                CoreService.stopNow(getApplication())
+            }
+            onReadyToKill()
+        }
     }
 
     override fun onCleared() {

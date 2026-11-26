@@ -6,25 +6,14 @@ import java.io.File
 import java.util.zip.ZipInputStream
 
 /**
- * 附件自带解析器：把「模型原生读不了」的格式在壳侧转成它读得了的形态。
- *
- * 背景：直连测试模型没有文件工具语义，附件必须在上行时就地展开。图片走
- * vision、纯文本直接内联，剩下最常见的两类：
- *
- *  - PDF：Android 自带 [PdfRenderer] 只能渲染成位图 → 按页出图，视觉模型
- *    直接看（非视觉模型收不了图，这是平台能力的边界，不是解析器的）。
- *  - DOCX / XLSX / PPTX：本质是 ZIP+XML，不引 POI（几十 MB 级依赖），
- *    直接抽 XML 文本节点 —— 保内容不保排版，对「读文档」够用。
- *
- * 解析全在调用方给的 IO 线程跑；任何失败返回 null 由调用方降级为「忽略」。
+ * 客户端直连附件解析器：将模型无法原生读取的格式转为位图或纯文本。
+ * PDF 通过 [PdfRenderer] 按页转位图；DOCX/XLSX/PPTX 直接解析 ZIP+XML 文本节点。
+ * 须在 IO 线程调用，解析失败返回 null。
  */
 object AttachmentParsers {
 
     sealed interface Parsed {
-        /** 解析出的纯文本（已含截断处理）。 */
         data class Text(val body: String) : Parsed
-
-        /** 按页/张渲染出的位图。 */
         data class Images(val bitmaps: List<Bitmap>) : Parsed
     }
 
@@ -41,8 +30,6 @@ object AttachmentParsers {
             else -> null
         }
     }.getOrNull()
-
-    // ---------------------------------------------------------------- PDF
 
     private fun parsePdf(file: File): List<Bitmap>? =
         android.os.ParcelFileDescriptor.open(
@@ -69,8 +56,6 @@ object AttachmentParsers {
                 }
             }
         }
-
-    // ---------------------------------------------------------------- Office（ZIP + XML）
 
     /** 读取 zip 内第一个匹配 [namePred] 的条目全文（小文件，整体读进内存）。 */
     private fun zipEntryText(file: File, namePred: (String) -> Boolean): String? {
@@ -182,8 +167,6 @@ object AttachmentParsers {
                 .joinToString("\n\n") { "[幻灯片 ${it.first}]\n${it.second.trim()}" },
         )
     }
-
-    // ---------------------------------------------------------------- 工具
 
     private fun unescape(s: String): String = s
         .replace("&lt;", "<")

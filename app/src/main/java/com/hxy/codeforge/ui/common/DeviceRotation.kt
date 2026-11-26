@@ -51,15 +51,8 @@ class OrientationInfo(
 val LocalOrientation = staticCompositionLocalOf<OrientationInfo?> { null }
 
 /**
- * 物理姿态：按「设备顶部指向哪」命名。
- *
- * Activity 已锁死竖屏（manifest `screenOrientation="portrait"`），系统不会再转
- * 窗口；这里的姿态来自加速度传感器，描述用户**手里**怎么拿手机。
- * 横屏时不是把界面换成横版双栏，而是把整套竖屏元素原样旋转 —— 见 [RotateWithDevice]。
- *
- * 方向对应关系经真机校准：传感器角 90°（顶部向左）→ 内容逆时针 90°。
- * 初版曾按推导写成顺时针，真机实测方向相反 —— 传感器方位角的参考系
- * 和屏幕坐标系手性不同，这类映射必须实测，不能纸上推导。
+ * 物理姿态，按设备顶部朝向命名（用于内容旋转模式，见 [RotateWithDevice]）。
+ * 传感器角与屏幕坐标系手性相反，因此 90° 对应内容逆时针旋转 90°。
  */
 enum class DevicePose(val sensorAngle: Int, val contentRotation: Float) {
     /** 正常竖握。 */
@@ -161,37 +154,19 @@ private fun mappedInsets(pose: DevicePose): PaddingValues {
         DevicePose.LandscapeRight -> listOf(physicalTop, physicalRight, physicalBottom, physicalLeft)
         DevicePose.Inverted -> listOf(physicalRight, physicalBottom, physicalLeft, physicalTop)
     }
-    // WindowInsets.get*() 返回的是**像素**，必须除以密度转 dp —— 此前直接 .dp
-    // 等于把 inset 按屏幕密度又放大 N 倍：状态栏悬空 ~3 倍高、键盘一弹
-    // 整屏内容被推出视口（真机录屏里「输入框被弹飞」就是它）。见 AGENTS P-013。
+    // WindowInsets.get*() 返回像素，必须按屏幕密度转为 dp（见 P-013）
     return with(d) {
         PaddingValues(l.toDp(), t.toDp(), r.toDp(), b.toDp())
     }
 }
 
 /**
- * 横屏适配的核心：**窗口永远竖屏，转的是内容**。
- *
- * 检测到用户把手机横过来时，把整棵竖屏布局以弹簧动画旋转到对应角度，
- * 并把内容的宽高对调成「物理横屏下正好铺满屏幕」。布局档位跟着内容盒的
- * 真实尺寸走（[LocalOrientation]）—— 横持时自动切到网页端同款「侧栏 + 聊天」
- * 双栏，而不是把单栏硬拉宽。
- *
- * 尺寸对调按目标姿态立即生效、角度用弹簧追赶：45° 附近布局换边在视觉上
- * 正好被大角度旋转掩盖，看不到跳变。
- *
- * 已知边界（AGENTS P-009）：系统输入法窗口不由应用控制，锁竖屏时它仍按
- * 窗口坐标绘制，横持时键盘不会跟着转；底部弹层同理在独立窗口里。
+ * 竖屏锁死下的内容旋转容器（仅手机端生效，平板走系统原生横竖屏）。
+ * 已知边界（见 P-009）：系统输入法与底部弹层属于独立窗口，不随内容旋转。
  */
 @Composable
 fun RotateWithDevice(content: @Composable () -> Unit) {
-    // 平板直接走系统横竖屏，不做内容旋转。
-    //
-    // 内容旋转是为「手机竖屏锁死 + 用户横着拿」设计的：系统不转，我们自己转。
-    // 平板本来就能横过来用（窗口会真的变宽），再转 90° 等于把系统已经排好的
-    // 布局又拧一下 —— 侧栏跑到上方、状态栏文字侧躺，纯属自找麻烦。
-    //
-    // 不提供 LocalOrientation 即可：Responsive 侧在它为 null 时回退到真实窗口尺寸。
+    // 平板直接走系统横竖屏；不提供 LocalOrientation 使 Responsive 回退到真实窗口尺寸
     val isTablet = androidx.compose.ui.platform.LocalConfiguration.current
         .smallestScreenWidthDp >= 600
     if (isTablet) {

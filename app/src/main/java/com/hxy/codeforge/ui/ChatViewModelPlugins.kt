@@ -87,8 +87,6 @@ fun ChatViewModel.deleteMcpPlugin(name: String) {
     }
 }
 
-// ---------------------------------------------------------------- 动态插件管理（.cfplugin）
-
 /** 解析当前活跃工作区路径（与 applySessionSpaceNow 优先级一致）。 */
 private fun ChatViewModel.resolveActiveWorkspace(): String {
     val st = _state.value
@@ -141,10 +139,7 @@ private suspend fun ChatViewModel.syncPluginSkillsEverywhere() {
 }
 
 /**
- * 从 SAF 选入一个 `.cfplugin` 包：暂存 + 解析校验 + 生成安装前预览 [PendingPluginInstall]。
- *
- * 校验通过后弹预览确认卡（展示版本对比、权限声明、随包技能、可预填密钥，或对阶段 2 类型置灰）；
- * 校验失败立即删暂存并提示明确原因。
+ * 暂存并校验 `.cfplugin` 安装包，生成安装预览 [PendingPluginInstall]（校验失败即删暂存）。
  */
 fun ChatViewModel.installPlugin(uri: Uri) {
     if (_state.value.pluginBusy) return
@@ -462,11 +457,7 @@ private fun resolveUriDisplayName(context: android.content.Context, uri: Uri): S
         ?: "plugin.cfplugin"
 }
 
-// ---------------------------------------------------------------- 手机操控 MCP 自动接通
-
-/**
- * 切换手机操控总开关并同步内置 Streamable HTTP MCP 与 `@phone` 技能。
- */
+/** 切换手机操控总开关并同步内置 Streamable HTTP MCP 与 `@phone` 技能。 */
 fun ChatViewModel.setPhoneControlMasterEnabled(enabled: Boolean) {
     val app = getApplication<android.app.Application>()
     PhoneControlPrefs.setMasterEnabled(app, enabled)

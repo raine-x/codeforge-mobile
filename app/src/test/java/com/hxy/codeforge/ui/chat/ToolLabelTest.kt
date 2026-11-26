@@ -4,7 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Test
 
-/** 工具文案规则，对照 web/dist/ui.js 的 toolLabel()。 */
+/** 工具卡片文案规则单元测试。 */
 class ToolLabelTest {
 
     @Test

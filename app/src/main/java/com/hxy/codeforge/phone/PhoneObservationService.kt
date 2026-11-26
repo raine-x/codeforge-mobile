@@ -112,7 +112,7 @@ class PhoneObservationService : AccessibilityService() {
         }
     }
 
-    // ---------------------------------------------------------------- 测试夹具兼容方法
+    // 测试夹具兼容方法
 
     internal fun begin(pkg: String, screenshot: Boolean) {
         finish("等待系统设置窗口")
@@ -228,7 +228,7 @@ class PhoneObservationService : AccessibilityService() {
         )
     }
 
-    // ---------------------------------------------------------------- MCP 观察与操作能力
+    // MCP 观察与操作能力
 
     fun isDeviceLocked(): Boolean =
         runCatching { getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true }

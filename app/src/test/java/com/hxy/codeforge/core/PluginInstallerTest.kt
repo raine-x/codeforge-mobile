@@ -11,22 +11,10 @@ import java.nio.file.Files
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/**
- * 动态插件安装器（[PluginInstaller]）与多工作区技能同步器（[PluginSkills]）的单元测试。
- *
- * 覆盖设计文档 §5.1 要求的全部断言：
- * 1. manifest 合法 / 缺字段 / 非法 id / 非法 version / 非法 schema
- * 2. type 与必填字段不匹配（skill 缺 skills[]、mcp 缺 command、mcp-http 缺 endpoint）
- * 3. skills[] 与包内实际目录不一致（多列 / 漏列）
- * 4. zip 路径穿越（`../x`、`/abs`）被拒
- * 5. P-052：`description: |` 与多行缩进 frontmatter 被拒；`name != slug` 被拒
- * 6. 版本比较：升级 / 同版本 / 降级 / id 冲突 / slug 冲突
- * 7. 权限解析（缺省、空数组、未知字段忽略）
- * 8. 完整落盘 + 多工作区技能同步 + 停用清理 + 用户自建技能保护闭环
- */
+/** [PluginInstaller] 与 [PluginSkills] 单元测试：覆盖清单校验、安全防线、版本比对、原子落盘与同步清理。 */
 class PluginInstallerTest {
 
-    // ---------------------------------------------------------------- 1. manifest 校验
+    // 1. manifest 校验
 
     @Test
     fun `manifest 合法 mcp-http 与 skill 最小清单均可解析`() {
@@ -128,7 +116,7 @@ class PluginInstallerTest {
         )
     }
 
-    // ---------------------------------------------------------------- 2. type 与必填字段匹配
+    // 2. type 与必填字段匹配
 
     @Test
     fun `type 与必填字段不匹配时拒绝`() {
@@ -150,7 +138,7 @@ class PluginInstallerTest {
                 """{"schema":1,"id":"bad-http","name":"HTTP","version":"1.0.0","type":"mcp-http","endpoint":"ftp://a.com"}""",
             ),
         )
-        // wasm 阶段 1 可解析，但 isSupportedInStage1 为 false
+        // wasm 可解析，但暂未放开安装（isSupportedInStage1 为 false）
         val wasmRes = PluginInstaller.parseManifest(
             """{"schema":1,"id":"calc-wasm","name":"Calc","version":"1.0.0","type":"wasm"}""",
         )
@@ -158,7 +146,7 @@ class PluginInstallerTest {
         assertFalse((wasmRes as PluginInstaller.InstallResult.Ok).value.isSupportedInStage1)
     }
 
-    // ---------------------------------------------------------------- 3. skills[] 与包内目录一致性
+    // 3. skills[] 与包内目录一致性
 
     @Test
     fun `skills 数组与包内实际目录不一致时拒绝（多列或漏列）`() {
@@ -204,7 +192,7 @@ class PluginInstallerTest {
         zipExtraDir.delete()
     }
 
-    // ---------------------------------------------------------------- 4. zip 路径穿越防御
+    // 4. zip 路径穿越防御
 
     @Test
     fun `zip 条目含路径穿越或绝对路径时被拒绝`() {
@@ -234,7 +222,7 @@ class PluginInstallerTest {
         badZip.delete()
     }
 
-    // ---------------------------------------------------------------- 5. P-052 SKILL.md 校验
+    // 5. P-052 SKILL.md 校验
 
     @Test
     fun `P-052 校验：拒绝块标量、多行缩进与 name 不等于 slug`() {
@@ -298,7 +286,7 @@ class PluginInstallerTest {
         assertEquals(listOf("审计", "检查"), ref.triggers)
     }
 
-    // ---------------------------------------------------------------- 6. 版本比较与冲突判定
+    // 6. 版本比较与冲突判定
 
     @Test
     fun `版本比较与冲突检查：升级、同版本、降级、工具名冲突、技能名冲突`() {
@@ -356,7 +344,7 @@ class PluginInstallerTest {
         )
     }
 
-    // ---------------------------------------------------------------- 7. 权限缺省与未知字段忽略
+    // 7. 权限缺省与未知字段忽略
 
     @Test
     fun `权限声明缺省、空数组与未知字段优雅忽略`() {
@@ -385,7 +373,7 @@ class PluginInstallerTest {
         assertTrue(p.allowedActions.isEmpty())
     }
 
-    // ---------------------------------------------------------------- 8. 落盘 + 多工作区技能同步 + 孤儿清理闭环
+    // 8. 落盘 + 多工作区技能同步 + 孤儿清理闭环
 
     @Test
     fun `完整闭环：落盘安装、多工作区同步、保护用户与内置技能、停用清理与卸载`() {
@@ -467,7 +455,7 @@ class PluginInstallerTest {
         }
     }
 
-    // ---------------------------------------------------------------- 辅助构造
+    // 辅助构造
 
     private fun validSkillMarkdown(slug: String, displayName: String): String = """
         ---
